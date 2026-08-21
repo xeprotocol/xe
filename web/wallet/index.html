@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>wallet · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">wallet</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+    <div class="info" id="info" role="status" aria-live="polite" hidden></div>
+
+    <section id="setup-section" class="section-card" hidden>
+      <h2>set up wallet</h2>
+      <p class="muted">your seed lives only in this browser, in <code>localStorage</code>, encrypted with a passphrase you choose. no key ever leaves your device.</p>
+      <div class="actions">
+        <button id="btn-create">create new wallet</button>
+        <span class="muted">or</span>
+        <button id="btn-import-toggle">import existing seed</button>
+      </div>
+      <form id="setup-form" class="passphrase-form">
+        <label>name (optional)
+          <input type="text" id="setup-name" autocomplete="off" placeholder="main" maxlength="32">
+        </label>
+        <label>passphrase (encrypts your seed in localStorage)
+          <input type="password" id="setup-passphrase" autocomplete="new-password" minlength="8" required>
+        </label>
+        <label>confirm passphrase
+          <input type="password" id="setup-passphrase-confirm" autocomplete="new-password" minlength="8" required>
+        </label>
+        <label class="seed-input-label" id="setup-seed-label" hidden>seed (64 hex characters)
+          <input type="text" id="setup-seed-input" autocomplete="off" placeholder="0123abcd…" minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}">
+        </label>
+        <button type="submit" id="setup-submit">create wallet</button>
+      </form>
+      <section id="seed-confirm-section" class="seed-confirm" hidden>
+        <h2>back up your seed</h2>
+        <p class="muted">copy this seed somewhere safe (password manager, paper). anyone with it can spend everything in this account.</p>
+        <pre id="seed-confirm-display" class="raw-pre"></pre>
+        <div class="actions">
+          <button id="btn-copy-confirm-seed">copy seed</button>
+          <label class="checkbox-line"><input type="checkbox" id="seed-saved-check"> I have saved my seed securely</label>
+          <button id="btn-confirm-seed-saved" disabled>continue</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="migration-section" class="section-card" hidden>
+      <h2>migrate wallet</h2>
+      <p class="muted">an unencrypted seed from an older wallet was found in this browser. choose a passphrase to encrypt it. after migration the plaintext seed is removed from storage.</p>
+      <form id="migrate-form" class="passphrase-form">
+        <label>name (optional)
+          <input type="text" id="migrate-name" autocomplete="off" placeholder="main" maxlength="32">
+        </label>
+        <label>passphrase
+          <input type="password" id="migrate-passphrase" autocomplete="new-password" minlength="8" required>
+        </label>
+        <label>confirm passphrase
+          <input type="password" id="migrate-passphrase-confirm" autocomplete="new-password" minlength="8" required>
+        </label>
+        <button type="submit">encrypt and migrate</button>
+      </form>
+    </section>
+
+    <section id="unlock-section" class="section-card" hidden>
+      <h2>unlock wallet</h2>
+      <p class="muted" id="unlock-summary"></p>
+      <form id="unlock-form" class="passphrase-form">
+        <label>passphrase
+          <input type="password" id="unlock-passphrase" autocomplete="current-password" required autofocus>
+        </label>
+        <button type="submit">unlock</button>
+      </form>
+    </section>
+
+    <section id="wallet-section" class="stack" hidden>
+      <div class="wallet-switcher" id="wallet-switcher" hidden>
+        <span class="muted">wallets:</span>
+        <div class="pills" id="wallet-pills"></div>
+        <button type="button" id="btn-add-wallet" class="hint-btn" title="add another wallet">+ add</button>
+        <a href="/wallet/wallets/" class="hint-link">manage →</a>
+        <button type="button" id="btn-lock" class="hint-btn" title="lock wallet (forget passphrase for this session)">lock</button>
+        <button type="button" id="btn-remove-wallet" class="hint-btn warn" title="remove the active wallet from this browser">remove</button>
+      </div>
+
+      <section class="section-card">
+        <h2>wallet <span class="hint" id="wallet-name-hint"></span></h2>
+        <dl class="kv">
+          <dt>address</dt>
+          <dd>
+            <code id="wallet-address">…</code>
+            <a id="open-account-link" href="#" target="_blank" style="margin-left:0.5rem">open in explorer →</a>
+          </dd>
+          <dt title="the ed25519 key your signatures verify against — not an address, and not where funds are sent">public key</dt>
+          <dd><code id="wallet-pubkey">…</code></dd>
+          <dt>last block</dt>
+          <dd><code id="wallet-previous">…</code></dd>
+        </dl>
+      </section>
+
+      <section class="balances-wrap section-card">
+        <h2>balances</h2>
+        <table>
+          <thead><tr><th>asset</th><th>total</th><th>spendable</th></tr></thead>
+          <tbody id="balances-tbody"><tr><td colspan="3" class="muted">loading…</td></tr></tbody>
+        </table>
+        <div class="actions" style="margin-top:0.5rem">
+          <button id="btn-faucet" hidden>request faucet (100 XUSD, testnet)</button>
+        </div>
+      </section>
+
+      <section class="pending-wrap section-card">
+        <h2>pending receives <span class="hint" id="pending-count"></span></h2>
+        <table>
+          <thead><tr><th>time</th><th>asset</th><th>amount</th><th>from</th><th>send hash</th><th></th></tr></thead>
+          <tbody id="pending-tbody"><tr><td colspan="6" class="muted">no pending receives</td></tr></tbody>
+        </table>
+      </section>
+
+      <section class="send-wrap section-card">
+        <h2>send</h2>
+        <form id="send-form" class="send-form">
+          <label>asset
+            <select id="send-asset"></select>
+          </label>
+          <label>destination
+            <input type="text" id="send-destination" autocomplete="off" placeholder="64 hex characters" minlength="64" maxlength="64" required pattern="[0-9a-fA-F]{64}">
+          </label>
+          <label>amount
+            <input type="text" id="send-amount" inputmode="decimal" autocomplete="off" placeholder="0.0" pattern="[0-9]*\.?[0-9]*" required>
+          </label>
+          <label>memo <span class="hint">optional, up to 64 bytes</span>
+            <input type="text" id="send-memo" autocomplete="off" maxlength="64" placeholder="e.g. invoice 1234">
+          </label>
+          <button type="submit" id="send-submit">send</button>
+        </form>
+      </section>
+
+      <section class="history-wrap section-card">
+        <h2>history <span class="hint" id="history-count"></span></h2>
+        <table>
+          <thead><tr><th>time</th><th>type</th><th>asset</th><th>amount</th><th>balance</th><th>hash</th></tr></thead>
+          <tbody id="history-tbody"><tr><td colspan="6" class="muted">no blocks yet</td></tr></tbody>
+        </table>
+      </section>
+
+      <section class="activity-wrap section-card">
+        <h2>activity <span class="hint" id="activity-count"></span>
+          <button type="button" id="btn-clear-activity" class="hint-btn" title="clear activity log">clear</button>
+        </h2>
+        <ul id="activity-list" class="activity"><li class="muted">no activity yet</li></ul>
+      </section>
+
+      <section class="reveal-section section-card">
+        <h2>seed</h2>
+        <p class="muted">re-enter your passphrase to display the seed for this wallet.</p>
+        <form id="reveal-form" class="passphrase-form inline-form">
+          <input type="password" id="reveal-passphrase" placeholder="passphrase" autocomplete="current-password" required>
+          <button type="submit">reveal seed</button>
+        </form>
+        <div id="reveal-output" hidden>
+          <pre id="reveal-display" class="raw-pre"></pre>
+          <div class="actions" style="margin-top:0.5rem">
+            <button type="button" id="btn-copy-reveal">copy</button>
+            <button type="button" id="btn-hide-reveal">hide</button>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/wallet.js"></script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+# Compiled driver/tool binaries produced at the repo root.
+#
+# Every entry here MUST be root-anchored with a leading "/". A bare pattern
+# matches a basename at ANY depth and matches directories too, so bare
+# "test-lease-e2e" also ignores scripts/test-lease-e2e/ — silently swallowing
+# any NEW file added under that driver's source directory. Already-tracked
+# files are unaffected, which is exactly why the trap stays hidden until it
+# bites someone's `git add` as a no-op.
+#
+# This has cost real time three times: scripts/test-chat-e2e/, the cmd/xe
+# package directory (bare "xe" — which is why cmd/xe had no tests at all until
+# it was anchored), and this file's own history. Anchor new entries. See #823.
+/blocklattice
+/cli
+/xe
+/xe-lease-tool
+/gen-ledger-genesis
+/gen-genesis
+/setup-treasury
+/cluster-e2e
+/cluster-fund
+/fast-fund
+/fund-providers
+/burn-from-node
+/bench-tps
+/soak-496
+/test-e2e
+/test-chat-e2e
+/test-745-chat-read-auth
+/test-conflicts
+/test-container-ssh-e2e
+/test-dual-coin
+/test-lease-attestation
+/test-lease-e2e
+/test-lima-ssh-e2e
+/test-multisig-e2e
+/test-ssh-e2e
+/test-statechain-e2e
+/test-statechain-sign
+/test-stress
+/test-oracle-long
+/test-vm-e2e
+/test-xe-emission
+/test-burn-e2e
+/test-faucet-e2e
+/test-burn-persistence
+/test-burn-propagation
+/test-burn-sync
+/test-810-minute-pricing
+/test-816-cert-retention
+/test-846-multisig-cold-sync
+/test-burn-conflict
+/test-831-key-hygiene
+/test-thin-genesis
+/gen-keys
+
+# Agent working files — deliberately NOT anchored; these may appear at any depth.
+CLAUDE.md
+SCRATCHPAD.md
+.claude/
+
+# Release build output (Makefile `dist` target). Root-anchored, per the rule
+# at the top of this file.
+/dist/

@@ -1,0 +1,75 @@
+# systemd unit for an xe node (#841).
+#
+# Committed because none existed in any repo: every deployment was assembled by
+# hand on the box, which meant the log-size policy — the direct fix for the
+# disk-full class of outage this project has already suffered — lived nowhere
+# that could be reviewed or rolled out.
+#
+# Install:
+#   sudo cp deploy/systemd/xe-node.service /etc/systemd/system/
+#   sudo cp deploy/systemd/xe-node.env     /etc/xe/xe-node.env   # then edit
+#   sudo systemctl daemon-reload && sudo systemctl enable --now xe-node
+#
+# Providers additionally need a drop-in granting the kvm group (Lima/QEMU):
+#   /etc/systemd/system/xe-node.service.d/kvm.conf
+#     [Service]
+#     SupplementaryGroups=kvm
+
+[Unit]
+Description=XE node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xe
+Group=xe
+EnvironmentFile=/etc/xe/xe-node.env
+ExecStart=/usr/local/bin/xe-node node \
+  -port ${XE_P2P_PORT} \
+  -api-port ${XE_API_PORT} \
+  -api-bind ${XE_API_BIND} \
+  -metrics-addr ${XE_METRICS_ADDR} \
+  -data ${XE_DATA_DIR} \
+  -dial ${XE_DIAL} \
+  -log-level ${XE_LOG_LEVEL} \
+  -log-max-size ${XE_LOG_MAX_SIZE_MB} \
+  -log-max-files ${XE_LOG_MAX_FILES}
+
+Restart=always
+RestartSec=5s
+
+# Liveness, not readiness. A watchdog must never act on /ready: during a
+# network-wide quorum incident every node is not-ready, and restarting them all
+# makes it worse. /health is the safe signal — it reports whether the process
+# and its internal loops are running, and nothing about consensus.
+#
+# systemd has no native HTTP health check, so this is the closest equivalent:
+# ExecStartPost blocks until the node answers /health, so a node that never
+# comes up is visible as a failed unit rather than a silently flapping one.
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 60); do curl -fsS -o /dev/null "http://127.0.0.1:${XE_API_PORT}/health" && exit 0; sleep 2; done; echo "node did not report healthy within 120s" >&2; exit 1'
+
+# Log bounding, belt and braces. The node writes to stderr by default and
+# journald caps it here; setting XE_LOG_FILE instead moves logging to the
+# node's own size-bounded rotating writer. Either way the total is bounded —
+# an unbounded node log has taken this project's testnet down once already.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xe-node
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=5000
+
+# Hardening. The node needs its data directory and outbound network, and on a
+# provider it needs /dev/kvm (granted by the drop-in above).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xe
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

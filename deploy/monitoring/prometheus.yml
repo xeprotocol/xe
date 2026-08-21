@@ -1,0 +1,60 @@
+# Prometheus configuration for the xe network (#841).
+#
+# It scrapes EVERY node, not one. The pre-existing arrangement polled a single
+# node's public API from the oracle and reformatted the JSON, which meant a
+# scrape failure was indistinguishable from an idle node and — worse — that if
+# the one monitored node was the one that died, you got nothing at all.
+#
+# Each node exposes /metrics on its ops listener (default 127.0.0.1:9095). For
+# remote scraping, bind that listener to a private interface with
+# --metrics-addr, or tunnel to it. Do not put it on the public internet: it is
+# an unauthenticated firehose of network-wide state.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+  external_labels:
+    network: xe-testnet
+
+# Relative to this file, so `promtool check config prometheus.yml` validates
+# the committed tree as-is and compose mounts both into the same directory.
+rule_files:
+  - alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: xe-node
+    metrics_path: /metrics
+    static_configs:
+      # Replace with the real fleet. The labels are what the alert rules and
+      # the fleet-comparison expressions (frontier parity, version spread,
+      # supply agreement) group by, so every node must be listed.
+      # Only a `node` label is attached here. Do NOT add a `role` target label:
+      # xe_build_info already carries role, and a target label of the same name
+      # would collide and be renamed to exported_role, silently breaking the
+      # provider-certificate alert that joins on it.
+      - targets: ["ldn:9095"]
+        labels: { node: ldn }
+      - targets: ["ffm:9095"]
+        labels: { node: ffm }
+      - targets: ["nyc:9095"]
+        labels: { node: nyc }
+      - targets: ["p1:9095"]
+        labels: { node: p1 }
+      - targets: ["p2:9095"]
+        labels: { node: p2 }
+
+  # Host metrics back the disk-pressure alerts. The disk-full class has already
+  # taken this project's testnet down once; without node_exporter those rules
+  # never fire.
+  - job_name: node-exporter
+    static_configs:
+      - targets: ["ldn:9100", "ffm:9100", "nyc:9100", "p1:9100", "p2:9100"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,32 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      # SA5011 ("possible nil pointer dereference") on the standard Go test
+      # assertion:
+      #
+      #     x, err := thing()
+      #     if x == nil {
+      #         t.Fatal("...")
+      #     }
+      #     use(x.Field)
+      #
+      # t.Fatal does not return — it ends the goroutine via runtime.Goexit — so
+      # the dereference is only ever reached on the non-nil path. staticcheck
+      # normally knows this, but on a cold analysis cache it does not appear to,
+      # and then it reports every such guard in the package: there are 101 of
+      # them in core/*_test.go alone, and "fixing" a few only surfaces the next
+      # few (golangci-lint caps repeats at max-same-issues). Suppressed for test
+      # files only; SA5011 stays fully enabled on production code, where the
+      # same pattern would be a real bug. See #886.
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: "SA5011"

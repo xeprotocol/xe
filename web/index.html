@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>overview · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1>overview</h1>
+      <span class="page-sub" id="snapshot-age"></span>
+    </header>
+
+    <section class="identity section-card">
+      <dl>
+        <dt>address</dt>
+        <dd><code id="address">…</code></dd>
+        <dt>node id</dt>
+        <dd><code id="node-id">…</code></dd>
+      </dl>
+    </section>
+
+    <section class="stats">
+      <a class="stat-card" href="/peers/">
+        <span class="label">peers</span>
+        <span class="val" id="stat-peers">–</span>
+        <span class="delta" id="delta-peers"></span>
+        <div class="spark" id="spark-peers"></div>
+      </a>
+      <a class="stat-card" href="/accounts/">
+        <span class="label">accounts</span>
+        <span class="val" id="stat-accounts">–</span>
+        <span class="delta" id="delta-accounts"></span>
+        <div class="spark" id="spark-accounts"></div>
+      </a>
+      <a class="stat-card" href="/blocks/">
+        <span class="label">blocks</span>
+        <span class="val" id="stat-blocks">–</span>
+        <span class="delta" id="delta-blocks"></span>
+        <div class="spark" id="spark-blocks"></div>
+      </a>
+      <a class="stat-card" href="/pending/">
+        <span class="label">pending</span>
+        <span class="val" id="stat-pending">–</span>
+        <span class="delta" id="delta-pending"></span>
+        <div class="spark" id="spark-pending"></div>
+      </a>
+      <a class="stat-card" href="/leases/">
+        <span class="label">leases</span>
+        <span class="val" id="stat-leases">–</span>
+        <span class="delta" id="delta-leases"></span>
+        <div class="spark" id="spark-leases"></div>
+      </a>
+      <a class="stat-card" href="/providers/">
+        <span class="label">providers</span>
+        <span class="val" id="stat-providers">–</span>
+        <span class="delta" id="delta-providers"></span>
+        <div class="spark" id="spark-providers"></div>
+      </a>
+    </section>
+
+    <section class="chart section-card">
+      <h2>block rate <span class="hint">last 5 min · 5s buckets</span></h2>
+      <div class="chart-body" id="block-rate"></div>
+    </section>
+
+    <section class="recent section-card">
+      <h2>recent blocks</h2>
+      <table>
+        <thead><tr>
+          <th>time</th>
+          <th>type</th>
+          <th>account</th>
+          <th>asset</th>
+          <th>amount</th>
+          <th>balance</th>
+          <th>hash</th>
+        </tr></thead>
+        <tbody id="blocks-tbody"><tr><td colspan="7" class="muted">loading…</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/dashboard.js"></script>
+</body>
+</html>

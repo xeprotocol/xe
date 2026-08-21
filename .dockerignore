@@ -1,0 +1,18 @@
+.git
+.github
+.claude
+dist
+data
+*.log
+logo.png
+# Compiled driver binaries that live at the repo root (see .gitignore); copying
+# them into the build context costs ~250MB and lands nothing in the image.
+xe
+blocklattice
+cli
+bench-tps
+fund-providers
+gen-genesis
+setup-treasury
+test-*
+!test_cluster.sh
