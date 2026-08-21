@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" width="128" height="128" alt="XE">
+  <img src="logo.svg" width="96" height="103" alt="XE">
 </p>
 
 <h1 align="center">XE</h1>
@@ -263,6 +263,24 @@ you through.
 
 ## License
 
-No licence has been chosen yet, so default copyright applies: all rights
-reserved. This tree is published for reading, building and testing. A licence
-will be chosen before mainnet.
+[GNU General Public License v3.0](LICENSE).
+
+You may use, study, modify and redistribute this software. If you distribute it,
+or a modified version of it, you must do so under the same licence and make the
+corresponding source available. There is no warranty.
+
+```
+Copyright (C) 2026 XE Protocol
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>.
+```
