@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>dao · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">dao governance</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+    <div class="info" id="info" role="status" aria-live="polite" hidden></div>
+
+    <section id="not-member-section" class="section-card" hidden>
+      <p class="muted" id="not-member-msg"></p>
+    </section>
+
+    <section id="unlock-section" class="section-card" hidden>
+      <h2>unlock <span class="hint" id="unlock-target"></span></h2>
+      <p class="muted">your wallet's pubkey is in the dao keyset. unlock to draft and sign state-chain blocks.</p>
+      <form id="unlock-form" class="passphrase-form">
+        <label>passphrase
+          <input type="password" id="unlock-passphrase" autocomplete="current-password" required autofocus>
+        </label>
+        <button type="submit">unlock</button>
+      </form>
+    </section>
+
+    <section id="dao-section" class="stack" hidden>
+      <section class="section-card">
+        <h2>state chain</h2>
+        <dl class="kv">
+          <dt>tip index</dt><dd><code id="tip-index">…</code></dd>
+          <dt>tip hash</dt><dd><code id="tip-hash">…</code></dd>
+          <dt>threshold</dt><dd><code id="threshold">…</code></dd>
+          <dt>this wallet</dt><dd><code id="self-pub">…</code> <span id="self-status" class="muted"></span></dd>
+        </dl>
+      </section>
+
+      <section class="section-card">
+        <h2>draft block <span class="hint" id="draft-state"></span></h2>
+        <div id="ops-list"></div>
+        <div class="actions" style="margin-top:0.5rem">
+          <button type="button" id="btn-add-op">+ add op</button>
+          <button type="button" id="btn-generate-hash">generate hash</button>
+          <button type="button" id="btn-reset-draft">reset draft</button>
+        </div>
+      </section>
+
+      <section id="hash-section" class="section-card" hidden>
+        <h2>hash</h2>
+        <pre id="draft-hash" class="raw-pre"></pre>
+      </section>
+
+      <section id="sigs-section" class="section-card" hidden>
+        <h2>signatures <span class="hint" id="sigs-count"></span></h2>
+        <div class="actions">
+          <button type="button" id="btn-sign-self">sign with my key</button>
+        </div>
+        <table>
+          <thead><tr><th>public key</th><th>label</th><th>signature</th><th></th></tr></thead>
+          <tbody id="sigs-tbody"><tr><td colspan="4" class="muted">no signatures yet</td></tr></tbody>
+        </table>
+
+        <h2>import signature</h2>
+        <p class="muted">paste a JSON object <code>{"public_key":"...", "signature":"..."}</code> from another member. signature is verified against the current draft hash before being added.</p>
+        <form id="import-form" class="passphrase-form inline-form">
+          <input type="text" id="import-json" placeholder='{"public_key":"...","signature":"..."}' autocomplete="off" required>
+          <button type="submit">import</button>
+        </form>
+
+        <div class="actions" style="margin-top:1rem">
+          <button type="button" id="btn-submit-block" disabled>submit block</button>
+          <span class="muted" id="submit-hint"></span>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/dao.js"></script>
+</body>
+</html>

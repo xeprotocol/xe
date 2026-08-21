@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>leases · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">leases</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+
+    <section id="list-section" class="section-card">
+      <h2>leases <span class="hint" id="list-count"></span></h2>
+      <div class="filter-bar" style="margin-bottom:0.5rem">
+        <label for="state-filter">state:</label>
+        <select id="state-filter">
+          <option value="">all</option>
+          <option value="created">created</option>
+          <option value="accepted">accepted</option>
+          <option value="settled">settled</option>
+          <option value="cancelled">cancelled</option>
+          <option value="unfulfilled">unfulfilled</option>
+        </select>
+      </div>
+      <table id="list-table">
+        <thead><tr>
+          <th data-sort="lease_hash">hash</th>
+          <th data-sort="consumer">consumer</th>
+          <th data-sort="provider">provider</th>
+          <th data-sort="cost">cost</th>
+          <th data-sort="stake">stake</th>
+          <th data-sort="resources">resources</th>
+          <th data-sort="status">status</th>
+        </tr></thead>
+        <tbody id="list-tbody"><tr><td colspan="7" class="muted">loading…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section id="detail-section" class="section-card" hidden>
+      <h2>lease</h2>
+      <dl class="kv" id="detail-kv"></dl>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/leases.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>conflicts · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">conflicts</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+
+    <section class="section-card">
+      <h2>open conflicts <span class="hint" id="count"></span></h2>
+      <div id="list"></div>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/conflicts.js"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+# Alertmanager configuration (#841).
+#
+# The finding this replaces: no alertmanager reference existed anywhere in the
+# project. There were dashboards and no alerting, which means every incident was
+# discovered by a human looking at a graph, or by a stranger reporting it.
+#
+# Set the receiver webhooks before deploying. An alertmanager with no working
+# receiver is the same as no alertmanager.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: [alertname, network]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # Consensus and supply criticals are the ones that cannot be fixed later by
+    # wiping — on mainnet there is no wipe. They page immediately and repeat
+    # aggressively.
+    - matchers: [severity="critical", category=~"consensus|supply"]
+      receiver: critical
+      group_wait: 0s
+      repeat_interval: 30m
+    - matchers: [severity="critical"]
+      receiver: critical
+      repeat_interval: 1h
+
+inhibit_rules:
+  # A node that is not scrapeable will trip every rule that depends on its
+  # series. Page once for the cause, not once per symptom.
+  - source_matchers: [alertname="XENodeDown"]
+    target_matchers: [category=~"consensus|readiness|network|supply"]
+    equal: [instance]
+  # Zero delegated weight implies an unreachable quorum and (shortly) a stalled
+  # finality. The root cause is the one to act on.
+  - source_matchers: [alertname="XEZeroDelegatedWeight"]
+    target_matchers: [alertname=~"XEQuorumMargin.*|XEFinalityStalled|XENodeNotReady"]
+    equal: [instance]
+  # A stale sampler makes every gauge from that instance untrustworthy.
+  - source_matchers: [alertname="XEObservabilitySamplerStale"]
+    target_matchers: [category=~"consensus|readiness"]
+    equal: [instance]
+
+receivers:
+  - name: default
+    # webhook_configs:
+    #   - url: https://example.invalid/alerts
+  - name: critical
+    # webhook_configs:
+    #   - url: https://example.invalid/pager

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>pending · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">pending</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+
+    <section class="section-card">
+      <h2>pending receives <span class="hint" id="list-count"></span></h2>
+      <table>
+        <thead><tr>
+          <th data-sort="time">time</th>
+          <th data-sort="amount" class="num">amount</th>
+          <th data-sort="asset">asset</th>
+          <th data-sort="source">from</th>
+          <th data-sort="destination">to</th>
+          <th data-sort="hash">send hash</th>
+        </tr></thead>
+        <tbody id="list-tbody"><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/pending.js"></script>
+</body>
+</html>

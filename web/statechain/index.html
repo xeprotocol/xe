@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>statechain · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">statechain</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+
+    <div id="overview-section" class="stack">
+      <section id="tip-section" class="section-card">
+        <h2>tip</h2>
+        <dl class="kv" id="tip-kv"><dt class="muted" colspan="2">loading…</dt></dl>
+      </section>
+
+      <section id="epochs-section" class="section-card">
+        <h2>recent epochs <span class="hint" id="epochs-count"></span></h2>
+        <table>
+          <thead><tr>
+            <th>epoch</th><th>phase</th><th>twap</th><th>twav</th>
+            <th>r_vol</th><th>r_pf</th><th>r_eff</th><th>source</th>
+            <th>window</th>
+          </tr></thead>
+          <tbody id="epochs-tbody"></tbody>
+        </table>
+      </section>
+
+      <section id="blocks-section" class="section-card">
+        <h2>recent state-chain blocks</h2>
+        <table>
+          <thead><tr><th>index</th><th>time</th><th>ops</th><th>sigs</th><th>hash</th></tr></thead>
+          <tbody id="sc-blocks-tbody"></tbody>
+        </table>
+      </section>
+
+      <section id="kv-section" class="section-card">
+        <h2>kv lookup</h2>
+        <form id="kv-form" class="kv-form">
+          <input type="text" id="kv-key" placeholder="key or prefix (e.g. epoch.42)" autocomplete="off">
+          <button type="submit">lookup</button>
+        </form>
+        <pre id="kv-result" class="raw-pre" hidden></pre>
+      </section>
+
+      <section id="kv-browse-section" class="section-card">
+        <h2>browse kv <span class="hint" id="kv-browse-count"></span></h2>
+        <form id="kv-browse-form" class="kv-form">
+          <input type="text" id="kv-filter" placeholder="filter keys (substring match)" autocomplete="off">
+          <button type="button" id="kv-refresh">refresh</button>
+        </form>
+        <dl class="kv kv-browse" id="kv-browse-list"><dt class="muted">loading…</dt></dl>
+      </section>
+    </div>
+
+    <div id="detail-section" class="stack" hidden>
+      <section class="section-card">
+        <h2>state-chain block</h2>
+        <dl class="kv" id="detail-kv"></dl>
+      </section>
+      <section class="section-card">
+        <h2>ops</h2>
+        <table>
+          <thead><tr><th>#</th><th>action</th><th>key</th><th>value</th></tr></thead>
+          <tbody id="ops-tbody"></tbody>
+        </table>
+      </section>
+      <section class="section-card">
+        <h2>signatures</h2>
+        <table>
+          <thead><tr><th>public key</th><th>signature</th></tr></thead>
+          <tbody id="sigs-tbody"></tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/statechain.js"></script>
+</body>
+</html>

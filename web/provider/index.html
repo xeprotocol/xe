@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>provider · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">provider dashboard</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+    <div class="info" id="info" role="status" aria-live="polite" hidden></div>
+
+    <section id="not-provider-section" class="section-card" hidden>
+      <p class="muted" id="not-provider-msg"></p>
+    </section>
+
+    <section id="provider-section" class="stack" hidden>
+      <div class="section-card">
+        <h2>identity</h2>
+        <dl class="kv">
+          <dt>account</dt><dd><code id="self-pub">…</code></dd>
+          <dt>cert</dt><dd id="cert-summary" class="muted">checking…</dd>
+        </dl>
+      </div>
+
+      <div class="section-card">
+        <h2>capacity &amp; utilisation</h2>
+        <table class="util-table">
+          <thead><tr><th>resource</th><th>used</th><th>capacity</th><th>util %</th><th></th></tr></thead>
+          <tbody id="util-tbody"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+        </table>
+        <p class="muted" id="active-count"></p>
+      </div>
+
+      <div class="section-card">
+        <h2>active leases <span class="hint" id="active-hint"></span></h2>
+        <table>
+          <thead><tr>
+            <th data-sort="start_time">start</th>
+            <th data-sort="lease_hash">lease</th>
+            <th data-sort="consumer">consumer</th>
+            <th data-sort="resources">resources</th>
+            <th data-sort="cost">cost</th>
+            <th data-sort="stake">stake</th>
+            <th data-sort="remaining">time remaining</th>
+          </tr></thead>
+          <tbody id="active-tbody"><tr><td colspan="7" class="muted">loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="section-card">
+        <h2>past leases <span class="hint" id="past-hint"></span></h2>
+        <table>
+          <thead><tr>
+            <th data-sort="start_time">start</th>
+            <th data-sort="lease_hash">lease</th>
+            <th data-sort="consumer">consumer</th>
+            <th data-sort="resources">resources</th>
+            <th data-sort="cost">cost</th>
+            <th data-sort="stake">stake</th>
+          </tr></thead>
+          <tbody id="past-tbody"><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/provider.js"></script>
+</body>
+</html>

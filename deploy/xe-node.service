@@ -1,0 +1,73 @@
+# XE node systemd unit (#839).
+#
+# Until now the operational definition of a node existed only as untracked
+# state on five machines. This file is that definition, in git.
+#
+# Install:
+#   sudo install -m 0755 xe /usr/local/bin/xe-node
+#   sudo install -m 0644 deploy/xe-node.service /etc/systemd/system/xe-node.service
+#   sudo install -m 0640 deploy/xe-node.env.example /etc/xe/xe-node.env   # then edit
+#   sudo useradd --system --home /var/lib/xe --create-home --shell /usr/sbin/nologin xe
+#   sudo systemctl daemon-reload && sudo systemctl enable --now xe-node
+#
+# Compute providers additionally need a drop-in granting kvm access:
+#   /etc/systemd/system/xe-node.service.d/kvm.conf
+#     [Service]
+#     SupplementaryGroups=kvm
+
+[Unit]
+Description=XE node
+Documentation=https://github.com/xeprotocol/core/blob/master/docs/run-a-node.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xe
+Group=xe
+EnvironmentFile=/etc/xe/xe-node.env
+ExecStart=/usr/local/bin/xe-node node \
+  --data ${XE_DATA_DIR} \
+  --port ${XE_P2P_PORT} \
+  --dial ${XE_BOOTSTRAP} \
+  --genesis-dir ${XE_GENESIS_DIR} \
+  --api-bind ${XE_API_BIND} \
+  --api-port ${XE_API_PORT} \
+  $XE_EXTRA_ARGS
+
+Restart=always
+RestartSec=5s
+# A node that cannot reach its bootstraps retries forever by design (the
+# bootstrap watchdog re-dials every 30s), so restart-rate limiting exists to
+# catch crash loops, not transient network loss.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Badger keeps many SSTs open; the default 1024 is not enough on a busy node.
+LimitNOFILE=65536
+
+# Hardening. The node needs outbound network, its data dir, and nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/xe
+# ProtectSystem=strict makes /etc read-only, which is what we want: the genesis
+# and env file are inputs, never written by the node.
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xe-node
+
+[Install]
+WantedBy=multi-user.target

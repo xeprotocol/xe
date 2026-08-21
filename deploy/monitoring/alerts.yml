@@ -1,0 +1,426 @@
+# Alert rules for the xe node (#841).
+#
+# Ordered by what they protect against, worst first. The top three cover the
+# failure modes that are SILENT — states in which the network is economically
+# broken while every naive check reports green. They are the reason this file
+# exists; everything below them is ordinary operational hygiene.
+#
+# Design rules used throughout:
+#   * Absent is not healthy. Every rule that could be evaluated against a
+#     missing series is paired with an `absent()` rule, because a node that
+#     stops exporting must not silently drop out of alerting.
+#   * `for:` windows are set from the consensus timings, not from taste: the
+#     stall fallback is 10s and the sweep interval is 15s, so anything under a
+#     minute is noise.
+#   * Every alert carries a `runbook` annotation pointing at the section of
+#     docs/runbook.md that says what to do. An alert with no procedure is a
+#     pager that trains people to ignore it.
+
+groups:
+  - name: xe-consensus-silent-failures
+    interval: 30s
+    rules:
+      # ------------------------------------------------------------------
+      # THE ONE THAT MATTERS MOST.
+      # Zero total delegated vote weight means no block can ever finalize.
+      # Blocks still commit, gossip still flows, block count still climbs,
+      # peers stay connected — and every account's spendable balance is
+      # empty because spendable counts finalized inflows only. Nothing else
+      # in this file, and nothing on /node, changes.
+      # ------------------------------------------------------------------
+      - alert: XEZeroDelegatedWeight
+        expr: xe_delegated_weight_micro_xe == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: consensus
+        annotations:
+          summary: "Zero delegated vote weight on {{ $labels.instance }} — finality is dead"
+          description: >-
+            Total delegated vote weight is 0. No block on this network can ever
+            finalize. Spendable balances will read empty for every account while
+            balances look normal. This is silent: block count keeps climbing and
+            peers stay connected. Most likely cause on a fresh network is a
+            genesis generated without a representative.
+          runbook: docs/runbook.md#quorum-loss-and-zero-delegated-weight
+
+      - alert: XEDelegatedWeightMetricAbsent
+        expr: absent(xe_delegated_weight_micro_xe)
+        for: 5m
+        labels:
+          severity: critical
+          category: consensus
+        annotations:
+          summary: "No delegated-weight metric is being reported"
+          description: >-
+            The series that detects silent finality death is missing entirely.
+            A node that stops exporting must not silently drop out of alerting —
+            an absent series is not a healthy one.
+          runbook: docs/runbook.md#node-unreachable-or-not-exporting
+
+      # Dead weight in the quorum denominator. Undelegated XE is excluded
+      # from the denominator, but weight delegated to a representative that
+      # never votes is NOT: it counts against the 67% threshold and never
+      # contributes. At ~33% dead every position falls to the 10s stall
+      # fallback; at 50% finalization halts network-wide with no in-protocol
+      # recovery. Warn well before either cliff.
+      - alert: XEQuorumMarginLow
+        expr: xe_quorum_margin_ratio < 0.10 and xe_delegated_weight_micro_xe > 0
+        for: 10m
+        labels:
+          severity: warning
+          category: consensus
+        annotations:
+          summary: "Quorum margin {{ $value | printf \"%.3f\" }} on {{ $labels.instance }}"
+          description: >-
+            Less than 10 points of headroom above the 67% quorum threshold.
+            Weight held by representatives that are not voting counts in the
+            denominator and never contributes. Identify which representatives
+            have gone silent before the margin reaches zero.
+          runbook: docs/runbook.md#quorum-margin-erosion
+
+      - alert: XEQuorumMarginNegative
+        expr: xe_quorum_margin_ratio < 0 and xe_delegated_weight_micro_xe > 0
+        for: 5m
+        labels:
+          severity: critical
+          category: consensus
+        annotations:
+          summary: "Quorum unreachable on {{ $labels.instance }} (margin {{ $value | printf \"%.3f\" }})"
+          description: >-
+            Voting weight is below the 67% threshold. Every position is falling
+            through to the 10s stall fallback. At 50% dead weight finalization
+            halts network-wide and there is no in-protocol recovery.
+          runbook: docs/runbook.md#quorum-loss-and-zero-delegated-weight
+
+      # Finality stopped advancing while work is pending. Independent of the
+      # weight checks on purpose: this catches a stall whose cause is not
+      # weight at all (a wedged account, a non-converging conflict).
+      - alert: XEFinalityStalled
+        expr: xe_finality_stall_seconds > 120
+        for: 3m
+        labels:
+          severity: critical
+          category: consensus
+        annotations:
+          summary: "Finality stalled {{ $value | printf \"%.0f\" }}s on {{ $labels.instance }}"
+          description: >-
+            The final-height watermark has not advanced while unfinalized
+            positions exist. Blocks are being accepted and nothing is becoming
+            irreversible.
+          runbook: docs/runbook.md#finality-stall
+
+      - alert: XEFinalityLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, instance) (rate(xe_finality_latency_seconds_bucket[10m]))) > 30
+        for: 15m
+        labels:
+          severity: warning
+          category: consensus
+        annotations:
+          summary: "p99 finality latency {{ $value | printf \"%.0f\" }}s on {{ $labels.instance }}"
+          description: >-
+            Blocks are finalizing, but slowly. Sustained latency above the 10s
+            stall fallback means positions are routinely resolving on the
+            fallback path rather than on a real 67% supermajority.
+          runbook: docs/runbook.md#finality-stall
+
+      # In-memory vote weight has diverged from the ledger. This feeds quorum
+      # math directly, so any non-zero value is a correctness problem, not a
+      # capacity one (#728).
+      - alert: XEDelegationUnderflow
+        expr: increase(xe_delegation_underflows[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: consensus
+        annotations:
+          summary: "Delegation weight underflow on {{ $labels.instance }}"
+          description: >-
+            Representative vote weight underflowed. In-memory weight has
+            diverged from the ledger and is feeding quorum math. Capture state
+            before restarting — a restart rebuilds the weights and destroys the
+            evidence.
+          runbook: docs/runbook.md#delegation-underflow
+
+  - name: xe-readiness
+    interval: 30s
+    rules:
+      - alert: XENodeNotReady
+        expr: xe_ready == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: readiness
+        annotations:
+          summary: "{{ $labels.instance }} not ready"
+          description: >-
+            GET /ready is failing. Query xe_ready_check to see which gate:
+            xe_ready_check{instance="{{ $labels.instance }}"} == 0.
+          runbook: docs/runbook.md#a-node-reports-not-ready
+
+      # A readiness check that cannot be assessed is not a passing one. If a
+      # gate stops being evaluable, the invariant it guards is unguarded, and
+      # that must page rather than disappear.
+      - alert: XEReadyCheckUnevaluated
+        expr: xe_ready_check_evaluated == 0
+        for: 30m
+        labels:
+          severity: warning
+          category: readiness
+        annotations:
+          summary: "Readiness check {{ $labels.check }} unevaluated on {{ $labels.instance }}"
+          description: >-
+            This gate has been unable to assess its invariant for 30 minutes.
+            An unchecked invariant that reads like a passed one is how a gate
+            fails open.
+          runbook: docs/runbook.md#a-readiness-check-cannot-be-evaluated
+
+      # The sampler feeds every gauge here. If it wedges, everything it owns
+      # freezes at its last value — a frozen "ready" is indistinguishable from
+      # a live one, which is exactly why sample age is recomputed at scrape
+      # time rather than by the sampler itself.
+      - alert: XEObservabilitySamplerStale
+        expr: xe_sample_age_seconds > 120
+        for: 5m
+        labels:
+          severity: critical
+          category: readiness
+        annotations:
+          summary: "Observability sampler stale ({{ $value | printf \"%.0f\" }}s) on {{ $labels.instance }}"
+          description: >-
+            The node's observability sampler has not completed a pass. Every
+            other gauge from this instance is stale and must not be trusted.
+            Most likely a blocked ledger lock.
+          runbook: docs/runbook.md#observability-sampler-stale
+
+      - alert: XENodeDown
+        expr: up{job="xe-node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "{{ $labels.instance }} is not scrapeable"
+          runbook: docs/runbook.md#node-unreachable-or-not-exporting
+
+  - name: xe-network
+    interval: 30s
+    rules:
+      # The documented health gate is FRONTIER PARITY, not block count
+      # (block count legitimately drops on restart). Distinct fingerprints
+      # across the fleet for a sustained period means the nodes disagree
+      # about the lattice.
+      - alert: XEFrontierDivergence
+        expr: count(count_values("fp", xe_frontier_fingerprint)) > 1
+        for: 10m
+        labels:
+          severity: critical
+          category: consensus
+        annotations:
+          summary: "Frontier fingerprints disagree across the fleet"
+          description: >-
+            Nodes report different frontier fingerprints. Brief divergence
+            during writes is normal; ten minutes is not. Do NOT wipe and do NOT
+            roll clean master onto a live network.
+          runbook: docs/runbook.md#frontier-divergence
+
+      # There is no fork machinery. An unknown block type hard-rejects, the
+      # error is not retryable, and the peer's block is quarantined — which in
+      # a lattice freezes that account chain. A chain split shows up here
+      # first, on some nodes and not others.
+      - alert: XEBlocksQuarantined
+        expr: increase(xe_blocks_quarantined_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          category: network
+        annotations:
+          summary: "{{ $labels.instance }} quarantined {{ $value | printf \"%.0f\" }} block(s)"
+          description: >-
+            Blocks were permanently rejected during sync. If this fires on some
+            nodes and not others, treat it as a suspected chain split until
+            proven otherwise: there is no fork machinery, so a node that cannot
+            decode a block freezes that account chain.
+          runbook: docs/runbook.md#blocks-quarantined--suspected-split
+
+      - alert: XEConflictsOpen
+        expr: xe_conflicts_open > 0
+        for: 10m
+        labels:
+          severity: warning
+          category: consensus
+        annotations:
+          summary: "{{ $value }} unresolved conflict(s) on {{ $labels.instance }}"
+          runbook: docs/runbook.md#conflict-not-converging
+
+      - alert: XEPeerCountLow
+        expr: xe_peer_count < 2
+        for: 10m
+        labels:
+          severity: warning
+          category: network
+        annotations:
+          summary: "{{ $labels.instance }} has {{ $value }} peer(s)"
+          description: >-
+            A node's honest peer set is effectively its dial list; a low peer
+            count is both a liveness risk and an eclipse risk.
+          runbook: docs/runbook.md#low-peer-count--isolated-node
+
+      - alert: XEDroppedBlocks
+        expr: increase(xe_dropped_blocks_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          category: network
+        annotations:
+          summary: "{{ $labels.instance }} shed blocks from the gossip receive path"
+          description: >-
+            The gossip receive channel filled and blocks were dropped. The node
+            is falling behind under load.
+          runbook: docs/runbook.md#dropped-blocks-under-load
+
+      - alert: XEVersionSpread
+        expr: count(count by (version) (xe_build_info)) > 1
+        for: 30m
+        labels:
+          severity: warning
+          category: release
+        annotations:
+          summary: "Multiple node versions on the network"
+          description: >-
+            Peers more than two minor versions apart are banned outright, so a
+            sustained version spread ends in partition. Expected briefly during
+            a serial roll.
+          runbook: docs/runbook.md#bad-release--rollback
+
+      - alert: XENetworkIDMismatch
+        expr: count(count by (network_id) (xe_build_info)) > 1
+        for: 5m
+        labels:
+          severity: critical
+          category: release
+        annotations:
+          summary: "Nodes report different network ids"
+          description: >-
+            A binary carrying the wrong embedded genesis has been deployed.
+            Mismatch fails silently at the protocol level; this is the only
+            place it is visible.
+          runbook: docs/runbook.md#network-id-mismatch
+
+  - name: xe-supply-and-resources
+    interval: 60s
+    rules:
+      # XE is created only by genesis and by lease-settle emission. Any other
+      # movement in total XE supply is, by definition, a bug or an exploit.
+      - alert: XESupplyChanged
+        expr: abs(delta(xe_supply_micro_units{asset="XE"}[1h])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: supply
+        annotations:
+          summary: "XE supply changed on {{ $labels.instance }}"
+          description: >-
+            Total XE supply moved. XE is minted only at genesis and by
+            lease-settle emission; on a thin network without leases it must be
+            constant, so treat any change as a suspected economic exploit until
+            reconciled against settled leases. Once compute is activated,
+            retune this to alert on change that is NOT accounted for by
+            emission rather than on any change at all.
+          runbook: docs/runbook.md#supply-mismatch
+
+      # Stronger, and earlier, than nodes disagreeing with each other: this is
+      # one node's own books failing to balance against the conservation
+      # identity in core/supply.go (#837). A single node reporting it is enough
+      # — the identity is computed from that node's chains, so it does not need
+      # a second opinion to be a fault.
+      - alert: XERepEligibilityFailedOpen
+        expr: xe_rep_eligibility_failed_open == 1
+        for: 5m
+        labels:
+          severity: warning
+          category: consensus
+        annotations:
+          summary: "sys.representatives is published but NOT being enforced on {{ $labels.instance }}"
+          description: >-
+            The representative-eligibility allowlist matched zero delegated
+            weight, so the node ignored it and is counting every representative
+            in the quorum denominator (#832). Failing open is the correct
+            choice — the alternative halts finality — but the published policy
+            is not in force, and nothing else on the node says so. Check the
+            allowlist against GET /delegation: it is usually an address/pubkey
+            confusion (#829) or a stale address set.
+          runbook: docs/runbook.md#quorum-loss
+
+      - alert: XESupplyNotConserved
+        expr: xe_supply_conserved == 0
+        for: 0m
+        labels:
+          severity: critical
+          category: supply
+        annotations:
+          summary: "{{ $labels.asset }} supply identity does not balance on {{ $labels.instance }}"
+          description: >-
+            accounted != created for this asset: balances + in-flight +
+            locked stake + destroyed does not reconcile with genesis + minted +
+            emitted. Treat as a suspected economic exploit or a ledger
+            accounting fault until reconciled. GET /supply carries the signed
+            discrepancy and the per-term breakdown.
+          runbook: docs/runbook.md#supply-mismatch
+
+      - alert: XESupplyDisagreement
+        expr: count by (asset) (count_values by (asset) ("supply", xe_supply_micro_units)) > 1
+        for: 15m
+        labels:
+          severity: critical
+          category: supply
+        annotations:
+          summary: "Nodes disagree on {{ $labels.asset }} supply"
+          runbook: docs/runbook.md#supply-mismatch
+
+      # The disk-full class has already taken this project's testnet down once.
+      - alert: XEDiskSpaceLow
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+        for: 10m
+        labels:
+          severity: warning
+          category: resources
+        annotations:
+          summary: "Less than 15% disk free on {{ $labels.instance }}"
+          runbook: docs/runbook.md#disk-pressure
+
+      - alert: XEDiskSpaceCritical
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.05
+        for: 2m
+        labels:
+          severity: critical
+          category: resources
+        annotations:
+          summary: "Less than 5% disk free on {{ $labels.instance }}"
+          description: >-
+            A full disk on this project has previously corrupted node auth for
+            about a week. Act now.
+          runbook: docs/runbook.md#disk-pressure
+
+      - alert: XEStoreGrowthFast
+        expr: increase(xe_store_size_bytes[6h]) > 5e9
+        for: 0m
+        labels:
+          severity: warning
+          category: resources
+        annotations:
+          summary: "Store grew {{ $value | humanize1024 }}B in 6h on {{ $labels.instance }}"
+          runbook: docs/runbook.md#disk-pressure
+
+      - alert: XEProviderCertificateInvalid
+        expr: xe_certificate_valid == 0 and on(instance) xe_build_info{role="provider"} == 1
+        for: 15m
+        labels:
+          severity: warning
+          category: leases
+        annotations:
+          summary: "Provider {{ $labels.instance }} holds no valid performance certificate"
+          description: >-
+            A provider without a valid unexpired certificate cannot be leased
+            from at all, and nothing else about the node looks wrong.
+          runbook: docs/runbook.md#provider-cannot-be-leased-from

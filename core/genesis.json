@@ -1,0 +1,12 @@
+{
+    "type": "genesis",
+    "account": "378d0f5c20635de5a317ad73d5886e93cf6b0883a9d84a7ab89efac4b65a149b",
+    "previous": "0",
+    "balance": 42000000000000,
+    "timestamp": 0,
+    "asset": "XE",
+    "representative": "378d0f5c20635de5a317ad73d5886e93cf6b0883a9d84a7ab89efac4b65a149b",
+    "pub_key": "cab9462b5c6c3abf83431ea42a3265b755c55989b0bf332869825908c9dbe780",
+    "signature": "4a232116cd940ca412837afc3bb9640edf83b4c456947ed349e8dae972ee7f8b3c014eea96cd71b41df21737fd5dd6e067f80aeaf9d60efc2a8da4a921002a0a",
+    "hash": "7461d626af780cb671d04bd15736f7b4f4673d5f60796ff9d268c646492594e7"
+}
