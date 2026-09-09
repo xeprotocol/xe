@@ -1,0 +1,50 @@
+[Unit]
+Description=XE node
+Documentation=https://github.com/xeprotocol/xe/blob/master/docs/run-a-node.md
+After=network-online.target
+Wants=network-online.target
+
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=xe
+Group=xe
+EnvironmentFile=/etc/xe/xe-node.env
+ExecStart=/usr/local/bin/xe-node node \
+  --data ${XE_DATA_DIR} \
+  --port ${XE_P2P_PORT} \
+  --dial ${XE_BOOTSTRAP} \
+  --genesis-dir ${XE_GENESIS_DIR} \
+  --api-bind ${XE_API_BIND} \
+  --api-port ${XE_API_PORT} \
+  $XE_EXTRA_ARGS
+
+Restart=always
+RestartSec=5s
+
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/xe
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xe-node
+
+[Install]
+WantedBy=multi-user.target

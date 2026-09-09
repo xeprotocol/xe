@@ -1,0 +1,99 @@
+{
+    "index": 0,
+    "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "ops": [
+        {
+            "action": "set",
+            "key": "sys.dao_keyset",
+            "value": {
+                "keys": [
+                    "a79cf4cde8ae0fab4497254ee818be550fb18c1d728539f5c36ef2626214798e",
+                    "58094979c222697b4ba0b2d568a101b9a4b53dcd7d91ce7bcdc80c03426aa4dd",
+                    "542bac96949f26896718521ad58b61f3bc60d5c219812b0752eacf6e48478c76"
+                ],
+                "threshold": 2
+            }
+        },
+        {
+            "action": "set",
+            "key": "sys.network_id",
+            "value": "testnet-0003"
+        },
+        {
+            "action": "set",
+            "key": "sys.timekeepers",
+            "value": {
+                "keys": [
+                    "ea734fe4f63fb2c23338741479f301d7aecbd829e462c97a53c25201253342a4",
+                    "7a1a067fa5de724009b078d1274ce3152ca3f8289570f24c1e1c00cca24ad613",
+                    "ff654f983795bca6eac568b66dea206a34227cb5ae59765e4fe89a1755aba189"
+                ],
+                "threshold": 2
+            }
+        },
+        {
+            "action": "set",
+            "key": "sys.oracle",
+            "value": {
+                "keys": [
+                    "66c363dbe32f0a74701d74f5b15bc4b7b091c7c678e58a678023f30a4e37860c"
+                ],
+                "threshold": 1,
+                "allowed_prefix": "epoch."
+            }
+        },
+        {
+            "action": "set",
+            "key": "sys.minter",
+            "value": {
+                "keys": [
+                    "0af720ef656c57b9882256f6a2e5ef438114ababcfac6361d238af2828fcd37d"
+                ]
+            }
+        },
+        {
+            "action": "set",
+            "key": "sys.phase",
+            "value": 1
+        },
+        {
+            "action": "set",
+            "key": "sys.tokenomics",
+            "value": {
+                "r_init": 2000,
+                "r_floor": 100,
+                "v_half": 500000000,
+                "price_tier_1": 500,
+                "price_tier_2": 1010,
+                "price_tier_3": 10000,
+                "r_price_floor_tier_1": 2000,
+                "r_price_floor_tier_2": 1250,
+                "r_collusion_factor_milli": 950,
+                "hermite_fdv_min_usd": 5000000,
+                "hermite_fdv_max_usd": 1000000000,
+                "hermite_ceiling_milli": 1550,
+                "hermite_floor_milli": 1120
+            }
+        },
+        {
+            "action": "set",
+            "key": "epoch.0",
+            "value": {
+                "epoch": 0,
+                "start_ns": 0,
+                "end_ns": 0,
+                "twap_milli_usd": 0,
+                "twav_milli_usd": 0,
+                "r_volume": 2000,
+                "r_price_floor": 0,
+                "r_effective": 2000,
+                "r_source": "genesis",
+                "phase": 1,
+                "payout_cap": 0
+            }
+        }
+    ],
+    "signatures": [],
+    "hash": "5ea4cf0ee4c919c54af9476a93fe748fe87babf1432a8a53393d2f73cc6873e9",
+    "timestamp": 0
+}

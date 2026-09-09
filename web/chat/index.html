@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>chat · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">chat</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+    <div class="info" id="info" role="status" aria-live="polite" hidden></div>
+
+    <section id="setup-section" class="section-card" hidden>
+      <p class="muted">no wallet in this browser. <a href="/wallet/">set up a wallet</a> first.</p>
+    </section>
+
+    <section id="unlock-section" class="section-card" hidden>
+      <h2>unlock <span class="hint" id="unlock-target"></span></h2>
+      <p class="muted">unlock your wallet to send and receive signed chat messages.</p>
+      <form id="unlock-form" class="passphrase-form">
+        <label>passphrase
+          <input type="password" id="unlock-passphrase" autocomplete="current-password" required autofocus>
+        </label>
+        <button type="submit">unlock</button>
+      </form>
+    </section>
+
+    <section id="chat-section" class="stack" hidden>
+      <section class="section-card">
+        <h2>identity</h2>
+        <dl class="kv">
+          <dt>self</dt><dd><code id="self-addr">…</code></dd>
+          <dt>node peer</dt><dd><code id="node-peer">…</code></dd>
+          <dt>directory</dt><dd><span id="dir-status" class="muted">…</span></dd>
+        </dl>
+      </section>
+
+      <section class="section-card">
+        <h2>contacts <span class="hint" id="contacts-count"></span></h2>
+        <form id="add-contact-form" class="passphrase-form inline-form">
+          <input type="text" id="add-contact-input" placeholder="paste 64-hex address" autocomplete="off" minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}" required>
+          <button type="submit">+ add</button>
+        </form>
+        <div class="pills" id="contacts-pills" style="margin-top:0.5rem"></div>
+      </section>
+
+      <section id="conversation-section" class="section-card" hidden>
+        <h2>conversation <span class="hint" id="active-contact"></span></h2>
+        <div id="messages" class="messages"></div>
+        <form id="send-form" class="passphrase-form inline-form">
+          <input type="text" id="send-input" placeholder="message" autocomplete="off" required>
+          <button type="submit">send</button>
+        </form>
+      </section>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/chat.js"></script>
+</body>
+</html>

@@ -1,0 +1,905 @@
+{
+  "uid": "xe-node-health",
+  "title": "XE node health",
+  "description": "Node and network health for the xe protocol. The top row is the point: zero delegated vote weight, an eroding quorum margin and a stalled finality are all states in which the network is economically broken while every naive check reports green.",
+  "tags": [
+    "xe"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PROM"
+        },
+        "query": "label_values(xe_build_info, node)",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Silent failure modes \u2014 these are the reason this dashboard exists",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "title": "Delegated vote weight (micro-XE)",
+      "type": "timeseries",
+      "description": "ZERO MEANS FINALITY IS DEAD. Blocks still commit, peers stay connected, block count climbs \u2014 and nothing ever finalizes. Spendable balances read empty for every account while balances look normal.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_delegated_weight_micro_xe",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "area"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Quorum margin (fraction above the 67% threshold)",
+      "type": "timeseries",
+      "description": "Voting weight over total delegated weight, minus 0.67. Below 0 every position falls to the 10s stall fallback. At -0.17 (50% dead weight) finalization halts network-wide with no in-protocol recovery.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_quorum_margin_ratio",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Finality stall (seconds since the watermark moved)",
+      "type": "timeseries",
+      "description": "Seconds since the final-height watermark last advanced while unfinalized positions exist. 0 when there is nothing waiting.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_finality_stall_seconds",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Ready",
+      "type": "stat",
+      "description": "GET /ready. Asserts finality is advancing \u2014 not merely that the process is up.",
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_ready",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "NOT READY",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "READY",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Failing readiness checks",
+      "type": "table",
+      "description": "Which gate is red. Names match the JSON body of GET /ready.",
+      "gridPos": {
+        "h": 5,
+        "w": 10,
+        "x": 4,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_ready_check == 0",
+          "legendFormat": "{{node}} / {{check}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 6,
+      "title": "Unevaluated readiness checks",
+      "type": "table",
+      "description": "A gate that cannot assess its invariant is not a passing one. Anything here for a sustained period means that invariant is unguarded.",
+      "gridPos": {
+        "h": 5,
+        "w": 10,
+        "x": 14,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_ready_check_evaluated == 0",
+          "legendFormat": "{{node}} / {{check}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "Consensus",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "collapsed": false
+    },
+    {
+      "id": 7,
+      "title": "Representatives (total vs voting)",
+      "type": "timeseries",
+      "description": "Weight held by representatives that never vote still counts in the quorum denominator. The gap between these two lines is dead weight.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_representatives_total",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        },
+        {
+          "expr": "xe_active_representatives_total",
+          "legendFormat": "{{node}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Finality latency (p50 / p99)",
+      "type": "timeseries",
+      "description": "Block timestamp to finalization. Sustained values above the 10s stall fallback mean positions are resolving on the fallback rather than on a real supermajority.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, node) (rate(xe_finality_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, node) (rate(xe_finality_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{node}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "title": "Unfinalized positions / open conflicts",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_unfinalized_positions",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        },
+        {
+          "expr": "xe_conflicts_open",
+          "legendFormat": "{{node}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "title": "Finalizations per second",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "rate(xe_finalizations_total[5m])",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "title": "Delegation underflows (any non-zero is a correctness fault)",
+      "type": "timeseries",
+      "description": "In-memory vote weight diverging from the ledger, feeding quorum math.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_delegation_underflows",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "title": "Delegated weight as a fraction of XE supply",
+      "type": "timeseries",
+      "description": "Undelegated XE is excluded from the quorum denominator, so this is how much of the coin supply is actually backing consensus.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_delegated_weight_ratio",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 102,
+      "type": "row",
+      "title": "Network agreement",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "collapsed": false
+    },
+    {
+      "id": 13,
+      "title": "Distinct frontier fingerprints across the fleet",
+      "type": "timeseries",
+      "description": "The documented health gate is frontier parity, NOT block count (block count legitimately drops on restart). 1 means the fleet agrees. Brief divergence during writes is normal.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 28
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "count(count by (xe_frontier_fingerprint) (xe_frontier_fingerprint))",
+          "legendFormat": "distinct",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "title": "Quarantined blocks",
+      "type": "timeseries",
+      "description": "There is no fork machinery: an unknown block type hard-rejects non-retryably and freezes that account chain. If this climbs on some nodes and not others, suspect a chain split.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 28
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_quarantined_blocks",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(xe_blocks_quarantined_total[15m])",
+          "legendFormat": "{{node}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 15,
+      "title": "Distinct versions / network ids",
+      "type": "timeseries",
+      "description": "Peers more than two minor versions apart are banned outright. A network-id spread means a binary with the wrong embedded genesis was deployed \u2014 which otherwise fails silently.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 28
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "count(count by (version) (xe_build_info))",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        },
+        {
+          "expr": "count(count by (network_id) (xe_build_info))",
+          "legendFormat": "{{node}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 103,
+      "type": "row",
+      "title": "Throughput, peers and resources",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "collapsed": false
+    },
+    {
+      "id": 16,
+      "title": "Peers",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_peer_count",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 17,
+      "title": "Blocks added per second",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "sum by (node) (rate(xe_blocks_added_total[5m]))",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 18,
+      "title": "Votes ingested per second",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "sum by (node, result) (rate(xe_votes_ingested_total[5m]))",
+          "legendFormat": "{{node}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 19,
+      "title": "Dropped blocks (gossip receive channel full)",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "rate(xe_dropped_blocks_total[5m])",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "title": "Supply per asset (micro-units)",
+      "type": "timeseries",
+      "description": "XE is created only at genesis and by lease-settle emission. Any other movement in XE supply is a bug or an exploit.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 41
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_supply_micro_units",
+          "legendFormat": "{{node}} {{asset}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 21,
+      "title": "Store size",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 41
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_store_size_bytes",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 22,
+      "title": "Observability sample age",
+      "type": "timeseries",
+      "description": "Recomputed at scrape time, not by the sampler. A climbing value means the sampler is wedged and every other gauge on this dashboard is stale.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 41
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "xe_sample_age_seconds",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 23,
+      "title": "Goroutines",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 47
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "go_goroutines{job=\"xe-node\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 24,
+      "title": "Resident memory",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 47
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes{job=\"xe-node\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 25,
+      "title": "Sync rounds per second",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 47
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "targets": [
+        {
+          "expr": "sum by (node, result) (rate(xe_sync_rounds_total[5m]))",
+          "legendFormat": "{{node}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

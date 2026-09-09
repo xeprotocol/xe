@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>wallets · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">manage wallets</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+    <div class="info" id="info" role="status" aria-live="polite" hidden></div>
+
+    <section id="empty-section" class="section-card" hidden>
+      <p class="muted">no wallets are saved in this browser. <a href="/wallet/">go to /wallet/</a> to create or import one.</p>
+    </section>
+
+    <section id="list-section" class="section-card">
+      <h2>wallets <span class="hint" id="list-count"></span>
+        <button type="button" id="btn-add-wallet" class="hint-btn" style="float:right">+ add wallet</button>
+      </h2>
+      <table>
+        <thead><tr>
+          <th>active</th><th>name</th><th>address</th><th>created</th><th></th>
+        </tr></thead>
+        <tbody id="list-tbody"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section id="add-section" class="section-card" hidden>
+      <h2>add wallet</h2>
+      <form id="add-form" class="passphrase-form">
+        <label>name (optional)
+          <input type="text" id="add-name" autocomplete="off" maxlength="32" placeholder="main">
+        </label>
+        <label>seed source
+          <select id="add-mode">
+            <option value="create">create — generate a new random seed</option>
+            <option value="import">import — paste a 64-hex seed</option>
+          </select>
+        </label>
+        <label id="add-seed-label" hidden>seed (64 hex characters)
+          <input type="text" id="add-seed" autocomplete="off" minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}" placeholder="0123abcd…">
+        </label>
+        <label id="add-passphrase-label">passphrase
+          <input type="password" id="add-passphrase" autocomplete="current-password">
+        </label>
+        <div class="actions">
+          <button type="submit">add</button>
+          <button type="button" id="btn-cancel-add">cancel</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="reveal-section" class="section-card" hidden>
+      <h2>reveal seed <span class="hint" id="reveal-target"></span></h2>
+      <p class="muted">enter the passphrase to decrypt this wallet. seed is shown only in memory.</p>
+      <form id="reveal-form" class="passphrase-form inline-form">
+        <input type="password" id="reveal-passphrase" placeholder="passphrase" autocomplete="current-password" required>
+        <button type="submit">reveal</button>
+        <button type="button" id="btn-cancel-reveal">cancel</button>
+      </form>
+      <div id="reveal-output" hidden>
+        <pre id="reveal-display" class="raw-pre"></pre>
+        <div class="actions" style="margin-top:0.5rem">
+          <button type="button" id="btn-copy-reveal">copy</button>
+          <button type="button" id="btn-hide-reveal">hide</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="rename-section" class="section-card" hidden>
+      <h2>rename wallet <span class="hint" id="rename-target"></span></h2>
+      <form id="rename-form" class="passphrase-form inline-form">
+        <input type="text" id="rename-name" autocomplete="off" maxlength="32" required>
+        <button type="submit">save</button>
+        <button type="button" id="btn-cancel-rename">cancel</button>
+      </form>
+    </section>
+
+    <section id="remove-section" class="section-card" hidden>
+      <h2>remove wallet <span class="hint" id="remove-target"></span></h2>
+      <div class="seed-confirm">
+        <p>removing deletes this wallet's encrypted seed from this browser. it cannot be undone. if the seed is not backed up elsewhere, any funds held by this account are permanently unrecoverable.</p>
+        <p class="muted">to back it up first: cancel, then use <strong>reveal seed</strong> on this wallet and store the seed somewhere safe.</p>
+      </div>
+      <form id="remove-form" class="passphrase-form">
+        <label>type <code id="remove-token"></code> to confirm
+          <input type="text" id="remove-confirm" autocomplete="off" required>
+        </label>
+        <div class="actions">
+          <button type="submit" class="warn">remove wallet</button>
+          <button type="button" id="btn-cancel-remove">cancel</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/wallets.js"></script>
+</body>
+</html>

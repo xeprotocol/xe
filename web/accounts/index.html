@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>accounts · xe</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header id="xe-header"></header>
+  <nav id="xe-subnav" class="nav-secondary"></nav>
+
+  <main>
+    <header class="page-head">
+      <h1 id="page-title">accounts</h1>
+      <span class="page-sub" id="page-sub" hidden></span>
+    </header>
+
+    <div class="error" id="error" role="alert" aria-live="assertive" hidden></div>
+
+    <section id="list-section" class="section-card">
+      <h2>accounts <span class="hint" id="list-count"></span> <a href="/frontiers/" class="hint-link">view frontiers →</a></h2>
+      <table>
+        <thead><tr>
+          <th data-sort="address">address</th>
+          <th data-sort="xe" class="num">xe</th>
+          <th data-sort="xusd" class="num">xusd</th>
+          <th data-sort="blocks" class="num">blocks</th>
+          <th data-sort="frontier">frontier</th>
+          <th data-sort="last">last block</th>
+        </tr></thead>
+        <tbody id="list-tbody"><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+    </section>
+
+    <div id="detail-section" class="stack" hidden>
+      <section class="section-card">
+        <h2>account</h2>
+        <dl class="kv">
+          <dt>address</dt>
+          <dd><code id="f-address">…</code></dd>
+        </dl>
+      </section>
+
+      <section id="balances-section" class="section-card" hidden>
+        <h2>balances</h2>
+        <table>
+          <thead><tr><th>asset</th><th>amount</th></tr></thead>
+          <tbody id="balances-tbody"></tbody>
+        </table>
+      </section>
+
+      <section id="keyset-section" class="section-card" hidden>
+        <h2>multisig keyset</h2>
+        <dl class="kv" id="keyset-kv"></dl>
+      </section>
+
+      <section id="pending-section" class="section-card" hidden>
+        <h2>pending receives <span class="hint" id="pending-count"></span></h2>
+        <table>
+          <thead><tr><th>time</th><th>asset</th><th>amount</th><th>from</th><th>send block</th></tr></thead>
+          <tbody id="pending-tbody"></tbody>
+        </table>
+      </section>
+
+      <section class="section-card">
+        <h2>recent chain <span class="hint" id="chain-count"></span></h2>
+        <table>
+          <thead><tr><th>time</th><th>type</th><th>asset</th><th>balance</th><th>hash</th></tr></thead>
+          <tbody id="chain-tbody"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+
+  <script type="module" src="/assets/nav.js"></script>
+  <script type="module" src="/assets/account.js"></script>
+</body>
+</html>

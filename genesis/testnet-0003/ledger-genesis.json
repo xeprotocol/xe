@@ -1,0 +1,18 @@
+{
+    "type": "genesis",
+    "account": "0b102ffe934b5177e32a4439d8434ad7b11fc541cb73dd57a07591a23f83078b",
+    "previous": "0",
+    "balance": 42000000000000,
+    "timestamp": 0,
+    "asset": "XE",
+    "representative": "a06e32c72e3b744e946ee13e797edefeed45c51354bf10499e73b1cff8582f95",
+    "pub_key": "01593449acffe49288031784888568095369acf4c65d17e2160f1d8732d3fa7c",
+    "lease_min_duration_secs": 5,
+    "lease_settle_grace_ns": 120000000000,
+    "lease_force_settle_gap_ns": 300000000000,
+    "lease_escrow_expiry_ns": 3600000000000,
+    "lease_archive_gap_ns": 600000000000,
+    "max_attestation_skew_ns": 60000000000,
+    "signature": "c5e89746b4ed7410da4e31a376fce127e5398abee7bf6c035aa29d8f5587af255be3a5a84e66bf8ccb1b1cd565237b4e6b980d88b2dc93e372987e2d8c60090f",
+    "hash": "946597b85290426dfab812778387b93b2b3a41291ebceaac02ca0bbb0e3791ab"
+}

@@ -1,0 +1,32 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: [alertname, network]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="critical", category=~"consensus|supply"]
+      receiver: critical
+      group_wait: 0s
+      repeat_interval: 30m
+    - matchers: [severity="critical"]
+      receiver: critical
+      repeat_interval: 1h
+
+inhibit_rules:
+  - source_matchers: [alertname="XENodeDown"]
+    target_matchers: [category=~"consensus|readiness|network|supply"]
+    equal: [instance]
+  - source_matchers: [alertname="XEZeroDelegatedWeight"]
+    target_matchers: [alertname=~"XEQuorumMargin.*|XEFinalityStalled|XENodeNotReady"]
+    equal: [instance]
+  - source_matchers: [alertname="XEObservabilitySamplerStale"]
+    target_matchers: [category=~"consensus|readiness"]
+    equal: [instance]
+
+receivers:
+  - name: default
+  - name: critical

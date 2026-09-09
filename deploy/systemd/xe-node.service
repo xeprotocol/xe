@@ -1,0 +1,44 @@
+[Unit]
+Description=XE node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xe
+Group=xe
+EnvironmentFile=/etc/xe/xe-node.env
+ExecStart=/usr/local/bin/xe-node node \
+  -port ${XE_P2P_PORT} \
+  -api-port ${XE_API_PORT} \
+  -api-bind ${XE_API_BIND} \
+  -metrics-addr ${XE_METRICS_ADDR} \
+  -data ${XE_DATA_DIR} \
+  -dial ${XE_DIAL} \
+  -log-level ${XE_LOG_LEVEL} \
+  -log-max-size ${XE_LOG_MAX_SIZE_MB} \
+  -log-max-files ${XE_LOG_MAX_FILES}
+
+Restart=always
+RestartSec=5s
+
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 60); do curl -fsS -o /dev/null "http://127.0.0.1:${XE_API_PORT}/health" && exit 0; sleep 2; done; echo "node did not report healthy within 120s" >&2; exit 1'
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xe-node
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=5000
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xe
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
