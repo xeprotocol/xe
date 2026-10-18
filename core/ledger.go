@@ -737,6 +737,9 @@ func (l *Ledger) AddSyncedBlock(b *Block) error {
 }
 
 func (l *Ledger) addBlock(b *Block, skipTimestamp bool) error {
+	if b == nil {
+		return fmt.Errorf("nil block")
+	}
 	bc := *b
 	if len(bc.Attestations) > 0 {
 		bc.Attestations = append([]TimekeeperAttestation(nil), bc.Attestations...)
@@ -2578,6 +2581,7 @@ func (l *Ledger) rebuildDelegation() error {
 		if representative == "" {
 			return nil
 		}
+		representative = strings.ToLower(representative)
 		l.delegation[account] = representative
 
 		chain, err := l.store.GetAccountChain(account)
@@ -2696,6 +2700,7 @@ func (l *Ledger) GetRepresentative(account string) string {
 }
 
 func (l *Ledger) GetVoteWeight(representative string) *big.Int {
+	representative = strings.ToLower(representative)
 	l.delegationMu.RLock()
 	defer l.delegationMu.RUnlock()
 	if !repEligibleLocked(l.eligibleAllowlistLocked(), representative) {
@@ -2760,6 +2765,23 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged receive: GetPendingSend: %w", err)
 		}
 		if pending == nil {
+			if sib := l.unfinalizedSiblingConsumed(b.Account, b.Previous, b.Source); sib != nil && sib.Type == BlockReceive {
+				if src := l.GetBlock(b.Source); src != nil && src.Type == BlockSend {
+					srcAsset := src.Asset
+					if srcAsset == "" {
+						srcAsset = "XE"
+					}
+					pending = &PendingSend{
+						SendHash:    src.Hash,
+						Source:      src.Account,
+						Destination: src.Destination,
+						Amount:      src.Amount,
+						Asset:       srcAsset,
+					}
+				}
+			}
+		}
+		if pending == nil {
 			return fmt.Errorf("staged receive: source send not pending: %s", shortHash(b.Source))
 		}
 		if pending.Destination != b.Account {
@@ -2768,6 +2790,17 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 
 		if l.isLiveLeaseEscrow(b.Source) {
 			return fmt.Errorf("staged receive: cannot receive a live lease escrow: %s", shortHash(b.Source))
+		}
+		pendingAsset := pending.Asset
+		if pendingAsset == "" {
+			pendingAsset = "XE"
+		}
+		blockAsset := b.Asset
+		if blockAsset == "" {
+			blockAsset = "XE"
+		}
+		if blockAsset != pendingAsset {
+			return fmt.Errorf("staged receive: asset %q does not match pending send asset %q", blockAsset, pendingAsset)
 		}
 		expectedBal := parentBalance + pending.Amount
 		if expectedBal < parentBalance {
@@ -2797,6 +2830,11 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_settle: GetPendingSend: %w", err)
 		}
 		if pending == nil {
+			if sib := l.unfinalizedSiblingConsumed(b.Account, b.Previous, b.Source); sib != nil && sib.Type == BlockLeaseSettle {
+				pending = l.escrowPendingOf(b.Source)
+			}
+		}
+		if pending == nil {
 			return fmt.Errorf("staged lease_settle: no pending escrow for lease")
 		}
 		expectedBal := parentBalance + b.Amount
@@ -2812,6 +2850,11 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_cancel: GetPendingSend: %w", err)
 		}
 		if pending == nil {
+			if sib := l.unfinalizedSiblingConsumed(b.Account, b.Previous, b.Source); sib != nil && (sib.Type == BlockLeaseCancel || sib.Type == BlockLeaseForceSettle) {
+				pending = l.escrowPendingOf(b.Source)
+			}
+		}
+		if pending == nil {
 			return fmt.Errorf("staged lease_cancel: no pending send for lease")
 		}
 		expectedBal := parentBalance + pending.Amount
@@ -2822,6 +2865,11 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged lease_force_settle: GetPendingSend: %w", err)
+		}
+		if pending == nil {
+			if sib := l.unfinalizedSiblingConsumed(b.Account, b.Previous, b.Source); sib != nil && (sib.Type == BlockLeaseCancel || sib.Type == BlockLeaseForceSettle) {
+				pending = l.escrowPendingOf(b.Source)
+			}
 		}
 		if pending == nil {
 			return fmt.Errorf("staged lease_force_settle: no pending escrow for lease")
@@ -2869,6 +2917,40 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		}
 	default:
 		return fmt.Errorf("staged block: unknown type: %s", b.Type)
+	}
+	return nil
+}
+
+func (l *Ledger) unfinalizedSiblingConsumed(account, previous, source string) *Block {
+	if source == "" {
+		return nil
+	}
+	chain, err := l.store.GetAccountChain(account)
+	if err != nil || chain == nil || len(chain.Blocks) == 0 {
+		return nil
+	}
+	startIdx := -1
+	if previous == "0" {
+		startIdx = 0
+	} else {
+		for i, blk := range chain.Blocks {
+			if blk.Hash == previous {
+				startIdx = i + 1
+				break
+			}
+		}
+	}
+	if startIdx < 0 || startIdx >= len(chain.Blocks) {
+		return nil
+	}
+	fh := l.FinalHeight(account)
+	for i := startIdx; i < len(chain.Blocks); i++ {
+		if uint64(i+1) <= fh {
+			continue
+		}
+		if chain.Blocks[i].Source == source {
+			return chain.Blocks[i]
+		}
 	}
 	return nil
 }
@@ -2945,6 +3027,11 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 			return fmt.Errorf("SwapBlock: %w", perr)
 		}
 		plan = append(plan, oldPlan...)
+	}
+	if oldBlock.Type == BlockLease {
+		if perr := l.planRollbackOfLease(oldBlock.Hash, planned, &plan); perr != nil {
+			return fmt.Errorf("SwapBlock: %w", perr)
+		}
 	}
 
 	plan = append(plan, cascadeStep{account: account, b: oldBlock})

@@ -536,7 +536,7 @@ func (m *MemStore) DeleteStagedBlock(hash string) error {
 }
 
 func memVoteKey(account, prev, rep string) string {
-	return account + "|" + prev + "|" + rep
+	return strings.ToLower(account) + "|" + strings.ToLower(prev) + "|" + strings.ToLower(rep)
 }
 
 func copyVote(v *core.Vote) *core.Vote {
@@ -558,7 +558,7 @@ func (m *MemStore) PutVote(vote *core.Vote) error {
 func (m *MemStore) GetVotesByConflict(account, previous string) ([]*core.Vote, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	prefix := account + "|" + previous + "|"
+	prefix := strings.ToLower(account) + "|" + strings.ToLower(previous) + "|"
 	var out []*core.Vote
 	for k, v := range m.votes {
 		if strings.HasPrefix(k, prefix) {
@@ -636,7 +636,7 @@ func (m *MemStore) PutFinalVoteIfAbsent(account, previous, hash string) (string,
 func (m *MemStore) DeleteVotesForConflict(account, previous string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	prefix := account + "|" + previous + "|"
+	prefix := strings.ToLower(account) + "|" + strings.ToLower(previous) + "|"
 	for k := range m.votes {
 		if strings.HasPrefix(k, prefix) {
 			delete(m.votes, k)

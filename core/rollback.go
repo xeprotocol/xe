@@ -319,6 +319,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 	}
 
 	apply := func() {
+		l.blockCount.Add(-1)
 
 		if deleteKeysetAccount != "" {
 			l.keysetMu.Lock()
@@ -369,6 +370,52 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 	}
 
 	return undo, apply, nil
+}
+
+func (l *Ledger) planRollbackOfLease(leaseHash string, planned map[string]bool, plan *[]cascadeStep) error {
+	ls, ok := l.store.(LeaseStore)
+	if !ok {
+		return nil
+	}
+	lease, err := ls.GetLease(leaseHash)
+	if err != nil {
+		return err
+	}
+	if lease == nil || lease.State == LeaseCreated {
+		return nil
+	}
+	if lease.State != LeaseAccepted || len(lease.Renewals) > 0 || lease.Provider == "" {
+		return fmt.Errorf("cascade: cannot unwind lease %s in state %q (renewals=%d)", shortHash(leaseHash), lease.State, len(lease.Renewals))
+	}
+	pchain, err := l.store.GetAccountChain(lease.Provider)
+	if err != nil {
+		return err
+	}
+	if pchain == nil || len(pchain.Blocks) == 0 {
+		return fmt.Errorf("cascade: provider %s chain missing for accepted lease %s", shortAddr(lease.Provider), shortHash(leaseHash))
+	}
+	acceptIdx := -1
+	for i, blk := range pchain.Blocks {
+		if blk.Type == BlockLeaseAccept && blk.Source == leaseHash {
+			acceptIdx = i
+			break
+		}
+	}
+	if acceptIdx == -1 {
+		return fmt.Errorf("cascade: provider %s accept block not found for lease %s", shortAddr(lease.Provider), shortHash(leaseHash))
+	}
+	if acceptIdx != len(pchain.Blocks)-1 {
+		return fmt.Errorf("cascade: provider %s has subsequent blocks after lease_accept %s", shortAddr(lease.Provider), shortHash(pchain.Blocks[acceptIdx].Hash))
+	}
+	if fh := l.FinalHeight(lease.Provider); uint64(acceptIdx+1) <= fh {
+		return fmt.Errorf("cascade: refusing to roll back finalized lease_accept at height %d (final height %d) on %s", acceptIdx+1, fh, shortAddr(lease.Provider))
+	}
+	acceptBlock := pchain.Blocks[acceptIdx]
+	if !planned[acceptBlock.Hash] {
+		planned[acceptBlock.Hash] = true
+		*plan = append(*plan, cascadeStep{account: lease.Provider, b: acceptBlock})
+	}
+	return nil
 }
 
 func (l *Ledger) undoBlockApply(account string, b *Block) error {

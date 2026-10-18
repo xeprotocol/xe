@@ -560,7 +560,6 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	gotTerminal := false
 
 	for {
-		lr.N = maxSyncResponseBytes
 		var resp SyncResponse
 		if err := dec.Decode(&resp); err != nil {
 			if err == io.EOF {
@@ -568,8 +567,14 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			}
 			return err
 		}
-		allBlocks = append(allBlocks, resp.Blocks...)
-		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)", pid.ShortString(), len(resp.Blocks), len(allBlocks), resp.HasMore)
+		nonNilInPage := 0
+		for _, b := range resp.Blocks {
+			if b != nil {
+				allBlocks = append(allBlocks, b)
+				nonNilInPage++
+			}
+		}
+		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)", pid.ShortString(), nonNilInPage, len(allBlocks), resp.HasMore)
 		if !resp.HasMore {
 			rejectedAccounts = resp.Rejected
 			gotTerminal = true
@@ -578,7 +583,7 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			logging.Warnf("sync: hit maxTotalBlocks cap (%d), stopping", maxTotalBlocks)
 			break
 		}
-		if !resp.HasMore {
+		if !resp.HasMore || nonNilInPage == 0 {
 			break
 		}
 	}
@@ -589,6 +594,9 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	filtered := allBlocks[:0]
 	skipped := 0
 	for _, b := range allBlocks {
+		if b == nil {
+			continue
+		}
 		if quarantine.contains(b.Hash) {
 			skipped++
 		} else {

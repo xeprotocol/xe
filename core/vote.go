@@ -131,12 +131,50 @@ func (vm *VoteManager) ReceiveVote(v *Vote) error {
 	return nil
 }
 
+func isCanonicalLowerHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < 64; i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateVoteCanonicalFields(v *Vote) error {
+	if v == nil {
+		return fmt.Errorf("nil vote")
+	}
+	if !isCanonicalLowerHex64(v.RepPubKey) {
+		return fmt.Errorf("rep_pub_key must be 64 lowercase hex chars")
+	}
+	if !isCanonicalLowerHex64(v.BlockHash) {
+		return fmt.Errorf("block_hash must be 64 lowercase hex chars")
+	}
+	if !isCanonicalLowerHex64(v.ConflictAccount) {
+		return fmt.Errorf("conflict_account must be 64 lowercase hex chars")
+	}
+	if v.ConflictPrev != "0" && !isCanonicalLowerHex64(v.ConflictPrev) {
+		return fmt.Errorf("conflict_prev must be \"0\" or 64 lowercase hex chars")
+	}
+	if len(v.Signature) != ed25519.SignatureSize {
+		return fmt.Errorf("invalid signature length: %d", len(v.Signature))
+	}
+	return nil
+}
+
 func (vm *VoteManager) receiveVoteInner(v *Vote) error {
 	existing, err := vm.store.GetVote(v.ConflictAccount, v.ConflictPrev, v.RepPubKey)
 	if err != nil {
 		return fmt.Errorf("ReceiveVote: GetVote: %w", err)
 	}
 	if existing != nil && existing.Final {
+		return nil
+	}
+	if existing != nil && !v.Final && v.Timestamp <= existing.Timestamp {
 		return nil
 	}
 
@@ -165,6 +203,9 @@ func (vm *VoteManager) receiveVoteInner(v *Vote) error {
 }
 
 func (vm *VoteManager) isConflictNotFound(v *Vote) bool {
+	if err := validateVoteCanonicalFields(v); err != nil {
+		return false
+	}
 
 	pub, err := DecodePublicKey(v.RepPubKey)
 	if err != nil {
@@ -211,6 +252,9 @@ func (vm *VoteManager) bufferVote(v *Vote) {
 }
 
 func VerifyVoteSignature(v *Vote) bool {
+	if err := validateVoteCanonicalFields(v); err != nil {
+		return false
+	}
 	pub, err := DecodePublicKey(v.RepPubKey)
 	if err != nil {
 		return false
@@ -223,6 +267,9 @@ func VerifyVoteSignature(v *Vote) bool {
 }
 
 func (vm *VoteManager) ValidateVote(v *Vote) error {
+	if err := validateVoteCanonicalFields(v); err != nil {
+		return fmt.Errorf("ValidateVote: %w", err)
+	}
 
 	pub, err := DecodePublicKey(v.RepPubKey)
 	if err != nil {
