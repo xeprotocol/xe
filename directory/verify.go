@@ -8,11 +8,15 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/xeprotocol/xe/core"
 )
 
-const registrationDomainTag = "xe/directory-registration/v1\x00"
+const (
+	registrationDomainTag    = "xe/directory-registration/v1\x00"
+	MaxRegistrationClockSkew = 5 * time.Minute
+)
 
 func canonicalBytes(account, pubKey, nodePeer string, timestamp int64) []byte {
 	var b bytes.Buffer
@@ -27,6 +31,9 @@ func canonicalBytes(account, pubKey, nodePeer string, timestamp int64) []byte {
 }
 
 func VerifyRegistration(reg *Registration) error {
+	if reg == nil {
+		return fmt.Errorf("nil registration")
+	}
 	if reg.Account == "" {
 		return fmt.Errorf("missing account")
 	}
@@ -36,11 +43,16 @@ func VerifyRegistration(reg *Registration) error {
 	if reg.NodePeer == "" {
 		return fmt.Errorf("missing node_peer")
 	}
-	if reg.Timestamp == 0 {
-		return fmt.Errorf("missing timestamp")
+	if reg.Timestamp <= 0 {
+		return fmt.Errorf("invalid timestamp: must be positive")
 	}
 	if reg.Signature == "" {
 		return fmt.Errorf("missing signature")
+	}
+
+	now := core.Now().UnixNano()
+	if reg.Timestamp > now+int64(MaxRegistrationClockSkew) {
+		return fmt.Errorf("registration timestamp %d exceeds maximum future clock skew (now %d)", reg.Timestamp, now)
 	}
 
 	if err := core.VerifyPayloadKey(reg.PubKey, reg.Account); err != nil {

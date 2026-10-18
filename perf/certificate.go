@@ -143,17 +143,29 @@ func SignCertificate(c *Certificate, kp *core.KeyPair) error {
 	return nil
 }
 
+const MaxCertificateClockSkew = int64(core.DefaultMaxAttestationSkew)
+
 func VerifyCertificate(c *Certificate, now int64) error {
 	if err := VerifyCertificateContent(c); err != nil {
 		return err
 	}
-	if now > c.ExpiresAt {
-		return fmt.Errorf("certificate expired at %d, now %d", c.ExpiresAt, now)
+	if now > 0 {
+		if c.IssuedAt > now+MaxCertificateClockSkew {
+			return fmt.Errorf("certificate issued_at %d is too far in the future (now %d)", c.IssuedAt, now)
+		}
+		if now >= c.ExpiresAt {
+			return fmt.Errorf("certificate expired at %d, now %d", c.ExpiresAt, now)
+		}
 	}
 	return nil
 }
 
+const zeroRootHex = "0000000000000000000000000000000000000000000000000000000000000000"
+
 func VerifyCertificateContent(c *Certificate) error {
+	if c == nil {
+		return fmt.Errorf("certificate is nil")
+	}
 	expected := HashCertificate(c)
 	if c.Hash != expected {
 		return fmt.Errorf("certificate hash mismatch")
@@ -171,8 +183,8 @@ func VerifyCertificateContent(c *Certificate) error {
 		return fmt.Errorf("certificate signature: %w", err)
 	}
 
-	if c.Score <= 0 {
-		return fmt.Errorf("certificate score must be positive, got %f", c.Score)
+	if math.IsNaN(c.Score) || math.IsInf(c.Score, 0) || c.Score <= 0 {
+		return fmt.Errorf("certificate score must be a finite positive number, got %f", c.Score)
 	}
 
 	if !IsAcceptedWorkloadVersion(c.WorkloadVersion) {
@@ -186,6 +198,48 @@ func VerifyCertificateContent(c *Certificate) error {
 
 	if !isHex64(c.CPUHash) {
 		return fmt.Errorf("cpu_hash must be 64 lowercase hex chars, got %q", c.CPUHash)
+	}
+
+	if !isHex64(c.WorkProof) || c.WorkProof == zeroRootHex {
+		return fmt.Errorf("work_proof must be a non-zero 64 lowercase hex string, got %q", c.WorkProof)
+	}
+
+	if !isHex64(c.StartAttestationRoot) || c.StartAttestationRoot == zeroRootHex {
+		return fmt.Errorf("start_attestation_root must be a non-zero 64 lowercase hex string")
+	}
+	if !isHex64(c.EndAttestationRoot) || c.EndAttestationRoot == zeroRootHex {
+		return fmt.Errorf("end_attestation_root must be a non-zero 64 lowercase hex string")
+	}
+
+	if c.StartMedian <= 0 || c.EndMedian <= c.StartMedian {
+		return fmt.Errorf("invalid benchmark median timestamps: start=%d end=%d", c.StartMedian, c.EndMedian)
+	}
+
+	pubBytes, err := hex.DecodeString(c.ProviderPubKey)
+	if err != nil {
+		return fmt.Errorf("invalid provider_pub_key hex: %w", err)
+	}
+	expectedSeed := SeedHex(DeriveSeed(c.StartMedian, pubBytes))
+	if c.Seed != expectedSeed {
+		return fmt.Errorf("certificate seed mismatch: got %s, want %s", c.Seed, expectedSeed)
+	}
+
+	elapsedSecs := float64(c.EndMedian-c.StartMedian) / 1e9
+	expectedScore := 1.0 / elapsedSecs
+	if math.IsNaN(expectedScore) || math.IsInf(expectedScore, 0) || math.Abs(c.Score-expectedScore) > 1e-6*(1+expectedScore) {
+		return fmt.Errorf("certificate score %.6f does not match elapsed benchmark time %.6fs (expected %.6f)",
+			c.Score, elapsedSecs, expectedScore)
+	}
+
+	if c.IssuedAt != c.StartMedian {
+		return fmt.Errorf("certificate issued_at (%d) must equal start_median (%d)", c.IssuedAt, c.StartMedian)
+	}
+	if c.ExpiresAt <= c.IssuedAt {
+		return fmt.Errorf("certificate expires_at (%d) must be after issued_at (%d)", c.ExpiresAt, c.IssuedAt)
+	}
+	if c.ExpiresAt-c.IssuedAt > int64(CertificateValidity) {
+		return fmt.Errorf("certificate lifetime %v exceeds maximum validity %v",
+			time.Duration(c.ExpiresAt-c.IssuedAt), CertificateValidity)
 	}
 
 	if c.PriceMultiplierMilli < PriceMultiplierMin || c.PriceMultiplierMilli > PriceMultiplierMax {

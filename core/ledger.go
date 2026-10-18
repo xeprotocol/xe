@@ -717,6 +717,8 @@ func normalizeBlockHex(b *Block) {
 	b.Source = strings.ToLower(b.Source)
 	b.Representative = strings.ToLower(b.Representative)
 	b.PubKey = strings.ToLower(b.PubKey)
+	b.CertificateHash = strings.ToLower(b.CertificateHash)
+	b.AccessPubKey = strings.ToLower(b.AccessPubKey)
 	for i := range b.Signatures {
 		b.Signatures[i].PublicKey = strings.ToLower(b.Signatures[i].PublicKey)
 		b.Signatures[i].Sig = strings.ToLower(b.Signatures[i].Sig)
@@ -725,6 +727,10 @@ func normalizeBlockHex(b *Block) {
 		for i := range b.MSKeyset.Keys {
 			b.MSKeyset.Keys[i] = strings.ToLower(b.MSKeyset.Keys[i])
 		}
+	}
+	for i := range b.Attestations {
+		b.Attestations[i].PublicKey = strings.ToLower(b.Attestations[i].PublicKey)
+		b.Attestations[i].Signature = strings.ToLower(b.Attestations[i].Signature)
 	}
 }
 
@@ -1423,16 +1429,17 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 		if b.Type == BlockMultisigOpen {
 			ks = b.MSKeyset
 		} else {
-			ks = l.GetKeyset(b.Account)
-		}
-		if ks == nil {
-			ks2, err := l.resolveMissingKeyset(b.Account)
+			var err error
+			ks, err = l.keysetForBlock(b)
 			if err != nil {
 				return err
 			}
-			ks = ks2
 		}
-		if IsSpendingOp(b.Type) {
+		currentRep := l.GetRepresentative(b.Account)
+		if rep, ok := l.overlayDelegationRep(b.Account); ok {
+			currentRep = rep
+		}
+		if RequiresThresholdMultisig(b, currentRep) {
 			if err := VerifyMultisig(b.Hash, b.Signatures, ks); err != nil {
 				return fmt.Errorf("multisig: %w", err)
 			}
@@ -1444,8 +1451,7 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 		return nil
 	}
 
-	if l.GetKeyset(b.Account) != nil {
-
+	if l.getKeysetOverlay(b.Account) != nil || b.Type == BlockMultisigOpen || b.Type == BlockMultisigUpdate {
 		return fmt.Errorf("multisig account requires signatures")
 	}
 
@@ -1462,6 +1468,32 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 		return fmt.Errorf("signature: %w", err)
 	}
 	return nil
+}
+
+func (l *Ledger) keysetForBlock(b *Block) (*Keyset, error) {
+	if b.Previous != "0" {
+		chain, err := l.getAccountChainOverlay(b.Account)
+		if err == nil && chain != nil && len(chain.Blocks) > 0 {
+			var atParent *Keyset
+			foundParent := false
+			for _, cb := range chain.Blocks {
+				if (cb.Type == BlockMultisigOpen || cb.Type == BlockMultisigUpdate) && cb.MSKeyset != nil {
+					atParent = cb.MSKeyset
+				}
+				if cb.Hash == b.Previous {
+					foundParent = true
+					break
+				}
+			}
+			if foundParent && atParent != nil {
+				return atParent, nil
+			}
+		}
+	}
+	if ks := l.getKeysetOverlay(b.Account); ks != nil {
+		return ks, nil
+	}
+	return l.resolveMissingKeyset(b.Account)
 }
 
 func (l *Ledger) resolveMissingKeyset(account string) (*Keyset, error) {
@@ -2924,7 +2956,7 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 			continue
 		}
 		switch b.Type {
-		case BlockSend, BlockReceive, BlockBurn, BlockMint:
+		case BlockSend, BlockReceive, BlockBurn, BlockMint, BlockMultisigUpdate:
 
 		default:
 			return fmt.Errorf("SwapBlock: cannot unwind descendant %q (%s) of the replaced block — reversing its side-effects is not yet implemented", b.Type, shortHash(b.Hash))

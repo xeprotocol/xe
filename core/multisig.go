@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 func DeriveMultisigAddress(ks *Keyset) (string, error) {
@@ -13,7 +14,9 @@ func DeriveMultisigAddress(ks *Keyset) (string, error) {
 		return "", err
 	}
 	sorted := make([]string, len(ks.Keys))
-	copy(sorted, ks.Keys)
+	for i, k := range ks.Keys {
+		sorted[i] = strings.ToLower(k)
+	}
 	sort.Strings(sorted)
 
 	h := sha256.New()
@@ -71,13 +74,16 @@ func mustDecodeHex(s string) []byte {
 }
 
 func VerifyMultisig(hash string, sigs []BlockSignature, ks *Keyset) error {
+	if ks == nil {
+		return fmt.Errorf("keyset is nil")
+	}
 	if len(sigs) == 0 {
 		return fmt.Errorf("no signatures")
 	}
 
 	keysetMap := make(map[string]bool, len(ks.Keys))
 	for _, k := range ks.Keys {
-		keysetMap[k] = true
+		keysetMap[strings.ToLower(k)] = true
 	}
 
 	hashBytes, err := DecodeHash(hash)
@@ -89,18 +95,18 @@ func VerifyMultisig(hash string, sigs []BlockSignature, ks *Keyset) error {
 	validCount := 0
 
 	for _, sig := range sigs {
-		pk := sig.PublicKey
+		pk := strings.ToLower(sig.PublicKey)
 		if seen[pk] {
-			return fmt.Errorf("duplicate signer: %s", pk[:12])
+			return fmt.Errorf("duplicate signer: %s", shortHash(pk))
 		}
 		seen[pk] = true
 
 		if !keysetMap[pk] {
-			return fmt.Errorf("signer %s not in keyset", pk[:12])
+			return fmt.Errorf("signer %s not in keyset", shortHash(pk))
 		}
 
 		if err := VerifyHexSignature(pk, sig.Sig, hashBytes); err != nil {
-			return fmt.Errorf("sig from %s: %w", pk[:12], err)
+			return fmt.Errorf("sig from %s: %w", shortHash(pk), err)
 		}
 		validCount++
 	}
@@ -112,13 +118,16 @@ func VerifyMultisig(hash string, sigs []BlockSignature, ks *Keyset) error {
 }
 
 func VerifyMultisigAny(hash string, sigs []BlockSignature, ks *Keyset) error {
+	if ks == nil {
+		return fmt.Errorf("keyset is nil")
+	}
 	if len(sigs) == 0 {
 		return fmt.Errorf("no signatures")
 	}
 
 	keysetMap := make(map[string]bool, len(ks.Keys))
 	for _, k := range ks.Keys {
-		keysetMap[k] = true
+		keysetMap[strings.ToLower(k)] = true
 	}
 
 	hashBytes, err := DecodeHash(hash)
@@ -127,10 +136,11 @@ func VerifyMultisigAny(hash string, sigs []BlockSignature, ks *Keyset) error {
 	}
 
 	for _, sig := range sigs {
-		if !keysetMap[sig.PublicKey] {
+		pk := strings.ToLower(sig.PublicKey)
+		if !keysetMap[pk] {
 			continue
 		}
-		if err := VerifyHexSignature(sig.PublicKey, sig.Sig, hashBytes); err == nil {
+		if err := VerifyHexSignature(pk, sig.Sig, hashBytes); err == nil {
 			return nil
 		}
 	}
@@ -139,9 +149,21 @@ func VerifyMultisigAny(hash string, sigs []BlockSignature, ks *Keyset) error {
 
 func IsSpendingOp(t BlockType) bool {
 	switch t {
-	case BlockSend, BlockBurn, BlockLease, BlockLeaseRenew, BlockMultisigOpen, BlockMultisigUpdate, BlockMint:
+	case BlockSend, BlockBurn, BlockLease, BlockLeaseRenew,
+		BlockLeaseAccept, BlockLeaseCancel, BlockLeaseForceSettle, BlockLeaseSettle,
+		BlockMultisigOpen, BlockMultisigUpdate, BlockMint:
 		return true
 	default:
 		return false
 	}
+}
+
+func RequiresThresholdMultisig(b *Block, currentRep string) bool {
+	if IsSpendingOp(b.Type) {
+		return true
+	}
+	if b.Representative != "" && !strings.EqualFold(b.Representative, currentRep) {
+		return true
+	}
+	return false
 }

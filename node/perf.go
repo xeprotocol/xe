@@ -341,7 +341,7 @@ func (n *Node) ingestCertificate(cert *perf.Certificate) bool {
 		return false
 	}
 
-	if err := perf.VerifyCertificateContent(cert); err != nil {
+	if err := perf.VerifyCertificate(cert, core.Now().UnixNano()); err != nil {
 		logging.Warnf("Certificate: rejected %s from %s: %v",
 			shortHash(cert.Hash), shortHash(cert.Provider), err)
 		return false

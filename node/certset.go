@@ -7,18 +7,23 @@ import (
 	"github.com/xeprotocol/xe/perf"
 )
 
-const certRetentionPerProvider = 256
+const (
+	certRetentionPerProvider = 256
+	maxTrackedCertProviders  = 1024
+)
 
 type certSet struct {
-	mu         sync.RWMutex
-	byHash     map[string]*perf.Certificate
-	byProvider map[string][]*perf.Certificate
+	mu           sync.RWMutex
+	byHash       map[string]*perf.Certificate
+	byProvider   map[string][]*perf.Certificate
+	maxProviders int
 }
 
 func newCertSet() *certSet {
 	return &certSet{
-		byHash:     make(map[string]*perf.Certificate),
-		byProvider: make(map[string][]*perf.Certificate),
+		byHash:       make(map[string]*perf.Certificate),
+		byProvider:   make(map[string][]*perf.Certificate),
+		maxProviders: maxTrackedCertProviders,
 	}
 }
 
@@ -33,7 +38,35 @@ func (cs *certSet) put(cert *perf.Certificate) (added bool, evicted []string) {
 		return false, nil
 	}
 
-	list := cs.byProvider[cert.Provider]
+	list, exists := cs.byProvider[cert.Provider]
+	limit := cs.maxProviders
+	if limit <= 0 {
+		limit = maxTrackedCertProviders
+	}
+	if !exists && len(cs.byProvider) >= limit {
+		var oldestProvider string
+		var oldestLatestIssued int64
+		for prov, plist := range cs.byProvider {
+			if len(plist) == 0 {
+				oldestProvider = prov
+				oldestLatestIssued = -1
+				break
+			}
+			latestIssued := plist[len(plist)-1].IssuedAt
+			if oldestProvider == "" || latestIssued < oldestLatestIssued {
+				oldestProvider = prov
+				oldestLatestIssued = latestIssued
+			}
+		}
+		if oldestProvider == "" || (oldestLatestIssued >= 0 && cert.IssuedAt <= oldestLatestIssued) {
+			return false, nil
+		}
+		for _, oldCert := range cs.byProvider[oldestProvider] {
+			delete(cs.byHash, oldCert.Hash)
+			evicted = append(evicted, oldCert.Hash)
+		}
+		delete(cs.byProvider, oldestProvider)
+	}
 
 	if len(list) >= certRetentionPerProvider && cert.IssuedAt <= list[0].IssuedAt {
 		return false, nil

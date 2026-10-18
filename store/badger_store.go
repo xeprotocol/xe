@@ -1103,6 +1103,15 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 				return err
 			}
 		}
+		if u.RestoreKeyset != nil {
+			ksData, err := json.Marshal(u.RestoreKeyset)
+			if err != nil {
+				return err
+			}
+			if err := txn.Set(prefixedKey(prefixKeyset, u.Account), ksData); err != nil {
+				return err
+			}
+		}
 		if u.DeleteKeysetAccount != "" {
 			if err := txn.Delete(prefixedKey(prefixKeyset, u.DeleteKeysetAccount)); err != nil {
 				return err
