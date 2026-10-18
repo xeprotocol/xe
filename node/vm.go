@@ -47,11 +47,24 @@ func (n *Node) registerVMHandlers() {
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return nil, fmt.Errorf("invalid vm_status payload: %w", err)
 		}
+		lease := n.GetLease(req.LeaseHash)
+		if lease == nil {
+			return nil, fmt.Errorf("lease not found: %s", shortHash(req.LeaseHash))
+		}
+		if lease.Provider != n.KeyPair.Address() {
+			return nil, fmt.Errorf("not the provider for this lease")
+		}
+		consumerPeer := n.PeerForAccount(lease.Consumer)
+		if consumerPeer == "" || consumerPeer != from {
+			return nil, fmt.Errorf("vm_status from unauthorized peer")
+		}
 		info, err := n.VMManager.Get(req.LeaseHash)
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(info)
+		sanitized := *info
+		sanitized.Credentials = nil
+		return json.Marshal(&sanitized)
 	})
 }
 
@@ -144,7 +157,7 @@ func (n *Node) GetVM(leaseHash string) *vm.Info {
 	}
 
 	lease := n.GetLease(leaseHash)
-	if lease == nil {
+	if lease == nil || lease.Consumer != n.KeyPair.Address() {
 		return nil
 	}
 	providerPeer := n.PeerForAccount(lease.Provider)

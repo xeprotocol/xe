@@ -197,8 +197,8 @@ func (h *Handler) routes() []apiRoute {
 		{"POST", "/lease/request", "Request a lease; node handles signing and PoW (operator only: requires admin bearer token)", h.requireAdmin(h.handleLeaseRequest)},
 		{"POST", "/lease/{hash}/renew", "Renew (extend) an accepted lease in place", h.requireAdmin(h.handleLeaseRenew)},
 
-		{"GET", "/vms", "All running VMs", h.handleGetVMs},
-		{"GET", "/vms/{lease}", "VM info for a lease", h.handleGetVM},
+		{"GET", "/vms", "All running VMs", h.requireAdmin(h.handleGetVMs)},
+		{"GET", "/vms/{lease}", "VM info for a lease", h.requireAdmin(h.handleGetVM)},
 		{"POST", "/tunnel/{leaseHash}/tcp", "Open a TCP tunnel into a lease's VM", h.handleTunnelTCP},
 
 		{"GET", "/statechain/tip", "Latest state-chain block", h.handleStateChainTip},

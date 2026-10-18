@@ -491,7 +491,7 @@ func (l *Ledger) releaseLeaseLock(leaseHash string, entry *accountLock) {
 
 func isLeaseStateTransition(t BlockType) bool {
 	switch t {
-	case BlockLeaseAccept, BlockLeaseSettle, BlockLeaseCancel, BlockLeaseForceSettle:
+	case BlockLeaseAccept, BlockLeaseSettle, BlockLeaseCancel, BlockLeaseForceSettle, BlockLeaseRenew:
 		return true
 	}
 	return false
@@ -831,14 +831,7 @@ func (l *Ledger) addBlock(b *Block, skipTimestamp bool) error {
 
 			var parentBalance uint64
 			if chain != nil && b.Previous != "0" {
-				for _, cb := range chain.Blocks {
-					if cb.Asset == b.Asset {
-						parentBalance = cb.Balance
-					}
-					if cb.Hash == b.Previous {
-						break
-					}
-				}
+				parentBalance = l.GetAssetBalanceAtBlock(b.Account, b.Asset, b.Previous)
 			}
 			if err := l.ValidateStagedBlock(b, parentBalance); err != nil {
 				return fmt.Errorf("conflict block: %w", err)
@@ -1967,6 +1960,9 @@ func (l *Ledger) validateAndAddLeaseForceSettle(b *Block, skipSkew bool) error {
 	}
 
 	oldBal := l.getAssetBalanceOverlay(b.Account, "XUSD")
+	if b.Amount != pending.Amount {
+		return fmt.Errorf("lease_force_settle amount mismatch: expected %d, got %d", pending.Amount, b.Amount)
+	}
 	expectedBal := oldBal + pending.Amount
 	if expectedBal < oldBal {
 		return fmt.Errorf("lease_force_settle would overflow uint64 balance")
@@ -2368,7 +2364,7 @@ func (l *Ledger) GetBalance(account string) uint64 {
 	if chain == nil {
 		return 0
 	}
-	return chain.LatestBalance()
+	return assetBalanceOnChain(chain, "XE")
 }
 
 func (l *Ledger) GetChain(account string) []*Block {
@@ -2782,6 +2778,13 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		}
 		if b.Balance != parentBalance-b.Amount {
 			return fmt.Errorf("staged lease: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
+		}
+	case BlockLeaseRenew:
+		if b.Amount > parentBalance {
+			return fmt.Errorf("staged lease_renew: insufficient balance: have %d, need %d", parentBalance, b.Amount)
+		}
+		if b.Balance != parentBalance-b.Amount {
+			return fmt.Errorf("staged lease_renew: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
 		}
 	case BlockLeaseAccept:
 		if b.Amount > parentBalance {

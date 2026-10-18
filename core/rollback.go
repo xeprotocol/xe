@@ -115,9 +115,7 @@ func (l *Ledger) escrowPendingOf(leaseHash string) *PendingSend {
 	amount := lb.Amount
 	if ls, ok := l.store.(LeaseStore); ok {
 		if lease, err := ls.GetLease(leaseHash); err == nil && lease != nil {
-			for i := range lease.Renewals {
-				amount += lease.Renewals[i].Cost
-			}
+			amount = lease.EffectiveCost()
 		}
 	}
 	return &PendingSend{
