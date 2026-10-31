@@ -85,12 +85,12 @@ func (l *Ledger) planRollbackFrom(account, consumedSend string, planned map[stri
 }
 
 func (l *Ledger) priorLease(leaseHash string, target LeaseState) *Lease {
-	ls, ok := l.store.(LeaseStore)
-	if !ok {
-		return nil
-	}
-	cur, err := ls.GetLease(leaseHash)
-	if err != nil || cur == nil {
+	return l.priorLeaseWithCascade(leaseHash, target, l.activeCascadeFor())
+}
+
+func (l *Ledger) priorLeaseWithCascade(leaseHash string, target LeaseState, cb *cascadeBuild) *Lease {
+	cur, ok, err := cb.lookupLease(l.store, leaseHash)
+	if !ok || err != nil || cur == nil {
 		return nil
 	}
 	restored := *cur
@@ -107,17 +107,19 @@ func (l *Ledger) priorLease(leaseHash string, target LeaseState) *Lease {
 }
 
 func (l *Ledger) escrowPendingOf(leaseHash string) *PendingSend {
+	return l.escrowPendingOfWithCascade(leaseHash, l.activeCascadeFor())
+}
+
+func (l *Ledger) escrowPendingOfWithCascade(leaseHash string, cb *cascadeBuild) *PendingSend {
 	lb := l.GetBlock(leaseHash)
 	if lb == nil || lb.Type != BlockLease {
 		return nil
 	}
 
 	amount := lb.Amount
-	if ls, ok := l.store.(LeaseStore); ok {
-		if lease, err := ls.GetLease(leaseHash); err == nil && lease != nil {
-			for i := range lease.Renewals {
-				amount += lease.Renewals[i].Cost
-			}
+	if lease, ok, err := cb.lookupLease(l.store, leaseHash); ok && err == nil && lease != nil {
+		for i := range lease.Renewals {
+			amount += lease.Renewals[i].Cost
 		}
 	}
 	return &PendingSend{
@@ -130,12 +132,12 @@ func (l *Ledger) escrowPendingOf(leaseHash string) *PendingSend {
 }
 
 func (l *Ledger) priorLeasePopRenewal(leaseHash string) *Lease {
-	ls, ok := l.store.(LeaseStore)
-	if !ok {
-		return nil
-	}
-	cur, err := ls.GetLease(leaseHash)
-	if err != nil || cur == nil || len(cur.Renewals) == 0 {
+	return l.priorLeasePopRenewalWithCascade(leaseHash, l.activeCascadeFor())
+}
+
+func (l *Ledger) priorLeasePopRenewalWithCascade(leaseHash string, cb *cascadeBuild) *Lease {
+	cur, ok, err := cb.lookupLease(l.store, leaseHash)
+	if !ok || err != nil || cur == nil || len(cur.Renewals) == 0 {
 		return nil
 	}
 	restored := *cur
@@ -161,10 +163,13 @@ func assetBalanceOnChain(chain *AccountChain, asset string) uint64 {
 }
 
 func (l *Ledger) xusdBalanceOnChain(chain *AccountChain) uint64 {
+	return l.xusdBalanceOnChainWithCascade(chain, l.activeCascadeFor())
+}
+
+func (l *Ledger) xusdBalanceOnChainWithCascade(chain *AccountChain, cb *cascadeBuild) uint64 {
 	if chain == nil {
 		return 0
 	}
-	ls, hasLeases := l.store.(LeaseStore)
 	var bal uint64
 	for _, b := range chain.Blocks {
 		a := b.Asset
@@ -174,8 +179,8 @@ func (l *Ledger) xusdBalanceOnChain(chain *AccountChain) uint64 {
 		if a == "XUSD" {
 			bal = b.Balance
 		}
-		if b.Type == BlockLeaseSettle && hasLeases {
-			if lease, err := ls.GetLease(b.Source); err == nil && lease != nil {
+		if b.Type == BlockLeaseSettle {
+			if lease, ok, err := cb.lookupLease(l.store, b.Source); ok && err == nil && lease != nil {
 				bal += lease.Stake
 			}
 		}
@@ -184,6 +189,10 @@ func (l *Ledger) xusdBalanceOnChain(chain *AccountChain) uint64 {
 }
 
 func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (*BlockUndo, func(), error) {
+	return l.buildBlockUndoWithCascade(account, b, chain, l.activeCascadeFor())
+}
+
+func (l *Ledger) buildBlockUndoWithCascade(account string, b *Block, chain *AccountChain, cb *cascadeBuild) (*BlockUndo, func(), error) {
 	if chain == nil || len(chain.Blocks) == 0 || chain.Blocks[len(chain.Blocks)-1].Hash != b.Hash {
 		return nil, nil, fmt.Errorf("cascade apply: %s is not the frontier of %s (chain changed under the cascade)", shortHash(b.Hash), shortAddr(account))
 	}
@@ -223,22 +232,22 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		deleteLeaseHash = b.Hash
 	case BlockLeaseAccept:
 
-		restoreLease = l.priorLease(b.Source, LeaseCreated)
+		restoreLease = l.priorLeaseWithCascade(b.Source, LeaseCreated, cb)
 	case BlockLeaseSettle, BlockLeaseForceSettle:
 
-		restoreLease = l.priorLease(b.Source, LeaseAccepted)
-		addPending = l.escrowPendingOf(b.Source)
+		restoreLease = l.priorLeaseWithCascade(b.Source, LeaseAccepted, cb)
+		addPending = l.escrowPendingOfWithCascade(b.Source, cb)
 
 		if b.Type == BlockLeaseSettle && restoreLease != nil {
 			assetDebit = &AssetDelta{Account: b.Account, Asset: "XUSD", Amount: restoreLease.Stake}
 		}
 	case BlockLeaseCancel:
 
-		restoreLease = l.priorLease(b.Source, LeaseCreated)
-		addPending = l.escrowPendingOf(b.Source)
+		restoreLease = l.priorLeaseWithCascade(b.Source, LeaseCreated, cb)
+		addPending = l.escrowPendingOfWithCascade(b.Source, cb)
 	case BlockLeaseRenew:
 
-		restoreLease = l.priorLeasePopRenewal(b.Source)
+		restoreLease = l.priorLeasePopRenewalWithCascade(b.Source, cb)
 		reducePendingID = b.Source
 		reducePendingAmount = b.Amount
 	case BlockMultisigOpen:
@@ -259,7 +268,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		case BlockLeaseAccept:
 			repRevert = &ReputationEvent{Kind: EventLeaseAccepted, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer}
 		case BlockLeaseSettle:
-			repRevert = &ReputationEvent{Kind: EventLeaseSettled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer, DurationSecs: restoreLease.Duration}
+			repRevert = &ReputationEvent{Kind: EventLeaseSettled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer, DurationSecs: restoreLease.EffectiveDurationSecs()}
 		case BlockLeaseForceSettle:
 			repRevert = &ReputationEvent{Kind: EventLeaseUnfulfilled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer}
 		case BlockLeaseCancel:
@@ -279,7 +288,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		parentBal = assetBalanceOnChain(newChain, asset)
 
 		if asset == "XUSD" {
-			parentBal = l.xusdBalanceOnChain(newChain)
+			parentBal = l.xusdBalanceOnChainWithCascade(newChain, cb)
 		}
 	}
 	xeAfter := assetBalanceOnChain(newChain, "XE")

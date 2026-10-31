@@ -18,7 +18,8 @@ type cascadeBuild struct {
 	restoreLease map[string]*Lease
 	deleteLease  map[string]bool
 
-	deleteKeyset map[string]bool
+	deleteKeyset     map[string]bool
+	deleteAccountKey map[string]bool
 
 	delegation map[string]string
 
@@ -27,15 +28,16 @@ type cascadeBuild struct {
 
 func newCascadeBuild(winnerHash string) *cascadeBuild {
 	return &cascadeBuild{
-		winnerHash:   winnerHash,
-		chains:       make(map[string]*AccountChain),
-		addPending:   make(map[string]*PendingSend),
-		delPending:   make(map[string]bool),
-		restoreLease: make(map[string]*Lease),
-		deleteLease:  make(map[string]bool),
-		deleteKeyset: make(map[string]bool),
-		delegation:   make(map[string]string),
-		delegated:    make(map[string]bool),
+		winnerHash:       winnerHash,
+		chains:           make(map[string]*AccountChain),
+		addPending:       make(map[string]*PendingSend),
+		delPending:       make(map[string]bool),
+		restoreLease:     make(map[string]*Lease),
+		deleteLease:      make(map[string]bool),
+		deleteKeyset:     make(map[string]bool),
+		deleteAccountKey: make(map[string]bool),
+		delegation:       make(map[string]string),
+		delegated:        make(map[string]bool),
 	}
 }
 
@@ -66,10 +68,31 @@ func (cb *cascadeBuild) addUndo(undo *BlockUndo, apply func()) {
 	if undo.DeleteKeysetAccount != "" {
 		cb.deleteKeyset[undo.DeleteKeysetAccount] = true
 	}
+	if undo.DeleteAccountKeyAccount != "" {
+		cb.deleteAccountKey[undo.DeleteAccountKeyAccount] = true
+	}
 	if undo.RestoreDelegation {
 		cb.delegation[undo.Account] = undo.PrevRep
 		cb.delegated[undo.Account] = true
 	}
+}
+
+func (cb *cascadeBuild) lookupLease(store Store, leaseHash string) (*Lease, bool, error) {
+	if cb != nil {
+		if rl, has := cb.restoreLease[leaseHash]; has {
+			cp := *rl
+			return &cp, true, nil
+		}
+		if cb.deleteLease[leaseHash] {
+			return nil, true, nil
+		}
+	}
+	ls, has := store.(LeaseStore)
+	if !has {
+		return nil, false, nil
+	}
+	lease, err := ls.GetLease(leaseHash)
+	return lease, true, err
 }
 
 func (l *Ledger) activeCascadeFor() *cascadeBuild {
@@ -122,22 +145,7 @@ func (l *Ledger) getPendingSendOverlay(sendHash string) (*PendingSend, error) {
 }
 
 func (l *Ledger) getLeaseOverlay(leaseHash string) (lease *Lease, ok bool, err error) {
-	cb := l.activeCascadeFor()
-	if cb != nil {
-		if rl, has := cb.restoreLease[leaseHash]; has {
-			cp := *rl
-			return &cp, true, nil
-		}
-		if cb.deleteLease[leaseHash] {
-			return nil, true, nil
-		}
-	}
-	ls, has := l.store.(LeaseStore)
-	if !has {
-		return nil, false, nil
-	}
-	lease, err = ls.GetLease(leaseHash)
-	return lease, true, err
+	return l.activeCascadeFor().lookupLease(l.store, leaseHash)
 }
 
 func (l *Ledger) getKeysetOverlay(account string) *Keyset {
@@ -148,6 +156,27 @@ func (l *Ledger) getKeysetOverlay(account string) *Keyset {
 	return l.GetKeyset(account)
 }
 
+func (l *Ledger) getAccountKeyOverlay(account string) string {
+	cb := l.activeCascadeFor()
+	if cb != nil {
+		if ch, ok := cb.chains[account]; ok {
+			found := ""
+			if ch != nil {
+				for _, b := range ch.Blocks {
+					if b.PubKey != "" {
+						found = b.PubKey
+					}
+				}
+			}
+			return found
+		}
+		if cb.deleteAccountKey[account] {
+			return ""
+		}
+	}
+	return l.GetAccountKey(account)
+}
+
 func (l *Ledger) getAssetBalanceOverlay(account, asset string) uint64 {
 	if ch, ok := l.overlayChain(account); ok {
 		if asset == "" {
@@ -155,7 +184,7 @@ func (l *Ledger) getAssetBalanceOverlay(account, asset string) uint64 {
 		}
 
 		if asset == "XUSD" {
-			return l.xusdBalanceOnChain(ch)
+			return l.xusdBalanceOnChainWithCascade(ch, l.activeCascadeFor())
 		}
 		return assetBalanceOnChain(ch, asset)
 	}
