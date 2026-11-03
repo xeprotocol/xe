@@ -336,8 +336,10 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 		}
 
 		if l.finalStore != nil {
-			if err := l.finalStore.SetFinalHeight(genesis.Account, 1); err != nil {
-				log.Printf("ledger: finalize genesis: %v", err)
+			if fh, err := l.finalStore.GetFinalHeight(genesis.Account); err != nil || fh < 1 {
+				if err := l.finalStore.SetFinalHeight(genesis.Account, 1); err != nil {
+					panic(fmt.Sprintf("ledger: finalize genesis: %v", err))
+				}
 			}
 		}
 		log.Printf("Genesis block applied: %s XE to %s", fmt.Sprint(genesis.Balance), shortAddr(genesis.Account))
@@ -356,6 +358,19 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 			panic(fmt.Sprintf("ledger: persisted genesis chain for %s is missing on restart", shortAddr(genesisAcct)))
 		}
 		ApplyGenesisLeaseTiming(gchain.Blocks[0])
+
+		if l.finalStore != nil {
+			fh, err := l.finalStore.GetFinalHeight(genesisAcct)
+			if err != nil {
+				panic(fmt.Sprintf("ledger: read genesis final height on restart: %v", err))
+			}
+			if fh < 1 {
+				if err := l.finalStore.SetFinalHeight(genesisAcct, 1); err != nil {
+					panic(fmt.Sprintf("ledger: repair genesis final height on restart: %v", err))
+				}
+				log.Printf("ledger: repaired missing genesis final height for %s on startup", shortAddr(genesisAcct))
+			}
+		}
 
 		if err := l.rebuildDelegation(); err != nil {
 			panic(fmt.Sprintf("ledger: %v", err))
@@ -2259,13 +2274,17 @@ func (l *Ledger) prepareBlockWrite(b *Block) (*BlockCommit, uint64, error) {
 		chain = &AccountChain{}
 	}
 	chain.Blocks = append(chain.Blocks, b)
+	var setFinalHeight uint64
+	if b.Type == BlockGenesis {
+		setFinalHeight = 1
+	}
 	commit := &BlockCommit{
-		Block:        b,
-		Account:      b.Account,
-		Chain:        chain,
-		FrontierHash: b.Hash,
-
-		PutAccountKey: b.PubKey,
+		Block:          b,
+		Account:        b.Account,
+		Chain:          chain,
+		FrontierHash:   b.Hash,
+		PutAccountKey:  b.PubKey,
+		SetFinalHeight: setFinalHeight,
 	}
 	return commit, prevBalance, nil
 }

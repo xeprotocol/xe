@@ -111,6 +111,8 @@ type BlockCommit struct {
 	TopUpPendingAmount uint64
 
 	ExpectLeaseEffectiveDurationSecs uint64
+
+	SetFinalHeight uint64
 }
 
 type AssetDelta struct {

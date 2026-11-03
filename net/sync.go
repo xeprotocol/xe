@@ -3,7 +3,9 @@ package net
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	sync2 "sync/atomic"
@@ -28,11 +30,11 @@ const (
 
 	periodicSyncInterval = 10 * time.Second
 
-	maxSyncRequestBytes = 1 << 20
+	maxSyncRequestBytes = 16 << 20
 
 	maxSyncResponseBytes = 10 << 20
 
-	maxFrontiers = 10000
+	maxFrontiers = 100000
 
 	maxServerBlocks = 10000
 
@@ -427,11 +429,24 @@ func runPeriodicResync(ctx context.Context, tick <-chan time.Time, round func())
 
 func handleSyncStream(s network.Stream, ledger *core.Ledger, tracker *syncTracker) {
 	var req SyncRequest
-	dec := json.NewDecoder(io.LimitReader(s, maxSyncRequestBytes))
+	lr := &io.LimitedReader{R: s, N: maxSyncRequestBytes + 1}
+	dec := json.NewDecoder(lr)
 	if err := dec.Decode(&req); err != nil {
 		if err != io.EOF {
 			logging.Warnf("sync: decode request: %v", err)
+			_ = json.NewEncoder(s).Encode(&SyncResponse{
+				HasMore: false,
+				Error:   fmt.Sprintf("decode request: %v", err),
+			})
 		}
+		return
+	}
+	if lr.N <= 0 {
+		logging.Warnf("sync: request exceeded maxSyncRequestBytes (%d)", maxSyncRequestBytes)
+		_ = json.NewEncoder(s).Encode(&SyncResponse{
+			HasMore: false,
+			Error:   "sync request exceeds maximum byte limit",
+		})
 		return
 	}
 
@@ -558,6 +573,7 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	var allBlocks []*core.Block
 	var rejectedAccounts []string
 	gotTerminal := false
+	wasTruncated := false
 
 	for {
 		lr.N = maxSyncResponseBytes
@@ -568,27 +584,44 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			}
 			return err
 		}
+		if resp.Error != "" {
+			return fmt.Errorf("sync server error: %s", resp.Error)
+		}
 		allBlocks = append(allBlocks, resp.Blocks...)
 		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)", pid.ShortString(), len(resp.Blocks), len(allBlocks), resp.HasMore)
 		if !resp.HasMore {
 			rejectedAccounts = resp.Rejected
 			gotTerminal = true
+			if resp.Truncated {
+				wasTruncated = true
+			}
 		}
 		if len(allBlocks) >= maxTotalBlocks {
 			logging.Warnf("sync: hit maxTotalBlocks cap (%d), stopping", maxTotalBlocks)
+			wasTruncated = true
 			break
 		}
 		if !resp.HasMore {
 			break
 		}
 	}
+	if !gotTerminal && len(allBlocks) == 0 {
+		return io.ErrUnexpectedEOF
+	}
 	if tracker != nil && gotTerminal {
 		tracker.recordRejections(pid, rejectedAccounts)
+	}
+	if tracker != nil && wasTruncated {
+		tracker.MarkDirty()
 	}
 
 	filtered := allBlocks[:0]
 	skipped := 0
 	for _, b := range allBlocks {
+		if b == nil {
+			skipped++
+			continue
+		}
 		if quarantine.contains(b.Hash) {
 			skipped++
 		} else {
@@ -596,12 +629,16 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 		}
 	}
 
+	filtered = orderBlocksByDependency(filtered)
 	added := 0
 	pending := filtered
 
-	const maxRetries = 10
+	maxPasses := len(pending)
+	if maxPasses < 10 {
+		maxPasses = 10
+	}
 	rejected := 0
-	for retry := 0; retry < maxRetries && len(pending) > 0; retry++ {
+	for retry := 0; retry < maxPasses && len(pending) > 0; retry++ {
 		var retryable []*core.Block
 		for _, b := range pending {
 			err := ledger.AddSyncedBlock(b)
@@ -632,6 +669,7 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			err := ledger.AddSyncedBlock(b)
 			if err == nil {
 				added++
+				metrics.BlocksAdded.WithLabelValues("sync").Inc()
 				continue
 			}
 			msg := err.Error()
@@ -640,12 +678,84 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			}
 			reasons[msg]++
 		}
-		logging.Warnf("sync: %d block(s) could not be added after retries; reasons: %v", len(pending), reasons)
+		if len(reasons) > 0 {
+			logging.Warnf("sync: %d block(s) could not be added after retries; reasons: %v", len(pending), reasons)
+			if tracker != nil && added > 0 {
+				tracker.MarkDirty()
+			}
+		}
 	}
 	if added > 0 {
 		logging.Debugf("sync: synced %d block(s) from %s", added, pid.ShortString())
 	}
 	return nil
+}
+
+func orderBlocksByDependency(blocks []*core.Block) []*core.Block {
+	if len(blocks) <= 1 {
+		return blocks
+	}
+	idxByHash := make(map[string]int, len(blocks))
+	unique := make([]*core.Block, 0, len(blocks))
+	for _, b := range blocks {
+		if b == nil || b.Hash == "" {
+			continue
+		}
+		if _, exists := idxByHash[b.Hash]; exists {
+			continue
+		}
+		idxByHash[b.Hash] = len(unique)
+		unique = append(unique, b)
+	}
+	n := len(unique)
+	if n <= 1 {
+		return unique
+	}
+	adj := make([][]int, n)
+	indeg := make([]int, n)
+	for i, b := range unique {
+		var parentIdx = -1
+		if b.Previous != "" && b.Previous != "0" {
+			if pIdx, ok := idxByHash[b.Previous]; ok && pIdx != i {
+				parentIdx = pIdx
+				adj[pIdx] = append(adj[pIdx], i)
+				indeg[i]++
+			}
+		}
+		if b.Source != "" && b.Source != "0" {
+			if sIdx, ok := idxByHash[b.Source]; ok && sIdx != i && sIdx != parentIdx {
+				adj[sIdx] = append(adj[sIdx], i)
+				indeg[i]++
+			}
+		}
+	}
+	queue := make([]int, 0, n)
+	for i := 0; i < n; i++ {
+		if indeg[i] == 0 {
+			queue = append(queue, i)
+		}
+	}
+	out := make([]*core.Block, 0, n)
+	vis := make([]bool, n)
+	for head := 0; head < len(queue); head++ {
+		u := queue[head]
+		vis[u] = true
+		out = append(out, unique[u])
+		for _, v := range adj[u] {
+			indeg[v]--
+			if indeg[v] == 0 {
+				queue = append(queue, v)
+			}
+		}
+	}
+	if len(out) < n {
+		for i := 0; i < n; i++ {
+			if !vis[i] {
+				out = append(out, unique[i])
+			}
+		}
+	}
+	return out
 }
 
 func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.Ledger, pageSize int) <-chan SyncResponse {
@@ -679,29 +789,35 @@ func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.
 			pending = nil
 		}
 
+		genesisAcct := core.GenesisAccount()
 		accounts := make([]string, 0, len(ourFrontiers))
 		for acc := range ourFrontiers {
 			accounts = append(accounts, acc)
 		}
-
-		capHit := false
-		for _, account := range accounts {
-			if totalSent+len(pending) >= maxServerBlocks {
-				capHit = true
-				break
+		sort.Slice(accounts, func(i, j int) bool {
+			if accounts[i] == genesisAcct {
+				return true
 			}
+			if accounts[j] == genesisAcct {
+				return false
+			}
+			return accounts[i] < accounts[j]
+		})
 
+		missingByAcct := make(map[string][]*core.Block, len(accounts))
+		nextIdxByAcct := make(map[string]int, len(accounts))
+		posInMissing := make(map[string]map[string]int, len(accounts))
+		candidateAccounts := make([]string, 0, len(accounts))
+
+		for _, account := range accounts {
 			remoteFrontier, exists := remoteFrontiers[account]
 			var toSend []*core.Block
 
 			if !exists {
-
 				toSend = ledger.GetChain(account)
 			} else if remoteFrontier == ourFrontiers[account] {
-
 				continue
 			} else {
-
 				chain := ledger.GetChain(account)
 				sending := false
 				for _, b := range chain {
@@ -712,42 +828,121 @@ func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.
 					}
 				}
 				if !sending {
-
 					logging.Debugf("sync: ignoring unrecognized frontier %s for account %s",
 						shortHash(remoteFrontier), shortHash(account))
 					rejected = append(rejected, account)
 					continue
 				}
 			}
+			if len(toSend) > 0 {
+				missingByAcct[account] = toSend
+				hashPos := make(map[string]int, len(toSend))
+				for i, b := range toSend {
+					if b != nil {
+						hashPos[b.Hash] = i
+					}
+				}
+				posInMissing[account] = hashPos
+				candidateAccounts = append(candidateAccounts, account)
+			}
+		}
 
-			for _, b := range toSend {
+		sort.SliceStable(candidateAccounts, func(i, j int) bool {
+			a, b := candidateAccounts[i], candidateAccounts[j]
+			if a == genesisAcct {
+				return true
+			}
+			if b == genesisAcct {
+				return false
+			}
+			ba, bb := missingByAcct[a][0], missingByAcct[b][0]
+			if ba != nil && bb != nil && ba.Timestamp != bb.Timestamp {
+				return ba.Timestamp < bb.Timestamp
+			}
+			return a < b
+		})
+
+		capHit := false
+		emitBlock := func(b *core.Block) bool {
+			if totalSent+len(pending) >= maxServerBlocks {
+				capHit = true
+				return false
+			}
+			pending = append(pending, b)
+			if len(pending) == pageSize {
+				flushIntermediate()
+			}
+			return true
+		}
+
+		type depFrame struct {
+			account  string
+			upToIdx  int
+		}
+		inStack := make(map[string]bool)
+
+		var emitAccountUpTo func(account string, targetIdx int) bool
+		emitAccountUpTo = func(account string, targetIdx int) bool {
+			slice := missingByAcct[account]
+			if len(slice) == 0 {
+				return true
+			}
+			if targetIdx >= len(slice) {
+				targetIdx = len(slice) - 1
+			}
+			for nextIdxByAcct[account] <= targetIdx {
 				if totalSent+len(pending) >= maxServerBlocks {
 					capHit = true
-					break
+					return false
 				}
-				pending = append(pending, b)
-				if len(pending) == pageSize {
-					flushIntermediate()
+				idx := nextIdxByAcct[account]
+				b := slice[idx]
+				if b != nil && b.Source != "" && b.Source != "0" && !inStack[account] {
+					if srcBlk := ledger.GetBlock(b.Source); srcBlk != nil && srcBlk.Account != "" && srcBlk.Account != account {
+						if srcPosMap, ok := posInMissing[srcBlk.Account]; ok {
+							if srcIdx, exists := srcPosMap[b.Source]; exists && nextIdxByAcct[srcBlk.Account] <= srcIdx {
+								inStack[account] = true
+								okEmit := emitAccountUpTo(srcBlk.Account, srcIdx)
+								delete(inStack, account)
+								if !okEmit {
+									return false
+								}
+							}
+						}
+					}
+				}
+				if nextIdxByAcct[account] > idx {
+					continue
+				}
+				nextIdxByAcct[account] = idx + 1
+				if b != nil {
+					if !emitBlock(b) {
+						return false
+					}
 				}
 			}
-			if capHit {
+			return true
+		}
+		_ = depFrame{}
+
+		for _, account := range candidateAccounts {
+			slice := missingByAcct[account]
+			if !emitAccountUpTo(account, len(slice)-1) {
 				break
 			}
 		}
 
-		if len(pending) > 0 || len(rejected) > 0 {
-			cursor := ""
-			if len(pending) > 0 {
-				cursor = pending[len(pending)-1].Hash
-			}
-			ch <- SyncResponse{
-				Blocks:   pending,
-				HasMore:  false,
-				Cursor:   cursor,
-				Rejected: rejected,
-			}
+		cursor := ""
+		if len(pending) > 0 {
+			cursor = pending[len(pending)-1].Hash
 		}
-		_ = capHit
+		ch <- SyncResponse{
+			Blocks:    pending,
+			HasMore:   false,
+			Truncated: capHit,
+			Cursor:    cursor,
+			Rejected:  rejected,
+		}
 	}()
 	return ch
 }

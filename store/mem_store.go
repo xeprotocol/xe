@@ -389,6 +389,10 @@ func (m *MemStore) applyCommitLocked(c *core.BlockCommit) error {
 		m.accountKeys[c.Account] = c.PutAccountKey
 	}
 
+	if c.SetFinalHeight > 0 && c.SetFinalHeight > m.finalHeights[c.Account] {
+		m.finalHeights[c.Account] = c.SetFinalHeight
+	}
+
 	return nil
 }
 
