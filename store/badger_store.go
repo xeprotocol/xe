@@ -946,6 +946,28 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 				return err
 			}
 		}
+
+		if c.SetFinalHeight > 0 {
+			fhKey := prefixedKey(prefixFinalHeight, c.Account)
+			var cur uint64
+			if item, err := txn.Get(fhKey); err == nil {
+				_ = item.Value(func(val []byte) error {
+					if len(val) >= 8 {
+						cur = binary.BigEndian.Uint64(val)
+					}
+					return nil
+				})
+			} else if err != badger.ErrKeyNotFound {
+				return err
+			}
+			if c.SetFinalHeight > cur {
+				val := make([]byte, 8)
+				binary.BigEndian.PutUint64(val, c.SetFinalHeight)
+				if err := txn.Set(fhKey, val); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
 }
