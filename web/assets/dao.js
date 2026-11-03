@@ -226,7 +226,9 @@ async function onGenerateHash() {
       key: o.key,
       value: o.action === 'set' ? o.value : '',
     })),
-    timestamp: Date.now() * 1_000_000,
+    // BigInt: as a Number this exceeds 2^53 and rounds to a multiple of 64 ns, so the value hashed and the
+    // value submitted would differ and the node would reject the block on hash mismatch (XE-0280).
+    timestamp: BigInt(Date.now()) * 1_000_000n,
   };
   const hash = await hashStateChainBlock(state.draft);
   state.draft.hash = hash;
@@ -357,6 +359,17 @@ function renderSigs() {
   setText('submit-hint', need > 0 ? `need ${need} more member signature${need === 1 ? '' : 's'}` : 'threshold reached');
 }
 
+// JSON.stringify cannot write a BigInt and would round a Number timestamp; write top-level BigInt fields as
+// bare integers so the node parses exactly the value that was hashed.
+function serializeBlockJson(block) {
+  const parts = [];
+  for (const [k, v] of Object.entries(block)) {
+    if (v === undefined) continue;
+    parts.push(JSON.stringify(k) + ':' + (typeof v === 'bigint' ? v.toString() : JSON.stringify(v)));
+  }
+  return '{' + parts.join(',') + '}';
+}
+
 async function onSubmitBlock() {
   if (!state.draft) return;
   const opCount = state.draft.ops.length;
@@ -376,13 +389,13 @@ async function onSubmitBlock() {
     })),
     signatures: state.signatures.map((s) => ({ public_key: s.public_key, signature: s.signature })),
     hash: state.draft.hash,
-    timestamp: Number(state.draft.timestamp),
+    timestamp: state.draft.timestamp,
   };
   try {
     const res = await fetch('/api/statechain/blocks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(block),
+      body: serializeBlockJson(block),
     });
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
