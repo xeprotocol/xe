@@ -323,7 +323,8 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 				if !outboundRL.allow(pid) {
 					return
 				}
-				if err := requestSync(h, pid, ledger, quarantine, tracker); err != nil {
+				converged, err := requestSync(h, pid, ledger, quarantine, tracker)
+				if err != nil {
 					metrics.RecordSyncRound(false)
 					if isProtocolNotSupported(err) {
 						tracker.markSyncIncapable(pid)
@@ -331,9 +332,11 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 					} else {
 						logging.Warnf("sync: sync with %s failed: %v", pid.ShortString(), err)
 					}
-				} else {
+				} else if converged {
 					metrics.RecordSyncRound(true)
 					tracker.recordSync(pid, ledger.Frontiers())
+				} else {
+					logging.Debugf("sync: partial sync round with %s (truncated), more blocks remain", pid.ShortString())
 				}
 			})
 		},
@@ -363,7 +366,8 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 				synced = true
 				p := pid
 				gate.spawn(func() {
-					if err := requestSync(h, p, ledger, quarantine, tracker); err != nil {
+					converged, err := requestSync(h, p, ledger, quarantine, tracker)
+					if err != nil {
 						metrics.RecordSyncRound(false)
 						if isProtocolNotSupported(err) {
 							tracker.markSyncIncapable(p)
@@ -371,9 +375,11 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 						} else {
 							logging.Warnf("sync: periodic sync with %s failed: %v", p.ShortString(), err)
 						}
-					} else {
+					} else if converged {
 						metrics.RecordSyncRound(true)
 						tracker.recordSync(p, ledger.Frontiers())
+					} else {
+						logging.Debugf("sync: partial periodic sync with %s (truncated), more blocks remain", p.ShortString())
 					}
 				})
 			}
@@ -526,13 +532,13 @@ func streamPages(enc pageEncoder, ch <-chan SyncResponse) (int, error) {
 	return total, encErr
 }
 
-func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *blockQuarantine, tracker *syncTracker) error {
+func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *blockQuarantine, tracker *syncTracker) (bool, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	s, err := h.NewStream(ctx, pid, syncProtocol)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = s.Close() }()
 	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
@@ -546,11 +552,11 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 		PageSize:  defaultPageSize,
 	}
 	if err := json.NewEncoder(s).Encode(&req); err != nil {
-		return err
+		return false, err
 	}
 
 	if err := s.CloseWrite(); err != nil {
-		return err
+		return false, err
 	}
 
 	lr := &io.LimitedReader{R: s, N: maxSyncResponseBytes}
@@ -558,6 +564,7 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	var allBlocks []*core.Block
 	var rejectedAccounts []string
 	gotTerminal := false
+	isTruncated := false
 
 	for {
 		lr.N = maxSyncResponseBytes
@@ -566,16 +573,21 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			if err == io.EOF {
 				break
 			}
-			return err
+			return false, err
+		}
+		if resp.Truncated {
+			isTruncated = true
 		}
 		allBlocks = append(allBlocks, resp.Blocks...)
-		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)", pid.ShortString(), len(resp.Blocks), len(allBlocks), resp.HasMore)
+		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v, truncated: %v)",
+			pid.ShortString(), len(resp.Blocks), len(allBlocks), resp.HasMore, resp.Truncated)
 		if !resp.HasMore {
 			rejectedAccounts = resp.Rejected
 			gotTerminal = true
 		}
-		if len(allBlocks) >= maxTotalBlocks {
+		if len(allBlocks) >= maxTotalBlocks && resp.HasMore {
 			logging.Warnf("sync: hit maxTotalBlocks cap (%d), stopping", maxTotalBlocks)
+			isTruncated = true
 			break
 		}
 		if !resp.HasMore {
@@ -645,7 +657,8 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	if added > 0 {
 		logging.Debugf("sync: synced %d block(s) from %s", added, pid.ShortString())
 	}
-	return nil
+	converged := gotTerminal && !isTruncated
+	return converged, nil
 }
 
 func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.Ledger, pageSize int) <-chan SyncResponse {
@@ -686,11 +699,6 @@ func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.
 
 		capHit := false
 		for _, account := range accounts {
-			if totalSent+len(pending) >= maxServerBlocks {
-				capHit = true
-				break
-			}
-
 			remoteFrontier, exists := remoteFrontiers[account]
 			var toSend []*core.Block
 
@@ -741,13 +749,22 @@ func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.
 				cursor = pending[len(pending)-1].Hash
 			}
 			ch <- SyncResponse{
-				Blocks:   pending,
-				HasMore:  false,
-				Cursor:   cursor,
-				Rejected: rejected,
+				Blocks:    pending,
+				HasMore:   capHit,
+				Cursor:    cursor,
+				Rejected:  rejected,
+				Truncated: capHit,
+			}
+		} else if capHit {
+			ch <- SyncResponse{
+				HasMore:   true,
+				Truncated: true,
+			}
+		} else {
+			ch <- SyncResponse{
+				HasMore: false,
 			}
 		}
-		_ = capHit
 	}()
 	return ch
 }
