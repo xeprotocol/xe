@@ -241,7 +241,7 @@ lands in your account without a block signed by you.
 XE_WALLET=~/.xe/alice.seed ./xe wallet balance
 ```
 
-**4. Send Bob 25 XE** using the address saved in step 1.
+**4. Send Bob 0.5 XE** using the address saved in step 1.
 
 ```sh
 XE_WALLET=~/.xe/alice.seed ./xe send \
