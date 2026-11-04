@@ -102,6 +102,7 @@ func (l *Ledger) priorLease(leaseHash string, target LeaseState) *Lease {
 		restored.LockedR = 0
 		restored.LockedPayoutCap = 0
 		restored.LockedTWAP = 0
+		restored.Renewals = nil
 	}
 	return &restored
 }
