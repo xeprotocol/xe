@@ -12,12 +12,15 @@ import (
 	"github.com/xeprotocol/xe/core"
 	"github.com/xeprotocol/xe/directory"
 	"github.com/xeprotocol/xe/perf"
+	"github.com/xeprotocol/xe/statechain"
 )
 
 type GossipConfig struct {
 	Difficulty uint64
 
 	Trusted func(peer.ID) bool
+
+	StateChainVerify func(*statechain.Block) error
 
 	ScoreInspect func(map[peer.ID]float64)
 
@@ -39,7 +42,7 @@ func RegisterTopicValidators(ps *pubsub.PubSub, cfg GossipConfig) error {
 	validators := map[string]pubsub.ValidatorEx{
 		BlockTopic:       blockValidator(cfg),
 		VoteTopic:        voteValidator(core.VerifyVoteSignature),
-		StateChainTopic:  stateChainValidator(),
+		StateChainTopic:  stateChainValidator(cfg),
 		DirectoryTopic:   directoryValidator(),
 		CertificateTopic: certificateValidator(),
 		MarketplaceTopic: marketplaceValidator(),
@@ -120,7 +123,7 @@ func voteValidator(verify func(*core.Vote) bool) pubsub.ValidatorEx {
 	}
 }
 
-func stateChainValidator() pubsub.ValidatorEx {
+func stateChainValidator(cfg GossipConfig) pubsub.ValidatorEx {
 	return func(_ context.Context, _ peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
 		var scm StateChainMsg
 		if err := json.Unmarshal(msg.Data, &scm); err != nil {
@@ -136,6 +139,31 @@ func stateChainValidator() pubsub.ValidatorEx {
 		if len(b.Signatures) == 0 {
 			return pubsub.ValidationReject
 		}
+
+		if err := statechain.VerifyBlockHash(b); err != nil {
+			return pubsub.ValidationReject
+		}
+
+		hasValidSig := false
+		for _, sig := range b.Signatures {
+			if !isHex64(sig.PublicKey) || len(sig.Sig) != 128 {
+				return pubsub.ValidationReject
+			}
+			if err := statechain.VerifySignature(b.Hash, sig); err != nil {
+				return pubsub.ValidationReject
+			}
+			hasValidSig = true
+		}
+		if !hasValidSig {
+			return pubsub.ValidationReject
+		}
+
+		if cfg.StateChainVerify != nil {
+			if err := cfg.StateChainVerify(b); err != nil {
+				return pubsub.ValidationReject
+			}
+		}
+
 		return pubsub.ValidationAccept
 	}
 }

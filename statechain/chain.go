@@ -85,6 +85,12 @@ func (c *Chain) replay() error {
 	return nil
 }
 
+func (c *Chain) VerifyBlockSignatures(b *Block) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.verifyBlockSignatures(b)
+}
+
 func (c *Chain) verifyBlockSignatures(b *Block) error {
 	oracleConfig, _ := c.kv.OracleConfig()
 	if oracleConfig != nil && opsMatchPrefix(b.Ops, oracleConfig.AllowedPrefix) {

@@ -162,9 +162,17 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 
 	xenet.SetupNetworkCheck(h, gater)
 
+	var stateChainVerifyFn func(*statechain.Block) error
+
 	ps, err := xenet.NewPubSub(ctx, h, xenet.GossipConfig{
 		Difficulty: cfg.Difficulty,
 		Trusted:    gater.IsTrusted,
+		StateChainVerify: func(b *statechain.Block) error {
+			if stateChainVerifyFn != nil {
+				return stateChainVerifyFn(b)
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		cancel()
@@ -325,6 +333,8 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		cancel()
 		return nil, fmt.Errorf("statechain: %w", err)
 	}
+
+	stateChainVerifyFn = sc.VerifyBlockSignatures
 
 	statechain.SetupSync(h, sc)
 
