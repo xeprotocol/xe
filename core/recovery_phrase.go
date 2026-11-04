@@ -22,8 +22,18 @@ const RecoveryPhraseCoinType uint32 = 1
 //go:embed wordlist_english.txt
 var wordlistEnglish string
 
+func parseWordlist(raw string) []string {
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	normalized = strings.TrimRight(normalized, "\r\n")
+	words := strings.Split(normalized, "\n")
+	for i, w := range words {
+		words[i] = strings.TrimSpace(w)
+	}
+	return words
+}
+
 var (
-	phraseWords = strings.Split(strings.TrimSuffix(wordlistEnglish, "\n"), "\n")
+	phraseWords = parseWordlist(wordlistEnglish)
 	phraseIndex = func() map[string]int {
 		m := make(map[string]int, len(phraseWords))
 		for i, w := range phraseWords {
@@ -32,6 +42,17 @@ var (
 		return m
 	}()
 )
+
+func init() {
+	if len(phraseWords) != 2048 || len(phraseIndex) != 2048 {
+		panic(fmt.Sprintf("recovery_phrase: invalid BIP39 wordlist length (words=%d, index=%d, want 2048)", len(phraseWords), len(phraseIndex)))
+	}
+	for i, w := range phraseWords {
+		if w == "" || strings.ContainsAny(w, "\r\n \t") {
+			panic(fmt.Sprintf("recovery_phrase: malformed BIP39 word at index %d: %q", i, w))
+		}
+	}
+}
 
 var (
 	ErrPhraseWordCount = errors.New("recovery phrase must have 12, 15, 18, 21 or 24 words")
