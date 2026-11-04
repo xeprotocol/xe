@@ -2,7 +2,6 @@ package core
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -149,22 +148,6 @@ func (qm *QuorumManager) finalTally(account, previous string) (*quorumResult, er
 	bigThreshold := new(big.Int).Mul(bigTotal, big.NewInt(quorumNumerator))
 
 	prevFinalized := previous == "0" || qm.ledger.IsFinalized(account, previous)
-	pickWinner := func(winner string) string {
-		if winner == "" || !prevFinalized || qm.promotable(account, previous, winner) {
-			return winner
-		}
-		best := ""
-		for h := range candidateSet {
-			if qm.promotable(account, previous, h) && (best == "" || h < best) {
-				best = h
-			}
-		}
-		if best != "" && best != winner {
-			log.Printf("quorum: winner %s for %s|%s is unpromotable (fails full validation) — substituting lowest-hash promotable candidate %s",
-				shortHash(winner), shortHash(account), shortHash(previous), shortHash(best))
-		}
-		return best
-	}
 
 	hashes := make([]string, 0, len(weightByBlock))
 	for h := range weightByBlock {
@@ -174,9 +157,10 @@ func (qm *QuorumManager) finalTally(account, previous string) (*quorumResult, er
 
 	for _, h := range hashes {
 		if new(big.Int).Mul(weightByBlock[h], big.NewInt(quorumDenominator)).Cmp(bigThreshold) >= 0 {
-			if w := pickWinner(h); w != "" {
-				return buildResultFrom(account, previous, w, candidateSet), nil
+			if !prevFinalized || !qm.promotable(account, previous, h) {
+				continue
 			}
+			return buildResultFrom(account, previous, h, candidateSet), nil
 		}
 	}
 
@@ -324,12 +308,9 @@ func (qm *QuorumManager) confirmConflict(result *quorumResult) error {
 						return fmt.Errorf("confirmConflict: SaveStagedBlock (demoted): %w", err)
 					}
 					if err := qm.ledger.swapBlockLocked(result.ConflictAccount, loserHash, result.WinnerHash, winnerBlock); err != nil {
-
-						if errors.Is(err, ErrWinnerFullValidation) && !IsRetryableError(err) {
-							qm.failedPromotions[failedPromotionKey(result.ConflictAccount, result.ConflictPrev, result.WinnerHash)] = Now()
-							log.Printf("confirmConflict: winner %s for %s|%s failed full validation deterministically — quarantining for %s so the sweep substitutes a promotable candidate: %v",
-								shortHash(result.WinnerHash), shortHash(result.ConflictAccount), shortHash(result.ConflictPrev), failedPromotionTTL, err)
-						}
+						qm.failedPromotions[failedPromotionKey(result.ConflictAccount, result.ConflictPrev, result.WinnerHash)] = Now()
+						log.Printf("confirmConflict: winner %s for %s|%s failed validation — quarantining for %s: %v",
+							shortHash(result.WinnerHash), shortHash(result.ConflictAccount), shortHash(result.ConflictPrev), failedPromotionTTL, err)
 						return fmt.Errorf("confirmConflict: SwapBlock: %w", err)
 					}
 					swapped = true
@@ -340,6 +321,7 @@ func (qm *QuorumManager) confirmConflict(result *quorumResult) error {
 
 				appended, aerr := qm.appendStagedWinner(result, winnerBlock)
 				if aerr != nil {
+					qm.failedPromotions[failedPromotionKey(result.ConflictAccount, result.ConflictPrev, result.WinnerHash)] = Now()
 					return fmt.Errorf("confirmConflict: append winner: %w", aerr)
 				}
 				if !appended {
