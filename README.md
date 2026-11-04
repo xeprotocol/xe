@@ -71,7 +71,7 @@ Honest status against the live `testnet-0005`, as of this release:
 | Explorer + wallet web UI embedded in the node | ✅ works |
 | REST API and SSE streams | ✅ works |
 | Signed p2p chat | ✅ works, end-to-end payload encryption is not done |
-| **Faucet (`xe faucet`)** | ✅ works — grants **1,000 XE** per address per rolling 24 hours, from a funded wallet. |
+| **Faucet (`xe faucet`)** | ✅ works — grants **1 XE** per address, up to 5 per address and IP every 15 minutes, from a funded wallet. |
 | **Leasing a VM, `xe lease` / `xe ssh`** | Requires XUSD and an available provider; check current provider advertisements with the command below. |
 | GPU leasing | 🚧 not implemented |
 | Proof of uptime | 🚧 design stage |
@@ -223,8 +223,8 @@ printf "Bob's address: "
 read -r BOB_ADDRESS
 ```
 
-**2. Fund Alice from the faucet.** The faucet grants 1,000 XE per address per
-rolling 24 hours.
+**2. Fund Alice from the faucet.** The faucet grants 1 XE per address (up to 5 per
+address and IP every 15 minutes).
 
 ```sh
 XE_WALLET=~/.xe/alice.seed ./xe faucet
@@ -241,11 +241,11 @@ lands in your account without a block signed by you.
 XE_WALLET=~/.xe/alice.seed ./xe wallet balance
 ```
 
-**4. Send Bob 25 XE** using the address saved in step 1.
+**4. Send Bob 0.5 XE** using the address saved in step 1.
 
 ```sh
 XE_WALLET=~/.xe/alice.seed ./xe send \
-  "$BOB_ADDRESS" 25 --asset XE --memo "hello world"
+  "$BOB_ADDRESS" 0.5 --asset XE --memo "hello world"
 ```
 
 **5. Bob receives it.**
@@ -370,9 +370,8 @@ repository; this tree is the published release of it.
 
 ## Found a bug?
 
-Please report it. There is a paid bug bounty — currently **Phase 1:
-transactions & running a node**, which is exactly the surface this README walks
-you through.
+Please report it. There is a paid bug bounty across all documented surfaces
+(transactions, running a node, compute leasing, chat, and the state chain).
 
 - Read the scope and reward tiers: **[test.network/bounty](https://test.network/bounty)**
 - File it as an issue on this repository
