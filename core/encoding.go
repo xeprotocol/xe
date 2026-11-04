@@ -182,6 +182,9 @@ func MarshalBlockCanonical(b *Block) ([]byte, error) {
 			if len(sshKey) != 32 {
 				return nil, fmt.Errorf("MarshalBlock: access_pub_key must be 32 bytes, got %d", len(sshKey))
 			}
+			if allZero(sshKey) {
+				return nil, fmt.Errorf("MarshalBlock: access_pub_key must not be all-zero")
+			}
 		}
 		buf.Write(sshKey)
 
@@ -266,6 +269,9 @@ func MarshalBlockCanonical(b *Block) ([]byte, error) {
 		}
 		if len(rep) != 32 {
 			return nil, fmt.Errorf("MarshalBlock: representative must be 32 bytes, got %d", len(rep))
+		}
+		if allZero(rep) {
+			return nil, fmt.Errorf("MarshalBlock: representative must not be the all-zero address")
 		}
 	}
 	buf.Write(rep)

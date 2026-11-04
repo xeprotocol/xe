@@ -104,6 +104,9 @@ func (c *Chain) applyValidated(b *Block) error {
 }
 
 func (c *Chain) AddBlock(b *Block) error {
+	if b == nil {
+		return fmt.Errorf("nil block")
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

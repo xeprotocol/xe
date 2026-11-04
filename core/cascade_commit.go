@@ -12,8 +12,9 @@ type cascadeBuild struct {
 
 	chains map[string]*AccountChain
 
-	addPending map[string]*PendingSend
-	delPending map[string]bool
+	addPending    map[string]*PendingSend
+	delPending    map[string]bool
+	reducePending map[string]uint64
 
 	restoreLease map[string]*Lease
 	deleteLease  map[string]bool
@@ -27,15 +28,16 @@ type cascadeBuild struct {
 
 func newCascadeBuild(winnerHash string) *cascadeBuild {
 	return &cascadeBuild{
-		winnerHash:   winnerHash,
-		chains:       make(map[string]*AccountChain),
-		addPending:   make(map[string]*PendingSend),
-		delPending:   make(map[string]bool),
-		restoreLease: make(map[string]*Lease),
-		deleteLease:  make(map[string]bool),
-		deleteKeyset: make(map[string]bool),
-		delegation:   make(map[string]string),
-		delegated:    make(map[string]bool),
+		winnerHash:    winnerHash,
+		chains:        make(map[string]*AccountChain),
+		addPending:    make(map[string]*PendingSend),
+		delPending:    make(map[string]bool),
+		reducePending: make(map[string]uint64),
+		restoreLease:  make(map[string]*Lease),
+		deleteLease:   make(map[string]bool),
+		deleteKeyset:  make(map[string]bool),
+		delegation:    make(map[string]string),
+		delegated:     make(map[string]bool),
 	}
 }
 
@@ -49,10 +51,23 @@ func (cb *cascadeBuild) addUndo(undo *BlockUndo, apply func()) {
 		cp := *undo.AddPending
 		cb.addPending[cp.SendHash] = &cp
 		delete(cb.delPending, cp.SendHash)
+		delete(cb.reducePending, cp.SendHash)
 	}
 	if undo.DeletePendingID != "" {
 		cb.delPending[undo.DeletePendingID] = true
 		delete(cb.addPending, undo.DeletePendingID)
+		delete(cb.reducePending, undo.DeletePendingID)
+	}
+	if undo.ReducePendingID != "" && undo.ReducePendingAmount > 0 {
+		if ps, ok := cb.addPending[undo.ReducePendingID]; ok {
+			if ps.Amount >= undo.ReducePendingAmount {
+				ps.Amount -= undo.ReducePendingAmount
+			} else {
+				ps.Amount = 0
+			}
+		} else {
+			cb.reducePending[undo.ReducePendingID] += undo.ReducePendingAmount
+		}
 	}
 	if undo.RestoreLease != nil {
 		cp := *undo.RestoreLease
@@ -118,7 +133,22 @@ func (l *Ledger) getPendingSendOverlay(sendHash string) (*PendingSend, error) {
 			return nil, nil
 		}
 	}
-	return l.store.GetPendingSend(sendHash)
+	ps, err := l.store.GetPendingSend(sendHash)
+	if err != nil || ps == nil {
+		return ps, err
+	}
+	if cb != nil {
+		if red := cb.reducePending[sendHash]; red > 0 {
+			cp := *ps
+			if cp.Amount >= red {
+				cp.Amount -= red
+			} else {
+				cp.Amount = 0
+			}
+			return &cp, nil
+		}
+	}
+	return ps, nil
 }
 
 func (l *Ledger) getLeaseOverlay(leaseHash string) (lease *Lease, ok bool, err error) {

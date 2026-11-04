@@ -108,23 +108,33 @@ func (qm *QuorumManager) finalTally(account, previous string) (*quorumResult, er
 
 	weightByBlock := make(map[string]*big.Int)
 	candidateSet := make(map[string]bool)
+	seenReps := make(map[string]bool, len(votes))
 	for _, v := range votes {
-		candidateSet[v.BlockHash] = true
+		if v == nil {
+			continue
+		}
+		bh := strings.ToLower(v.BlockHash)
+		candidateSet[bh] = true
 		if !v.Final {
+			continue
+		}
+		repAcc := v.RepAccount()
+		if repAcc == "" || seenReps[repAcc] {
 			continue
 		}
 
 		if qm.ledger == nil {
 			continue
 		}
-		b := qm.ledger.GetBlockOrStaged(v.BlockHash)
+		b := qm.ledger.GetBlockOrStaged(bh)
 		if b == nil || b.Account != account || b.Previous != previous {
 			continue
 		}
-		if weightByBlock[v.BlockHash] == nil {
-			weightByBlock[v.BlockHash] = new(big.Int)
+		seenReps[repAcc] = true
+		if weightByBlock[bh] == nil {
+			weightByBlock[bh] = new(big.Int)
 		}
-		weightByBlock[v.BlockHash].Add(weightByBlock[v.BlockHash], new(big.Int).SetUint64(v.Weight))
+		weightByBlock[bh].Add(weightByBlock[bh], new(big.Int).SetUint64(v.Weight))
 	}
 
 	conflict, _ := qm.conflictMgr.GetConflict(account, previous)

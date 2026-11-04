@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -246,7 +247,7 @@ func enqueueVote(ctx context.Context, ch chan<- *core.Vote, seen map[string]int6
 	if v.Final {
 		finalByte = "f"
 	}
-	key := v.RepPubKey + "|" + v.ConflictAccount + "|" + v.ConflictPrev + "|" + v.BlockHash + "|" + finalByte
+	key := strings.ToLower(v.RepPubKey) + "|" + strings.ToLower(v.ConflictAccount) + "|" + strings.ToLower(v.ConflictPrev) + "|" + strings.ToLower(v.BlockHash) + "|" + finalByte
 	if ts, ok := seen[key]; ok && now-ts < voteDedupTTL {
 		return false
 	}
