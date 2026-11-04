@@ -884,6 +884,10 @@ func (n *Node) GetBlock(hash string) *core.Block {
 	return n.Ledger.GetBlock(hash)
 }
 
+func (n *Node) GetBlockOrStaged(hash string) *core.Block {
+	return n.Ledger.GetBlockOrStaged(hash)
+}
+
 func (n *Node) pullPhantomBlocks(account, previous string, hashes []string) {
 	if len(hashes) == 0 {
 		return

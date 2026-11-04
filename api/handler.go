@@ -36,6 +36,7 @@ type nodeBackend interface {
 	GetAllReputations() map[string]*core.ReputationAggregate
 	GetChain(account string) []*core.Block
 	GetBlock(hash string) *core.Block
+	GetBlockOrStaged(hash string) *core.Block
 	GetPending(account string) []*core.PendingSend
 	GetAllPending() []*core.PendingSend
 	GetFrontiers() map[string]string
@@ -421,8 +422,12 @@ func writeSubmitError(w http.ResponseWriter, err error) {
 	})
 }
 
+func cleanHex(s string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "0x")
+}
+
 func (h *Handler) handleGetBalance(w http.ResponseWriter, r *http.Request) {
-	address := r.PathValue("address")
+	address := cleanHex(r.PathValue("address"))
 	if address == "" {
 		writeError(w, http.StatusBadRequest, "missing address")
 		return
@@ -449,7 +454,7 @@ func (h *Handler) handleGetBalance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetChain(w http.ResponseWriter, r *http.Request) {
-	address := r.PathValue("address")
+	address := cleanHex(r.PathValue("address"))
 	if address == "" {
 		writeError(w, http.StatusBadRequest, "missing address")
 		return
@@ -513,12 +518,15 @@ func (h *Handler) submitBlock(w http.ResponseWriter, r *http.Request, expectedTy
 }
 
 func (h *Handler) handleGetBlock(w http.ResponseWriter, r *http.Request) {
-	hash := r.PathValue("hash")
+	hash := cleanHex(r.PathValue("hash"))
 	if hash == "" {
 		writeError(w, http.StatusBadRequest, "missing hash")
 		return
 	}
 	b := h.node.GetBlock(hash)
+	if b == nil {
+		b = h.node.GetBlockOrStaged(hash)
+	}
 	if b == nil {
 		writeError(w, http.StatusNotFound, "block not found")
 		return
@@ -527,7 +535,7 @@ func (h *Handler) handleGetBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetPending(w http.ResponseWriter, r *http.Request) {
-	address := r.PathValue("address")
+	address := cleanHex(r.PathValue("address"))
 	if address == "" {
 		writeError(w, http.StatusBadRequest, "missing address")
 		return
@@ -711,7 +719,7 @@ func (h *Handler) handleGetReadiness(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetAccountConflicts(w http.ResponseWriter, r *http.Request) {
-	account := r.PathValue("account")
+	account := cleanHex(r.PathValue("account"))
 	if account == "" {
 		writeError(w, http.StatusBadRequest, "missing account")
 		return
@@ -739,7 +747,7 @@ func (h *Handler) handleGetLeases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetLease(w http.ResponseWriter, r *http.Request) {
-	hash := r.PathValue("hash")
+	hash := cleanHex(r.PathValue("hash"))
 	if hash == "" {
 		writeError(w, http.StatusBadRequest, "missing hash")
 		return
@@ -793,7 +801,7 @@ func (h *Handler) handleSubmitMint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetKeyset(w http.ResponseWriter, r *http.Request) {
-	addr := r.PathValue("address")
+	addr := cleanHex(r.PathValue("address"))
 	if addr == "" {
 		writeError(w, http.StatusBadRequest, "missing address")
 		return
@@ -807,7 +815,7 @@ func (h *Handler) handleGetKeyset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetReputation(w http.ResponseWriter, r *http.Request) {
-	addr := r.PathValue("address")
+	addr := cleanHex(r.PathValue("address"))
 	if addr == "" {
 		writeError(w, http.StatusBadRequest, "missing address")
 		return
