@@ -77,6 +77,18 @@ func (vm *VoteManager) OnConflict(c Conflict) {
 	mu.Lock()
 	defer mu.Unlock()
 
+	if c.WeightSnapshot != nil {
+		if votes, err := vm.store.GetVotesByConflict(c.AccountAddress, c.PreviousHash); err == nil {
+			for _, v := range votes {
+				snapWeight := c.WeightSnapshot[v.RepAccount()]
+				if v.Weight != snapWeight {
+					v.Weight = snapWeight
+					_ = vm.store.PutVote(v)
+				}
+			}
+		}
+	}
+
 	vm.flushPendingVotes(c.AccountAddress, c.PreviousHash)
 
 	vm.castVoteLocked(c.AccountAddress, c.PreviousHash, c.BlockHashes...)
@@ -136,11 +148,19 @@ func (vm *VoteManager) receiveVoteInner(v *Vote) error {
 	if err != nil {
 		return fmt.Errorf("ReceiveVote: GetVote: %w", err)
 	}
+
+	conflict := vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev)
 	if existing != nil && existing.Final {
+		if conflict != nil && conflict.WeightSnapshot != nil {
+			snapWeight := conflict.WeightSnapshot[v.RepAccount()]
+			if existing.Weight != snapWeight {
+				existing.Weight = snapWeight
+				_ = vm.store.PutVote(existing)
+			}
+		}
 		return nil
 	}
 
-	conflict := vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev)
 	if conflict != nil && conflict.WeightSnapshot != nil {
 		v.Weight = conflict.WeightSnapshot[v.RepAccount()]
 	} else {
@@ -241,6 +261,11 @@ func (vm *VoteManager) ValidateVote(v *Vote) error {
 	weight := vm.ledger.GetVoteWeight(v.RepAccount())
 	if weight.Sign() <= 0 {
 		return fmt.Errorf("ValidateVote: representative %s has zero vote weight", v.RepPubKey[:8])
+	}
+	if conflict := vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev); conflict != nil && conflict.WeightSnapshot != nil {
+		if conflict.WeightSnapshot[v.RepAccount()] == 0 {
+			return fmt.Errorf("ValidateVote: representative %s has zero vote weight in conflict snapshot", v.RepPubKey[:8])
+		}
 	}
 
 	if v.Timestamp < 0 {

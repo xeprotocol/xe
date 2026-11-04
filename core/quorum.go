@@ -106,29 +106,9 @@ func (qm *QuorumManager) finalTally(account, previous string) (*quorumResult, er
 		return nil, fmt.Errorf("finalTally: GetVotesByConflict: %w", err)
 	}
 
-	weightByBlock := make(map[string]*big.Int)
-	candidateSet := make(map[string]bool)
-	for _, v := range votes {
-		candidateSet[v.BlockHash] = true
-		if !v.Final {
-			continue
-		}
-
-		if qm.ledger == nil {
-			continue
-		}
-		b := qm.ledger.GetBlockOrStaged(v.BlockHash)
-		if b == nil || b.Account != account || b.Previous != previous {
-			continue
-		}
-		if weightByBlock[v.BlockHash] == nil {
-			weightByBlock[v.BlockHash] = new(big.Int)
-		}
-		weightByBlock[v.BlockHash].Add(weightByBlock[v.BlockHash], new(big.Int).SetUint64(v.Weight))
-	}
-
 	conflict, _ := qm.conflictMgr.GetConflict(account, previous)
 	var bigTotal *big.Int
+	candidateSet := make(map[string]bool)
 	if conflict != nil {
 
 		for _, h := range conflict.BlockHashes {
@@ -144,6 +124,40 @@ func (qm *QuorumManager) finalTally(account, previous string) (*quorumResult, er
 	}
 	if bigTotal.Sign() == 0 {
 		return nil, nil
+	}
+
+	weightByBlock := make(map[string]*big.Int)
+	for _, v := range votes {
+		candidateSet[v.BlockHash] = true
+		if !v.Final {
+			continue
+		}
+
+		if qm.ledger == nil {
+			continue
+		}
+		b := qm.ledger.GetBlockOrStaged(v.BlockHash)
+		if b == nil || b.Account != account || b.Previous != previous {
+			continue
+		}
+
+		var voteWeight uint64
+		if conflict != nil && conflict.WeightSnapshot != nil {
+			voteWeight = conflict.WeightSnapshot[v.RepAccount()]
+		} else {
+			w := qm.ledger.GetVoteWeight(v.RepAccount())
+			if w.IsUint64() {
+				voteWeight = w.Uint64()
+			}
+		}
+		if voteWeight == 0 {
+			continue
+		}
+
+		if weightByBlock[v.BlockHash] == nil {
+			weightByBlock[v.BlockHash] = new(big.Int)
+		}
+		weightByBlock[v.BlockHash].Add(weightByBlock[v.BlockHash], new(big.Int).SetUint64(voteWeight))
 	}
 
 	bigThreshold := new(big.Int).Mul(bigTotal, big.NewInt(quorumNumerator))

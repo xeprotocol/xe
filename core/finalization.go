@@ -335,11 +335,24 @@ func (vm *VoteManager) buildVote(account, prev, blockHash string, final bool) *V
 func (vm *VoteManager) convergeWeights(account, prev string) (map[string]*big.Int, *big.Int) {
 	votes, _ := vm.store.GetVotesByConflict(account, prev)
 	cw := make(map[string]*big.Int)
+	conflict := vm.ledger.GetConflict(account, prev)
 	for _, v := range votes {
+		var voteWeight uint64
+		if conflict != nil && conflict.WeightSnapshot != nil {
+			voteWeight = conflict.WeightSnapshot[v.RepAccount()]
+		} else {
+			w := vm.ledger.GetVoteWeight(v.RepAccount())
+			if w.IsUint64() {
+				voteWeight = w.Uint64()
+			}
+		}
+		if voteWeight == 0 {
+			continue
+		}
 		if cw[v.BlockHash] == nil {
 			cw[v.BlockHash] = new(big.Int)
 		}
-		cw[v.BlockHash].Add(cw[v.BlockHash], new(big.Int).SetUint64(v.Weight))
+		cw[v.BlockHash].Add(cw[v.BlockHash], new(big.Int).SetUint64(voteWeight))
 	}
 	return cw, vm.electionTotalWeight(account, prev)
 }
