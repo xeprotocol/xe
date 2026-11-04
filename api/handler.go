@@ -40,6 +40,7 @@ type nodeBackend interface {
 	GetAllPending() []*core.PendingSend
 	GetFrontiers() map[string]string
 	GetFrontiersDetailed() []node.FrontierInfo
+	GetFrontiersDetailedPaged(offset, limit int) []node.FrontierInfo
 	GetAllAccounts() []node.AccountSummary
 	GetSupply() *core.SupplyReport
 	GetRecentBlocks(limit int) []*core.Block
@@ -687,10 +688,8 @@ func (h *Handler) handleGetRecentBlocks(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) handleGetFrontiers(w http.ResponseWriter, r *http.Request) {
 	offset, limit := parsePagination(r)
-	frontiers := h.node.GetFrontiersDetailed()
-
-	sort.Slice(frontiers, func(i, j int) bool { return frontiers[i].Account < frontiers[j].Account })
-	writeJSON(w, http.StatusOK, paginateSlice(frontiers, offset, limit))
+	frontiers := h.node.GetFrontiersDetailedPaged(offset, limit)
+	writeJSON(w, http.StatusOK, frontiers)
 }
 
 func (h *Handler) handleGetAllConflicts(w http.ResponseWriter, r *http.Request) {
