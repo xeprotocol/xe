@@ -2830,6 +2830,36 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		if b.Balance != expectedBal {
 			return fmt.Errorf("staged lease_force_settle: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
+	case BlockLeaseRenew:
+		if b.Asset != "XUSD" {
+			return fmt.Errorf("staged lease_renew: lease_renew block must have asset=XUSD")
+		}
+		if b.Source == "" {
+			return fmt.Errorf("staged lease_renew: lease_renew must reference a source lease hash")
+		}
+		pending, err := l.store.GetPendingSend(b.Source)
+		if err != nil {
+			return fmt.Errorf("staged lease_renew: GetPendingSend: %w", err)
+		}
+		if pending == nil {
+			return fmt.Errorf("staged lease_renew: no live escrow for lease %s", shortHash(b.Source))
+		}
+		if ls, ok := l.store.(LeaseStore); ok {
+			if lease, err := ls.GetLease(b.Source); err == nil && lease != nil {
+				if lease.Settled {
+					return fmt.Errorf("staged lease_renew: lease already settled")
+				}
+				if lease.Consumer != b.Account {
+					return fmt.Errorf("staged lease_renew: only the consumer can renew a lease")
+				}
+			}
+		}
+		if b.Amount > parentBalance {
+			return fmt.Errorf("staged lease_renew: insufficient balance: have %d, need %d", parentBalance, b.Amount)
+		}
+		if b.Balance != parentBalance-b.Amount {
+			return fmt.Errorf("staged lease_renew: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
+		}
 	case BlockMultisigOpen:
 		return fmt.Errorf("staged multisig_open: conflicting account opens are invalid")
 	case BlockMultisigUpdate:
