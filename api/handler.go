@@ -99,6 +99,35 @@ type Handler struct {
 	recentAt     time.Time
 
 	observer *node.Observer
+
+	sseMu   sync.Mutex
+	sseByIP map[string]int
+}
+
+const maxSSEPerIP = 16
+
+func (h *Handler) acquireSSESlot(ip string) bool {
+	h.sseMu.Lock()
+	defer h.sseMu.Unlock()
+	if h.sseByIP == nil {
+		h.sseByIP = make(map[string]int)
+	}
+	if h.sseByIP[ip] >= maxSSEPerIP {
+		return false
+	}
+	h.sseByIP[ip]++
+	return true
+}
+
+func (h *Handler) releaseSSESlot(ip string) {
+	h.sseMu.Lock()
+	defer h.sseMu.Unlock()
+	if h.sseByIP != nil {
+		h.sseByIP[ip]--
+		if h.sseByIP[ip] <= 0 {
+			delete(h.sseByIP, ip)
+		}
+	}
 }
 
 func NewHandler(n *node.Node) *Handler {
