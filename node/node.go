@@ -2185,6 +2185,19 @@ func (n *Node) ValidateTunnelLease(leaseHash string, peerID peer.ID) error {
 	if lease.Provider != n.KeyPair.Address() {
 		return fmt.Errorf("not the provider for this lease")
 	}
+
+	if peerID == "" {
+		return fmt.Errorf("tunnel: missing remote peer ID")
+	}
+
+	consumerPeer := n.PeerForAccount(lease.Consumer)
+	if consumerPeer == "" {
+		return fmt.Errorf("tunnel: consumer peer not registered for account %s", shortAddr(lease.Consumer))
+	}
+	if consumerPeer != peerID {
+		return fmt.Errorf("tunnel: unauthorized peer %s for consumer %s", peerID.ShortString(), shortAddr(lease.Consumer))
+	}
+
 	return nil
 }
 

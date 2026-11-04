@@ -26,44 +26,119 @@ type TunnelValidator interface {
 	DialSSH(leaseHash string) (net.Conn, error)
 }
 
+const (
+	DefaultMaxTunnelsPerLease = 8
+	DefaultMaxGlobalTunnels   = 256
+)
+
 type TunnelRegistry struct {
-	mu      sync.Mutex
-	tunnels map[string][]io.Closer
+	mu                 sync.Mutex
+	tunnels            map[string][]io.Closer
+	maxTunnelsPerLease int
+	maxGlobalTunnels   int
+	totalTunnels       int
 }
 
 func NewTunnelRegistry() *TunnelRegistry {
-	return &TunnelRegistry{tunnels: make(map[string][]io.Closer)}
+	return NewTunnelRegistryWithLimits(DefaultMaxTunnelsPerLease, DefaultMaxGlobalTunnels)
 }
 
-func (r *TunnelRegistry) add(leaseHash string, c io.Closer) {
-	r.mu.Lock()
-	r.tunnels[leaseHash] = append(r.tunnels[leaseHash], c)
-	r.mu.Unlock()
+func NewTunnelRegistryWithLimits(maxPerLease, maxGlobal int) *TunnelRegistry {
+	if maxPerLease <= 0 {
+		maxPerLease = DefaultMaxTunnelsPerLease
+	}
+	if maxGlobal <= 0 {
+		maxGlobal = DefaultMaxGlobalTunnels
+	}
+	return &TunnelRegistry{
+		tunnels:            make(map[string][]io.Closer),
+		maxTunnelsPerLease: maxPerLease,
+		maxGlobalTunnels:   maxGlobal,
+	}
 }
 
-func (r *TunnelRegistry) remove(leaseHash string, c io.Closer) {
+// Add attempts to register an active tunnel closer for a lease.
+// It returns an error if the per-lease limit or global limit is reached.
+func (r *TunnelRegistry) Add(leaseHash string, c io.Closer) error {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.maxGlobalTunnels > 0 && r.totalTunnels >= r.maxGlobalTunnels {
+		return fmt.Errorf("global tunnel limit reached (%d)", r.maxGlobalTunnels)
+	}
+
 	conns := r.tunnels[leaseHash]
+	if r.maxTunnelsPerLease > 0 && len(conns) >= r.maxTunnelsPerLease {
+		return fmt.Errorf("lease tunnel limit reached (%d)", r.maxTunnelsPerLease)
+	}
+
+	r.tunnels[leaseHash] = append(r.tunnels[leaseHash], c)
+	r.totalTunnels++
+	return nil
+}
+
+// Remove unregisters an active tunnel closer for a lease.
+func (r *TunnelRegistry) Remove(leaseHash string, c io.Closer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	conns, ok := r.tunnels[leaseHash]
+	if !ok {
+		return
+	}
 	for i, conn := range conns {
 		if conn == c {
 			r.tunnels[leaseHash] = append(conns[:i], conns[i+1:]...)
+			r.totalTunnels--
 			break
 		}
 	}
 	if len(r.tunnels[leaseHash]) == 0 {
 		delete(r.tunnels, leaseHash)
 	}
-	r.mu.Unlock()
+	if r.totalTunnels < 0 {
+		r.totalTunnels = 0
+	}
 }
 
+func (r *TunnelRegistry) add(leaseHash string, c io.Closer) error {
+	return r.Add(leaseHash, c)
+}
+
+func (r *TunnelRegistry) remove(leaseHash string, c io.Closer) {
+	r.Remove(leaseHash, c)
+}
+
+// CloseTunnelsForLease closes and removes all tunnels for a lease.
 func (r *TunnelRegistry) CloseTunnelsForLease(leaseHash string) {
 	r.mu.Lock()
-	conns := r.tunnels[leaseHash]
-	delete(r.tunnels, leaseHash)
+	conns, ok := r.tunnels[leaseHash]
+	if ok {
+		delete(r.tunnels, leaseHash)
+		r.totalTunnels -= len(conns)
+		if r.totalTunnels < 0 {
+			r.totalTunnels = 0
+		}
+	}
 	r.mu.Unlock()
+
 	for _, c := range conns {
 		_ = c.Close()
 	}
+}
+
+// CountForLease returns the number of active tunnels for a lease.
+func (r *TunnelRegistry) CountForLease(leaseHash string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.tunnels[leaseHash])
+}
+
+// TotalCount returns the total number of active tunnels across all leases.
+func (r *TunnelRegistry) TotalCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.totalTunnels
 }
 
 func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *TunnelRegistry) {
@@ -81,9 +156,18 @@ func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *Tunnel
 		leaseHash := hex.EncodeToString(leaseBytes[:])
 
 		if err := validator.ValidateTunnelLease(leaseHash, s.Conn().RemotePeer()); err != nil {
-			log.Printf("tunnel: invalid lease %s: %v", leaseHash[:16], err)
+			log.Printf("tunnel: invalid lease %s from peer %s: %v", leaseHash[:16], s.Conn().RemotePeer().ShortString(), err)
 			writeTunnelError(s, err.Error())
 			return
+		}
+
+		if registry != nil {
+			if err := registry.Add(leaseHash, s); err != nil {
+				log.Printf("tunnel: lease %s rejected: %v", leaseHash[:16], err)
+				writeTunnelError(s, "tunnel limit exceeded: "+err.Error())
+				return
+			}
+			defer registry.Remove(leaseHash, s)
 		}
 
 		backend, err := validator.DialSSH(leaseHash)
@@ -100,9 +184,6 @@ func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *Tunnel
 		}
 
 		_ = s.SetDeadline(time.Time{})
-
-		registry.add(leaseHash, s)
-		defer registry.remove(leaseHash, s)
 
 		var wg sync.WaitGroup
 		wg.Add(2)
