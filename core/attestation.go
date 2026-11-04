@@ -11,6 +11,10 @@ import (
 )
 
 func AttestationPayload(leaseHash string, timestamp int64) ([]byte, error) {
+	return AttestationPayloadForOp(leaseHash, "", timestamp)
+}
+
+func AttestationPayloadForOp(leaseHash, operation string, timestamp int64) ([]byte, error) {
 	hashBytes, err := DecodeHash(leaseHash)
 	if err != nil {
 		return nil, err
@@ -18,13 +22,22 @@ func AttestationPayload(leaseHash string, timestamp int64) ([]byte, error) {
 	var ts [8]byte
 	binary.BigEndian.PutUint64(ts[:], uint64(timestamp))
 	h := sha256.New()
+	if operation != "" {
+		h.Write([]byte("xe/attestation/v2\x00"))
+		h.Write([]byte(operation))
+		h.Write([]byte{0})
+	}
 	h.Write(hashBytes)
 	h.Write(ts[:])
 	return h.Sum(nil), nil
 }
 
 func SignAttestation(leaseHash string, timestamp int64, kp *KeyPair) (*TimekeeperAttestation, error) {
-	payload, err := AttestationPayload(leaseHash, timestamp)
+	return SignAttestationForOp(leaseHash, "", timestamp, kp)
+}
+
+func SignAttestationForOp(leaseHash, operation string, timestamp int64, kp *KeyPair) (*TimekeeperAttestation, error) {
+	payload, err := AttestationPayloadForOp(leaseHash, operation, timestamp)
 	if err != nil {
 		return nil, err
 	}
@@ -33,11 +46,12 @@ func SignAttestation(leaseHash string, timestamp int64, kp *KeyPair) (*Timekeepe
 		PublicKey: kp.PubKeyHex(),
 		Timestamp: timestamp,
 		Signature: hex.EncodeToString(sig),
+		Operation: operation,
 	}, nil
 }
 
 func VerifyAttestation(a *TimekeeperAttestation, leaseHash string) error {
-	payload, err := AttestationPayload(leaseHash, a.Timestamp)
+	payload, err := AttestationPayloadForOp(leaseHash, a.Operation, a.Timestamp)
 	if err != nil {
 		return err
 	}
@@ -51,6 +65,10 @@ var MaxAttestationSkew = DefaultMaxAttestationSkew
 const MaxAttestationsPerBlock = 20
 
 func ValidateAttestations(attestations []TimekeeperAttestation, leaseHash string, config *TimekeeperConfig, skipSkew bool) (int64, error) {
+	return ValidateAttestationsForOp(attestations, leaseHash, "", config, skipSkew)
+}
+
+func ValidateAttestationsForOp(attestations []TimekeeperAttestation, leaseHash, expectedOp string, config *TimekeeperConfig, _ bool) (int64, error) {
 	if config == nil {
 		return 0, fmt.Errorf("no timekeeper config")
 	}
@@ -79,18 +97,19 @@ func ValidateAttestations(attestations []TimekeeperAttestation, leaseHash string
 		if seen[a.PublicKey] {
 			continue
 		}
+		if expectedOp != "" && a.Operation != "" && a.Operation != expectedOp {
+			continue
+		}
 		if err := VerifyAttestation(&a, leaseHash); err != nil {
 			continue
 		}
 
-		if !skipSkew {
-			delta := a.Timestamp - now
-			if delta < 0 {
-				delta = -delta
-			}
-			if delta > MaxAttestationSkew {
-				continue
-			}
+		delta := a.Timestamp - now
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > MaxAttestationSkew {
+			continue
 		}
 		seen[a.PublicKey] = true
 		validTimestamps = append(validTimestamps, a.Timestamp)

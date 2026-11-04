@@ -326,6 +326,9 @@ func MarshalBlockAux(b *Block) []byte {
 		binary.BigEndian.PutUint64(ts[:], uint64(a.Timestamp))
 		buf.Write(ts[:])
 		writeLenPrefixedBytes(&buf, []byte(a.Signature))
+		if a.Operation != "" {
+			writeLenPrefixedBytes(&buf, []byte(a.Operation))
+		}
 	}
 	return buf.Bytes()
 }
