@@ -931,7 +931,7 @@ Lease object:
   "locked_r": 2000, "locked_payout_cap": 0, "locked_twap_milli": 0
 }
 ```
-> Invalid `state` → `400 invalid state: must be one of created, accepted, settled, cancelled, unfulfilled`.
+> Invalid `state` → `400 invalid state: must be one of created, accepted, settled, cancelled, unfulfilled, expired`.
 
 ### GET /leases/{hash}
 Lease by hash. Path: `hash`. Errors: `400 missing hash`, `404 lease not found`.

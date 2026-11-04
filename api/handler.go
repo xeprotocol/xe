@@ -729,7 +729,7 @@ func (h *Handler) handleGetLeases(w http.ResponseWriter, r *http.Request) {
 	if stateParam := r.URL.Query().Get("state"); stateParam != "" {
 		state := core.LeaseState(stateParam)
 		if !core.ValidLeaseStates[state] {
-			writeError(w, http.StatusBadRequest, "invalid state: must be one of created, accepted, settled, cancelled, unfulfilled")
+			writeError(w, http.StatusBadRequest, "invalid state: must be one of created, accepted, settled, cancelled, unfulfilled, expired")
 			return
 		}
 		writeJSON(w, http.StatusOK, paginateSlice(h.node.GetLeasesByState(state), offset, limit))
