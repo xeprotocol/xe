@@ -58,7 +58,8 @@ func (d *Directory) Lookup(account string) (*Registration, bool) {
 		return nil, false
 	}
 
-	if time.Since(time.Unix(0, reg.Timestamp)) > d.ttl {
+	age := time.Since(time.Unix(0, reg.Timestamp))
+	if age > d.ttl || age < -MaxRegistrationSkew {
 		return nil, false
 	}
 
@@ -78,7 +79,8 @@ func (d *Directory) List() []*Registration {
 	now := time.Now().UnixNano()
 	out := make([]*Registration, 0, len(d.registrations))
 	for _, reg := range d.registrations {
-		if now-reg.Timestamp <= int64(d.ttl) {
+		age := now - reg.Timestamp
+		if age >= -int64(MaxRegistrationSkew) && age <= int64(d.ttl) {
 			out = append(out, reg)
 		}
 	}
@@ -92,7 +94,8 @@ func (d *Directory) Prune() int {
 	now := time.Now().UnixNano()
 	pruned := 0
 	for account, reg := range d.registrations {
-		if now-reg.Timestamp > int64(d.ttl) {
+		age := now - reg.Timestamp
+		if age > int64(d.ttl) || age < -int64(MaxRegistrationSkew) {
 			delete(d.registrations, account)
 			pruned++
 		}
