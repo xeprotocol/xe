@@ -1,6 +1,17 @@
 const BASE = '/api';
 const PAGE_LIMIT = 1000;
 
+export function parseApiJson(text) {
+  const safe = text.replace(/(?<!\\)(?:\\\\)*"pow_nonce"\s*:\s*(\d+)/g, (match, digits) =>
+    match.replace(new RegExp(digits + '$'), `"${digits}"`)
+  );
+  return JSON.parse(safe);
+}
+
+export function formatRawBlockJson(block) {
+  return JSON.stringify(block, null, 2).replace(/^(\s*"pow_nonce":\s*)"(\d+)"/gm, '$1$2');
+}
+
 export async function api(path) {
   const res = await fetch(BASE + path);
   if (!res.ok) {
@@ -11,7 +22,8 @@ export async function api(path) {
     } catch {}
     throw new Error(detail);
   }
-  return res.json();
+  const text = await res.text();
+  return parseApiJson(text);
 }
 
 export async function fetchAllPages(path) {
