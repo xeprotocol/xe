@@ -209,6 +209,7 @@ type Lease struct {
 	StartTime       int64      `json:"start_time"`
 	CertificateHash string     `json:"certificate_hash,omitempty"`
 	Settled         bool       `json:"settled"`
+	StakeForfeited  bool       `json:"stake_forfeited,omitempty"`
 
 	LockedR         uint64 `json:"locked_r,omitempty"`
 	LockedPayoutCap uint64 `json:"locked_payout_cap,omitempty"`

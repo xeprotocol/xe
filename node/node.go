@@ -1818,6 +1818,12 @@ func (n *Node) trySettleExpiredLeases() {
 		if now > expiry+core.LeaseSettleGrace {
 			continue
 		}
+		if n.VMManager != nil {
+			if _, err := n.VMManager.Get(lease.LeaseHash); err != nil {
+				log.Printf("Skipping lease_settle for %s: no provisioned VM found (%v)", shortHash(lease.LeaseHash), err)
+				continue
+			}
+		}
 		n.settleLease(lease)
 	}
 }
@@ -1830,7 +1836,7 @@ func consumerShouldForceSettle(lease *core.Lease, myAddr string, now int64) bool
 		return false
 	}
 	expiry := lease.EffectiveExpiry()
-	return now >= expiry+core.LeaseSettleGrace+core.LeaseForceSettleGap
+	return now >= expiry
 }
 
 func (n *Node) tryForceSettleStaleLeases() {
@@ -1971,6 +1977,12 @@ func (n *Node) settleLease(lease *core.Lease) {
 	if lease.Cost == 0 {
 		log.Printf("lease_settle: stored lease.Cost is zero for %s", shortHash(lease.LeaseHash))
 		return
+	}
+	if n.VMManager != nil {
+		if _, err := n.VMManager.Get(lease.LeaseHash); err != nil {
+			log.Printf("lease_settle: refusing to settle %s without provisioned VM: %v", shortHash(lease.LeaseHash), err)
+			return
+		}
 	}
 	xeAmount := n.leaseSettleAmount(lease)
 

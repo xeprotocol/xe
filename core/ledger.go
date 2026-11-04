@@ -113,7 +113,7 @@ const (
 	LeaseVCPURate     = uint64(20_000)
 	LeaseMemGBRate    = uint64(10_000)
 	LeaseDiskGBRate   = uint64(1_000)
-	LeaseStakeDivisor = uint64(0)
+	LeaseStakeDivisor = uint64(5)
 )
 
 const (
@@ -218,6 +218,8 @@ type LedgerConfig struct {
 	EpochAtFn func(ns int64) []EpochParams
 
 	FeatureActiveFn func(feature string) bool
+
+	DeliveryVerifyFn func(leaseHash string) bool
 }
 
 const EpochLockTolerance = 3
@@ -267,7 +269,8 @@ type Ledger struct {
 	epochTWAPFn         func() uint64
 	epochAtFn           func(ns int64) []EpochParams
 
-	featureActiveFn func(feature string) bool
+	featureActiveFn  func(feature string) bool
+	deliveryVerifyFn func(leaseHash string) bool
 
 	keysetMu sync.RWMutex
 	keysets  map[string]*Keyset
@@ -302,6 +305,7 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 		certificateLookupFn: cfg.CertificateLookupFn,
 		epochRFn:            cfg.EpochRFn,
 		featureActiveFn:     cfg.FeatureActiveFn,
+		deliveryVerifyFn:    cfg.DeliveryVerifyFn,
 		epochPayoutCapFn:    cfg.EpochPayoutCapFn,
 		epochTWAPFn:         cfg.EpochTWAPFn,
 		epochAtFn:           cfg.EpochAtFn,
@@ -588,7 +592,9 @@ func (l *Ledger) rebuildAssetBalances() error {
 					log.Printf("rebuildAssetBalances: lease_settle block %s references missing lease %s", shortHash(b.Hash), shortHash(b.Source))
 					continue
 				}
-				balByAsset["XUSD"] += lease.Stake
+				if !lease.StakeForfeited {
+					balByAsset["XUSD"] += lease.Stake
+				}
 			}
 		}
 		l.assetBalances[acc] = balByAsset
@@ -649,6 +655,15 @@ func (l *Ledger) rebuildReputation() {
 		}
 
 		settleTs := lookupLeaseSettleTimestamp(l.store, lease)
+		if lease.StakeForfeited {
+			l.reputation.Apply(ReputationEvent{
+				Kind:      EventLeaseUnfulfilled,
+				Provider:  lease.Provider,
+				Consumer:  lease.Consumer,
+				Timestamp: settleTs,
+			})
+			continue
+		}
 		l.reputation.Apply(ReputationEvent{
 			Kind:         EventLeaseSettled,
 			Provider:     lease.Provider,
@@ -1932,7 +1947,7 @@ func (l *Ledger) validateAndAddLeaseForceSettle(b *Block, skipSkew bool) error {
 	}
 
 	expiry := lease.EffectiveExpiry()
-	eligibleAt := expiry + LeaseSettleGrace + LeaseForceSettleGap
+	eligibleAt := expiry
 	if forceTime < eligibleAt {
 		return fmt.Errorf("lease not yet force-settleable: need timestamp >= %d, got %d", eligibleAt, forceTime)
 	}
@@ -2230,19 +2245,38 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 
 	commit.ExpectLeaseEffectiveDurationSecs = lease.EffectiveDurationSecs()
 
-	commit.AssetCredit = &AssetDelta{Account: b.Account, Asset: "XUSD", Amount: lease.Stake}
+	delivered := HasDeliveryAttestation(b.Attestations, b.Source, lease.Consumer, lease.StartTime) ||
+		(l.deliveryVerifyFn != nil && l.deliveryVerifyFn(b.Source))
+	if delivered {
+		commit.AssetCredit = &AssetDelta{Account: b.Account, Asset: "XUSD", Amount: lease.Stake}
+	} else {
+		settledLease := *lease
+		settledLease.Settled = true
+		settledLease.State = LeaseSettled
+		settledLease.StakeForfeited = true
+		commit.PutLease = &settledLease
+	}
 
 	if err := l.commitBlockWrite(commit, prevBalance); err != nil {
 		return err
 	}
 
-	l.reputation.Apply(ReputationEvent{
-		Kind:         EventLeaseSettled,
-		Provider:     lease.Provider,
-		Consumer:     lease.Consumer,
-		Timestamp:    b.Timestamp,
-		DurationSecs: lease.Duration,
-	})
+	if delivered {
+		l.reputation.Apply(ReputationEvent{
+			Kind:         EventLeaseSettled,
+			Provider:     lease.Provider,
+			Consumer:     lease.Consumer,
+			Timestamp:    b.Timestamp,
+			DurationSecs: lease.Duration,
+		})
+	} else {
+		l.reputation.Apply(ReputationEvent{
+			Kind:      EventLeaseUnfulfilled,
+			Provider:  lease.Provider,
+			Consumer:  lease.Consumer,
+			Timestamp: b.Timestamp,
+		})
+	}
 
 	return nil
 }
@@ -3028,7 +3062,7 @@ func (l *Ledger) GetAssetBalanceAtBlock(account, asset, blockHash string) uint64
 			bal = b.Balance
 		}
 		if xusd && b.Type == BlockLeaseSettle && hasLeases {
-			if lease, lerr := ls.GetLease(b.Source); lerr == nil && lease != nil {
+			if lease, lerr := ls.GetLease(b.Source); lerr == nil && lease != nil && !lease.StakeForfeited {
 				bal += lease.Stake
 			}
 		}
