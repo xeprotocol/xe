@@ -3091,3 +3091,9 @@ func (l *Ledger) FinalizedChildHash(account, prev string) string {
 	}
 	return ""
 }
+
+func (l *Ledger) SetWeightForTest(rep string, w int64) {
+	l.delegationMu.Lock()
+	defer l.delegationMu.Unlock()
+	l.weights[rep] = big.NewInt(w)
+}
