@@ -36,6 +36,9 @@ func VerifyRegistration(reg *Registration) error {
 	if reg.NodePeer == "" {
 		return fmt.Errorf("missing node_peer")
 	}
+	if len(reg.NodePeer) < 12 {
+		return fmt.Errorf("node_peer too short: minimum 12 characters, got %d", len(reg.NodePeer))
+	}
 	if reg.Timestamp == 0 {
 		return fmt.Errorf("missing timestamp")
 	}
