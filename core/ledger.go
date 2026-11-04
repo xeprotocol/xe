@@ -753,7 +753,7 @@ func (l *Ledger) addBlock(b *Block, skipTimestamp bool) error {
 	}
 
 	if err := VerifyBlock(b); err != nil {
-		return fmt.Errorf("verify: %w", err)
+		return err
 	}
 
 	if l.difficulty > 0 {
