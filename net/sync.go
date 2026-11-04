@@ -402,6 +402,11 @@ func (g *spawnGate) spawn(f func()) bool {
 	g.mu.Unlock()
 	go func() {
 		defer g.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("sync: recovered panic in spawnGate worker: %v", r)
+			}
+		}()
 		f()
 	}()
 	return true
