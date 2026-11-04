@@ -176,6 +176,9 @@ func requestSync(h host.Host, pid peer.ID, chain *Chain) error {
 			return err
 		}
 		for _, b := range resp.Blocks {
+			if b == nil {
+				continue
+			}
 			if err := chain.AddBlock(b); err != nil {
 				logging.Warnf("statechain sync: block %d: %v", b.Index, err)
 			} else {

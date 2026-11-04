@@ -309,6 +309,11 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 
 	h.SetStreamHandler(syncProtocol, func(s network.Stream) {
 		defer func() { _ = s.Close() }()
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("sync: stream handler panic: %v", r)
+			}
+		}()
 		_ = s.SetDeadline(time.Now().Add(60 * time.Second))
 		if !inboundRL.allow(s.Conn().RemotePeer()) {
 			return
@@ -402,6 +407,11 @@ func (g *spawnGate) spawn(f func()) bool {
 	g.mu.Unlock()
 	go func() {
 		defer g.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("sync: worker panic: %v", r)
+			}
+		}()
 		f()
 	}()
 	return true
@@ -568,7 +578,11 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			}
 			return err
 		}
-		allBlocks = append(allBlocks, resp.Blocks...)
+		for _, b := range resp.Blocks {
+			if b != nil {
+				allBlocks = append(allBlocks, b)
+			}
+		}
 		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)", pid.ShortString(), len(resp.Blocks), len(allBlocks), resp.HasMore)
 		if !resp.HasMore {
 			rejectedAccounts = resp.Rejected
@@ -589,6 +603,10 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	filtered := allBlocks[:0]
 	skipped := 0
 	for _, b := range allBlocks {
+		if b == nil {
+			skipped++
+			continue
+		}
 		if quarantine.contains(b.Hash) {
 			skipped++
 		} else {
@@ -604,6 +622,9 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	for retry := 0; retry < maxRetries && len(pending) > 0; retry++ {
 		var retryable []*core.Block
 		for _, b := range pending {
+			if b == nil {
+				continue
+			}
 			err := ledger.AddSyncedBlock(b)
 			if err != nil {
 				if isRetryableError(err) {
