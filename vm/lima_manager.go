@@ -88,14 +88,37 @@ func NewLimaManager(dataDir, limactlPath string) (*LimaManager, error) {
 }
 
 func (m *LimaManager) vmName(leaseHash string) string {
+	if len(leaseHash) < 12 {
+		return "xe-" + leaseHash
+	}
 	return "xe-" + leaseHash[:12]
+}
+
+func (m *LimaManager) lookupVM(leaseHash string) (*limaVM, bool) {
+	if v, ok := m.vms[leaseHash]; ok {
+		return v, true
+	}
+	prefix := leaseHash
+	if len(prefix) >= 12 {
+		prefix = prefix[:12]
+	}
+	if v, ok := m.vms[prefix]; ok {
+		return v, true
+	}
+	targetName := m.vmName(leaseHash)
+	for _, v := range m.vms {
+		if v.name == targetName || strings.HasPrefix(v.leaseHash, prefix) || strings.HasPrefix(prefix, v.leaseHash) {
+			return v, true
+		}
+	}
+	return nil, false
 }
 
 func (m *LimaManager) Provision(leaseHash string, res Resources, accessPubKey string) (*Info, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.vms[leaseHash]; exists {
+	if _, exists := m.lookupVM(leaseHash); exists {
 		return nil, fmt.Errorf("vm already exists for lease %s", leaseHash)
 	}
 
@@ -165,7 +188,7 @@ func (m *LimaManager) Teardown(leaseHash string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	v, ok := m.vms[leaseHash]
+	v, ok := m.lookupVM(leaseHash)
 	if !ok {
 		return fmt.Errorf("vm not found for lease %s", leaseHash)
 	}
@@ -173,7 +196,11 @@ func (m *LimaManager) Teardown(leaseHash string) error {
 	_, _ = m.runLimactl("stop", v.name)
 	_, _ = m.runLimactl("delete", "--force", v.name)
 	_ = os.Remove(filepath.Join(m.templateDir, v.name+".yaml"))
-	delete(m.vms, leaseHash)
+	for k, cand := range m.vms {
+		if cand == v {
+			delete(m.vms, k)
+		}
+	}
 
 	log.Printf("Lima VM %s torn down", v.name)
 	return nil
@@ -181,14 +208,24 @@ func (m *LimaManager) Teardown(leaseHash string) error {
 
 func (m *LimaManager) DialSSH(leaseHash string) (net.Conn, error) {
 	m.mu.RLock()
-	v, ok := m.vms[leaseHash]
+	v, ok := m.lookupVM(leaseHash)
 	m.mu.RUnlock()
 
 	if !ok {
 		return nil, fmt.Errorf("vm not found for lease %s", leaseHash)
 	}
 
-	addr := fmt.Sprintf("127.0.0.1:%d", v.sshLocalPort)
+	port := v.sshLocalPort
+	if port == 0 {
+		if p, err := m.getSSHPort(v.name); err == nil && p > 0 {
+			port = p
+			m.mu.Lock()
+			v.sshLocalPort = p
+			m.mu.Unlock()
+		}
+	}
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("dial lima vm ssh: %w", err)
@@ -197,12 +234,15 @@ func (m *LimaManager) DialSSH(leaseHash string) (net.Conn, error) {
 }
 
 func (m *LimaManager) Get(leaseHash string) (*Info, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	v, ok := m.vms[leaseHash]
+	v, ok := m.lookupVM(leaseHash)
 	if !ok {
 		return nil, fmt.Errorf("vm not found for lease %s", leaseHash)
+	}
+	if len(leaseHash) > len(v.leaseHash) {
+		m.vms[leaseHash] = v
 	}
 
 	return &Info{
@@ -332,13 +372,27 @@ func (m *LimaManager) cleanOrphans() {
 			continue
 		}
 		var entry struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
+			Name         string `json:"name"`
+			Status       string `json:"status"`
+			SSHLocalPort int    `json:"sshLocalPort"`
 		}
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
 		if strings.HasPrefix(entry.Name, "xe-") {
+			if strings.EqualFold(entry.Status, "Running") {
+				leasePrefix := strings.TrimPrefix(entry.Name, "xe-")
+				m.mu.Lock()
+				m.vms[leasePrefix] = &limaVM{
+					name:         entry.Name,
+					leaseHash:    leasePrefix,
+					sshLocalPort: entry.SSHLocalPort,
+					createdAt:    time.Now().UnixNano(),
+				}
+				m.mu.Unlock()
+				log.Printf("Preserving and adopting running Lima VM: %s (ssh port: %d)", entry.Name, entry.SSHLocalPort)
+				continue
+			}
 			log.Printf("Cleaning orphaned Lima VM: %s (status: %s)", entry.Name, entry.Status)
 			_, _ = m.runLimactl("stop", entry.Name)
 			_, _ = m.runLimactl("delete", "--force", entry.Name)

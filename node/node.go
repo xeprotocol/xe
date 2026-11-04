@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -562,6 +563,8 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 			defer n.wg.Done()
 			n.certRebroadcastLoop()
 		}()
+
+		n.reconcileVMs()
 	}
 
 	n.selfRegister()
@@ -1766,6 +1769,7 @@ func (n *Node) settleLoop() {
 			n.tryForceSettleStaleLeases()
 			n.tryArchiveExpiredLeases()
 			n.cleanupOrphanedVMs()
+			n.reconcileVMs()
 		}
 	}
 }
@@ -1778,18 +1782,57 @@ func (n *Node) cleanupOrphanedVMs() {
 	if !ok {
 		return
 	}
+	myAddr := n.KeyPair.Address()
+	provLeases, _ := ls.GetLeasesByProvider(myAddr)
+
 	for _, info := range n.VMManager.List() {
 		lease, err := ls.GetLease(info.LeaseHash)
-		if err != nil || lease == nil {
-
+		if (err != nil || lease == nil) && provLeases != nil {
+			for _, pl := range provLeases {
+				if strings.HasPrefix(pl.LeaseHash, info.LeaseHash) || strings.HasPrefix(info.LeaseHash, pl.LeaseHash) {
+					lease = pl
+					break
+				}
+			}
+		}
+		if lease == nil {
 			continue
 		}
-		if lease.State.Terminal() {
+		if lease.State.Terminal() || lease.Settled || core.Now().UnixNano() > lease.EffectiveExpiry()+core.LeaseSettleGrace {
 			log.Printf("Cleaning up orphaned VM for terminal lease %s", shortHash(info.LeaseHash))
 			if err := n.VMManager.Teardown(info.LeaseHash); err != nil {
 				log.Printf("Orphan cleanup failed for %s: %v", shortHash(info.LeaseHash), err)
 			}
 		}
+	}
+}
+
+func (n *Node) reconcileVMs() {
+	if n.VMManager == nil || !n.isProvider {
+		return
+	}
+	ls, ok := n.store.(core.LeaseStore)
+	if !ok {
+		return
+	}
+	myAddr := n.KeyPair.Address()
+	leases, err := ls.GetLeasesByProvider(myAddr)
+	if err != nil {
+		return
+	}
+	now := core.Now().UnixNano()
+	for _, lease := range leases {
+		if lease.Settled || lease.State != core.LeaseAccepted {
+			continue
+		}
+		if now >= lease.EffectiveExpiry() {
+			continue
+		}
+		if _, err := n.VMManager.Get(lease.LeaseHash); err == nil {
+			continue
+		}
+		log.Printf("Reconciling VM for live accepted lease %s", shortHash(lease.LeaseHash))
+		n.reprovisionVM(lease)
 	}
 }
 
