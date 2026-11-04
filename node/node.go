@@ -162,9 +162,24 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 
 	xenet.SetupNetworkCheck(h, gater)
 
+	var keyResolverFn func(account string) string
+	var keysetResolverFn func(account string) *core.Keyset
+
 	ps, err := xenet.NewPubSub(ctx, h, xenet.GossipConfig{
 		Difficulty: cfg.Difficulty,
 		Trusted:    gater.IsTrusted,
+		KeyResolver: func(account string) string {
+			if keyResolverFn != nil {
+				return keyResolverFn(account)
+			}
+			return ""
+		},
+		KeysetResolver: func(account string) *core.Keyset {
+			if keysetResolverFn != nil {
+				return keysetResolverFn(account)
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		cancel()
@@ -265,6 +280,8 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		EpochAtFn:           func(ns int64) []core.EpochParams { return epochAtFn(ns) },
 		FeatureActiveFn:     func(feature string) bool { return featureActiveFn(feature) },
 	})
+	keyResolverFn = ledger.GetAccountKey
+	keysetResolverFn = ledger.GetKeyset
 
 	vs := s.(core.VoteStore)
 	cs := s.(core.ConflictStore)

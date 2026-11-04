@@ -22,6 +22,12 @@ type GossipConfig struct {
 	ScoreInspect func(map[peer.ID]float64)
 
 	ScoreInspectInterval time.Duration
+
+	// KeyResolver returns the declared public key for an account if known.
+	KeyResolver func(account string) string
+
+	// KeysetResolver returns the multisig keyset for an account if known.
+	KeysetResolver func(account string) *core.Keyset
 }
 
 func gossipTopics() []string {
@@ -90,6 +96,47 @@ func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 			}
 			if !core.ValidatePoW(hashBytes, b.PoWNonce, cfg.Difficulty) {
 				return pubsub.ValidationReject
+			}
+		}
+
+		// Enforce canonical block verification (pubkey declaration rules and open-block signature verification)
+		if err := core.VerifyBlock(b); err != nil {
+			return pubsub.ValidationReject
+		}
+
+		// For open blocks with multisig, verify multisig threshold and signatures
+		if b.Previous == "0" && len(b.Signatures) > 0 {
+			if b.Type == core.BlockMultisigOpen && b.MSKeyset != nil {
+				if err := core.VerifyMultisig(b.Hash, b.Signatures, b.MSKeyset); err != nil {
+					return pubsub.ValidationReject
+				}
+			}
+		}
+
+		// For non-open blocks, verify signature against the account's registered key or keyset if known
+		if b.Previous != "0" {
+			if len(b.Signatures) == 0 {
+				if cfg.KeyResolver != nil {
+					if pubKey := cfg.KeyResolver(b.Account); pubKey != "" {
+						if err := core.VerifyBlockSignatureWith(b, pubKey); err != nil {
+							return pubsub.ValidationReject
+						}
+					}
+				}
+			} else {
+				if cfg.KeysetResolver != nil {
+					if ks := cfg.KeysetResolver(b.Account); ks != nil {
+						if core.IsSpendingOp(b.Type) {
+							if err := core.VerifyMultisig(b.Hash, b.Signatures, ks); err != nil {
+								return pubsub.ValidationReject
+							}
+						} else {
+							if err := core.VerifyMultisigAny(b.Hash, b.Signatures, ks); err != nil {
+								return pubsub.ValidationReject
+							}
+						}
+					}
+				}
 			}
 		}
 
