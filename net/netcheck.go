@@ -162,6 +162,20 @@ func (g *NetworkGater) IsTrusted(p peer.ID) bool {
 	return g.isTrusted(p)
 }
 
+func (g *NetworkGater) IsAuthenticated(p peer.ID) bool {
+	if g == nil {
+		return true
+	}
+	if g.IsBanned(p) {
+		return false
+	}
+	if g.IsTrusted(p) {
+		return true
+	}
+	_, ok := g.PeerCapabilities(p)
+	return ok
+}
+
 func (g *NetworkGater) isTrusted(p peer.ID) bool {
 	g.mu.RLock()
 	_, ok := g.trusted[p]
@@ -363,10 +377,14 @@ func checkPeer(msg netcheckMsg, ours netcheckMsg) (reason string, banDuration ti
 		}
 	}
 
-	if ours.GenesisHash != "" && msg.GenesisHash != "" && msg.GenesisHash != ours.GenesisHash {
-
-		return fmt.Sprintf("statechain genesis mismatch on network %q: peer genesis %q, ours %s — same network id, different chain start",
-			ours.NetworkID, msg.GenesisHash, ours.GenesisHash), defaultBanDur
+	if ours.GenesisHash != "" {
+		if msg.GenesisHash == "" {
+			return fmt.Sprintf("missing genesis_hash (we are on %s); peer omitted statechain genesis", ours.GenesisHash), defaultBanDur
+		}
+		if msg.GenesisHash != ours.GenesisHash {
+			return fmt.Sprintf("statechain genesis mismatch on network %q: peer genesis %q, ours %s — same network id, different chain start",
+				ours.NetworkID, msg.GenesisHash, ours.GenesisHash), defaultBanDur
+		}
 	}
 
 	if ours.NetworkID != "" && msg.Version == "" {

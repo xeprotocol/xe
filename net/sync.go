@@ -2,6 +2,7 @@ package net
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"strings"
@@ -27,6 +28,9 @@ const (
 	syncCooldown = 5 * time.Second
 
 	periodicSyncInterval = 10 * time.Second
+
+	dirtyPeerCooldown   = 60 * time.Second
+	dirtyResyncCooldown = 30 * time.Second
 
 	maxSyncRequestBytes = 1 << 20
 
@@ -76,17 +80,21 @@ type syncTracker struct {
 	rejections map[peer.ID]map[string]int
 
 	syncIncapable map[peer.ID]time.Time
+
+	lastDirtyByPeer map[peer.ID]time.Time
+	lastPeerDirty   time.Time
 }
 
 const fullResyncInterval = 60 * time.Second
 
 func newSyncTracker() *syncTracker {
 	return &syncTracker{
-		lastFrontiers:  make(map[peer.ID]map[string]string),
-		dirty:          1,
-		lastFullResync: time.Time{},
-		rejections:     make(map[peer.ID]map[string]int),
-		syncIncapable:  make(map[peer.ID]time.Time),
+		lastFrontiers:   make(map[peer.ID]map[string]string),
+		dirty:           1,
+		lastFullResync:  time.Time{},
+		rejections:      make(map[peer.ID]map[string]int),
+		syncIncapable:   make(map[peer.ID]time.Time),
+		lastDirtyByPeer: make(map[peer.ID]time.Time),
 	}
 }
 
@@ -95,6 +103,34 @@ func (st *syncTracker) MarkDirty() {
 		return
 	}
 	sync2.StoreInt32(&st.dirty, 1)
+}
+
+func (st *syncTracker) MarkDirtyFromPeer(pid peer.ID) bool {
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	now := time.Now()
+	if st.lastDirtyByPeer == nil {
+		st.lastDirtyByPeer = make(map[peer.ID]time.Time)
+	}
+
+	if last, ok := st.lastDirtyByPeer[pid]; ok && now.Sub(last) < dirtyPeerCooldown {
+		return false
+	}
+	st.lastDirtyByPeer[pid] = now
+
+	// Clear cached frontier for this peer so shouldSync will resync with this peer
+	delete(st.lastFrontiers, pid)
+
+	if now.Sub(st.lastPeerDirty) >= dirtyResyncCooldown {
+		st.lastPeerDirty = now
+		sync2.StoreInt32(&st.dirty, 1)
+		return true
+	}
+	return false
 }
 
 func (st *syncTracker) shouldSync(pid peer.ID, currentFrontiers map[string]string) bool {
@@ -148,6 +184,7 @@ func (st *syncTracker) removePeer(pid peer.ID) {
 	delete(st.lastFrontiers, pid)
 	delete(st.rejections, pid)
 	delete(st.syncIncapable, pid)
+	delete(st.lastDirtyByPeer, pid)
 }
 
 func (st *syncTracker) markSyncIncapable(pid peer.ID) {
@@ -300,7 +337,11 @@ func frontiersEqual(a, b map[string]string) bool {
 
 type SyncTracker = syncTracker
 
-func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTracker, func()) {
+func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger, gaters ...*NetworkGater) (*SyncTracker, func()) {
+	var gater *NetworkGater
+	if len(gaters) > 0 {
+		gater = gaters[0]
+	}
 	inboundRL := newSyncRateLimiter()
 	outboundRL := newSyncRateLimiter()
 	tracker := newSyncTracker()
@@ -313,7 +354,7 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 		if !inboundRL.allow(s.Conn().RemotePeer()) {
 			return
 		}
-		handleSyncStream(s, ledger, tracker)
+		handleSyncStream(s, ledger, tracker, gater)
 	})
 
 	h.Network().Notify(&network.NotifyBundle{
@@ -425,7 +466,30 @@ func runPeriodicResync(ctx context.Context, tick <-chan time.Time, round func())
 	}
 }
 
-func handleSyncStream(s network.Stream, ledger *core.Ledger, tracker *syncTracker) {
+func handleSyncStream(s network.Stream, ledger *core.Ledger, tracker *syncTracker, gater *NetworkGater) {
+	pid := s.Conn().RemotePeer()
+
+	isAuth := false
+	if gater != nil {
+		if gater.IsBanned(pid) {
+			_ = s.Reset()
+			return
+		}
+		isAuth = gater.IsAuthenticated(pid)
+		if !isAuth {
+			for i := 0; i < 10 && !gater.IsAuthenticated(pid); i++ {
+				if gater.IsBanned(pid) {
+					_ = s.Reset()
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			isAuth = gater.IsAuthenticated(pid)
+		}
+	} else {
+		isAuth = true
+	}
+
 	var req SyncRequest
 	dec := json.NewDecoder(io.LimitReader(s, maxSyncRequestBytes))
 	if err := dec.Decode(&req); err != nil {
@@ -433,6 +497,16 @@ func handleSyncStream(s network.Stream, ledger *core.Ledger, tracker *syncTracke
 			logging.Warnf("sync: decode request: %v", err)
 		}
 		return
+	}
+
+	if !isAuth {
+		powHash := sha256.Sum256([]byte(pid.String()))
+		hasPoW := req.PoWNonce != 0 && core.ValidatePoW(powHash[:], req.PoWNonce, core.DefaultDifficulty)
+		if !hasPoW {
+			logging.Warnf("sync: rejecting inbound sync from unauthenticated peer %s (no netcheck verification or valid pow)", pid.ShortString())
+			_ = s.Reset()
+			return
+		}
 	}
 
 	if len(req.Frontiers) > maxFrontiers {
@@ -466,12 +540,13 @@ func handleSyncStream(s network.Stream, ledger *core.Ledger, tracker *syncTracke
 		return
 	}
 	if totalBlocks > 0 {
-		logging.Debugf("sync: sent %d block(s) to %s", totalBlocks, s.Conn().RemotePeer().ShortString())
+		logging.Debugf("sync: sent %d block(s) to %s", totalBlocks, pid.ShortString())
 	}
-	if tracker != nil && len(behind) > 0 {
-		logging.Debugf("sync: peer %s is ahead on %d account(s) we hold — scheduling self-resync",
-			s.Conn().RemotePeer().ShortString(), len(behind))
-		tracker.MarkDirty()
+	if isAuth && tracker != nil && len(behind) > 0 {
+		if tracker.MarkDirtyFromPeer(pid) {
+			logging.Debugf("sync: authenticated peer %s is ahead on %d account(s) we hold — scheduling self-resync",
+				pid.ShortString(), len(behind))
+		}
 	}
 }
 
