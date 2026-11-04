@@ -167,7 +167,7 @@ func certificateValidator() pubsub.ValidatorEx {
 			return pubsub.ValidationReject
 		}
 
-		if err := perf.VerifyCertificateContent(&cert); err != nil {
+		if err := perf.VerifyCertificate(&cert, core.Now().UnixNano()); err != nil {
 			return pubsub.ValidationReject
 		}
 		return pubsub.ValidationAccept
