@@ -275,6 +275,11 @@ func (qm *QuorumManager) confirmConflict(result *quorumResult) error {
 		return nil
 	}
 
+	if result.ConflictPrev != "0" && !qm.ledger.IsFinalized(result.ConflictAccount, result.ConflictPrev) {
+		return fmt.Errorf("cannot finalize %s: predecessor %s is not finalized",
+			shortHash(result.WinnerHash), shortHash(result.ConflictPrev))
+	}
+
 	entry := qm.ledger.acquireAccountLock(result.ConflictAccount)
 	defer qm.ledger.releaseAccountLock(result.ConflictAccount, entry)
 
@@ -352,6 +357,9 @@ func (qm *QuorumManager) confirmConflict(result *quorumResult) error {
 
 	if height, herr := qm.ledger.GetBlockHeight(result.ConflictAccount, result.WinnerHash); herr == nil {
 		if cur, _ := qm.store.GetFinalHeight(result.ConflictAccount); height > cur {
+			if height != cur+1 {
+				return fmt.Errorf("confirmConflict: cannot advance final height from %d directly to %d (ancestors not finalized)", cur, height)
+			}
 			if err := qm.store.SetFinalHeight(result.ConflictAccount, height); err != nil {
 				return fmt.Errorf("confirmConflict: SetFinalHeight: %w", err)
 			}

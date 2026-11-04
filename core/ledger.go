@@ -339,6 +339,7 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 			if err := l.finalStore.SetFinalHeight(genesis.Account, 1); err != nil {
 				log.Printf("ledger: finalize genesis: %v", err)
 			}
+			_ = l.finalStore.SetBlockStatus(genesis.Hash, StatusFinalized)
 		}
 		log.Printf("Genesis block applied: %s XE to %s", fmt.Sprint(genesis.Balance), shortAddr(genesis.Account))
 
@@ -1168,7 +1169,17 @@ func (l *Ledger) SeedAssetForTesting(b *Block) error {
 	if !IsValidAsset(b.Asset) {
 		return fmt.Errorf("mint: unsupported asset: %q", b.Asset)
 	}
-	return l.seedForTesting(b)
+	if err := l.seedForTesting(b); err != nil {
+		return err
+	}
+	if l.finalStore != nil && b.Previous == "0" {
+		cur, _ := l.finalStore.GetFinalHeight(b.Account)
+		if cur == 0 {
+			_ = l.finalStore.SetFinalHeight(b.Account, 1)
+			_ = l.finalStore.SetBlockStatus(b.Hash, StatusFinalized)
+		}
+	}
+	return nil
 }
 
 func (l *Ledger) seedForTesting(b *Block) error {
@@ -3071,7 +3082,16 @@ func (l *Ledger) IsFinalized(account, blockHash string) bool {
 	if err != nil || h == 0 {
 		return false
 	}
-	return h <= l.FinalHeight(account)
+	if h > l.FinalHeight(account) {
+		return false
+	}
+	if l.finalStore != nil {
+		st, err := l.finalStore.GetBlockStatus(blockHash)
+		if err == nil {
+			return st == StatusFinalized
+		}
+	}
+	return true
 }
 
 func (l *Ledger) FinalizedChildHash(account, prev string) string {
