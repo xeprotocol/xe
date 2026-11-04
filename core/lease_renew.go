@@ -34,6 +34,12 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 		return fmt.Errorf("lease_renew: only the consumer can renew a lease")
 	}
 
+	if l.FeatureActive(FeatureLeaseCaps) {
+		if !lease.CapSet {
+			return fmt.Errorf("lease_renew: provider cap is not committed")
+		}
+	}
+
 	if b.Duration < LeaseMinDuration {
 		return fmt.Errorf("lease_renew duration must be >= %d seconds, got %d", LeaseMinDuration, b.Duration)
 	}
@@ -87,6 +93,12 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 	}
 	if b.Amount != expectedCost {
 		return fmt.Errorf("lease_renew cost mismatch: expected %d (multiplier %d), got %d", expectedCost, cert.PriceMultiplierMilli, b.Amount)
+	}
+
+	if l.FeatureActive(FeatureLeaseCaps) {
+		if err := lease.WithinRenewalCaps(b.Duration, b.Amount); err != nil {
+			return err
+		}
 	}
 
 	if b.LockedR == 0 {

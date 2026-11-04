@@ -65,3 +65,9 @@ func (l *Ledger) FeatureActive(feature string) bool {
 func errFeatureNotActivatedFor(t BlockType, feature string) error {
 	return fmt.Errorf("block type %q requires feature %q: not yet activated (retry after statechain syncs)", t, feature)
 }
+
+func init() {
+	registerDarkValidator(BlockLeaseCap, FeatureLeaseCaps, func(l *Ledger, b *Block, skipTimestamp bool) error {
+		return l.validateAndAddLeaseCap(b, skipTimestamp)
+	})
+}

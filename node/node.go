@@ -726,6 +726,8 @@ func (n *Node) handleIncoming(blocks <-chan *core.Block) {
 				}()
 			}
 
+
+
 			if b.Type == core.BlockLeaseSettle && b.Source != "" {
 				if v, ok := n.consumerVMs.Load(b.Source); ok {
 					old := v.(*vm.Info)
@@ -1056,6 +1058,8 @@ type ProviderInfo struct {
 	MemoryMB            uint64 `json:"memory_mb"`
 	DiskGB              uint64 `json:"disk_gb"`
 	MaxConcurrentLeases uint64 `json:"max_concurrent_leases,omitempty"`
+	MaxDurationSec      uint64 `json:"max_duration_sec,omitempty"`
+	MaxCostXUSD         uint64 `json:"max_cost_xusd,omitempty"`
 	UsedVCPUs           uint64 `json:"used_vcpus"`
 	UsedMemoryMB        uint64 `json:"used_memory_mb"`
 	UsedDiskGB          uint64 `json:"used_disk_gb"`
@@ -1081,6 +1085,10 @@ func (n *Node) GetProviders() []*ProviderInfo {
 			DiskGB:              ad.DiskGB,
 			MaxConcurrentLeases: ad.MaxConcurrentLeases,
 			Timestamp:           ad.Timestamp,
+		}
+		if n.isProvider && n.KeyPair != nil && ad.Provider == n.KeyPair.Address() {
+			info.MaxDurationSec = n.acceptPolicy.MaxDurationSec
+			info.MaxCostXUSD = n.acceptPolicy.MaxCostXUSD
 		}
 		for _, l := range leases {
 			if l.Provider == ad.Provider {
@@ -1601,6 +1609,11 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 		LockedPayoutCap: locked.PayoutCap,
 		LockedTWAP:      locked.TWAP,
 	}
+	if n.StateChain != nil && n.StateChain.FeatureActive(core.FeatureLeaseCaps) {
+		b.LeaseCapSet = true
+		b.LeaseCapDuration = n.acceptPolicy.MaxDurationSec
+		b.LeaseCapCost = n.acceptPolicy.MaxCostXUSD
+	}
 	if err := core.SignBlock(b, n.KeyPair); err != nil {
 		n.blockCreateMu.Unlock()
 		log.Printf("Failed to sign lease_accept: %v", err)
@@ -1784,10 +1797,29 @@ func (n *Node) cleanupOrphanedVMs() {
 
 			continue
 		}
-		if lease.State.Terminal() {
-			log.Printf("Cleaning up orphaned VM for terminal lease %s", shortHash(info.LeaseHash))
+		policyExpired := false
+		if lease.State == core.LeaseAccepted && lease.StartTime > 0 && lease.Provider == n.KeyPair.Address() {
+			maxDurSec := uint64(0)
+			if lease.CapSet && lease.CapDuration > 0 {
+				maxDurSec = lease.CapDuration
+			} else if !n.acceptPolicy.IsZero() && n.acceptPolicy.MaxDurationSec > 0 {
+				maxDurSec = n.acceptPolicy.MaxDurationSec
+			}
+			if maxDurSec > 0 {
+				maxLifetimeNs := int64(maxDurSec) * int64(time.Second)
+				nowNs := core.Now().UnixNano()
+				if nowNs >= lease.StartTime+maxLifetimeNs && nowNs >= lease.EffectiveExpiry() {
+					policyExpired = true
+				}
+			}
+		}
+		if lease.State.Terminal() || policyExpired {
+			log.Printf("Cleaning up orphaned/policy-expired VM for lease %s (terminal=%v, policyExpired=%v)", shortHash(info.LeaseHash), lease.State.Terminal(), policyExpired)
 			if err := n.VMManager.Teardown(info.LeaseHash); err != nil {
 				log.Printf("Orphan cleanup failed for %s: %v", shortHash(info.LeaseHash), err)
+			}
+			if n.tunnelRegistry != nil {
+				n.tunnelRegistry.CloseTunnelsForLease(info.LeaseHash)
 			}
 		}
 	}

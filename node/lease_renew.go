@@ -30,6 +30,13 @@ func (n *Node) RenewLease(leaseHash string, additionalSecs uint64) (*core.Block,
 		return nil, fmt.Errorf("renewal cost: %w", err)
 	}
 
+	// Pre-flight check against committed lease caps before gathering attestations (#162)
+	if n.StateChain != nil && n.StateChain.FeatureActive(core.FeatureLeaseCaps) {
+		if err := lease.WithinRenewalCaps(additionalSecs, cost); err != nil {
+			return nil, fmt.Errorf("renewal rejected by committed caps: %w", err)
+		}
+	}
+
 	var attestations []core.TimekeeperAttestation
 	if tkConfig := n.getTimekeeperConfig(); tkConfig != nil {
 		attestations, err = n.gatherAttestations(leaseHash, tkConfig)
@@ -82,5 +89,64 @@ func (n *Node) RenewLease(leaseHash string, additionalSecs uint64) (*core.Block,
 		}
 	}
 	log.Printf("Renewed lease %s: +%ds, cost %d XUSD (renew block %s)", shortHash(leaseHash), additionalSecs, cost, shortHash(b.Hash))
+	return b, nil
+}
+
+
+// CapLease issues a one-time lease_cap block from the provider to commit duration/cost caps for an accepted lease (#162).
+func (n *Node) CapLease(leaseHash string, capDuration, capCost uint64) (*core.Block, error) {
+	myAddr := n.KeyPair.Address()
+	lease := n.GetLease(leaseHash)
+	if lease == nil {
+		return nil, fmt.Errorf("lease %s not found", shortHash(leaseHash))
+	}
+	if lease.Provider != myAddr {
+		return nil, fmt.Errorf("only provider %s can cap lease %s, this node is %s", shortHash(lease.Provider), shortHash(leaseHash), shortHash(myAddr))
+	}
+	if lease.State != core.LeaseAccepted {
+		return nil, fmt.Errorf("lease %s is not accepted (state: %s)", shortHash(leaseHash), lease.State)
+	}
+	if lease.CapSet {
+		return nil, fmt.Errorf("lease %s already has committed caps", shortHash(leaseHash))
+	}
+
+	n.blockCreateMu.Lock()
+	defer n.blockCreateMu.Unlock()
+
+	chain := n.Ledger.GetChain(myAddr)
+	if len(chain) == 0 {
+		return nil, fmt.Errorf("account not open")
+	}
+	prev := chain[len(chain)-1].Hash
+	bal := n.Ledger.GetAssetBalances(myAddr)["XUSD"]
+
+	b := &core.Block{
+		Type:             core.BlockLeaseCap,
+		Account:          myAddr,
+		Previous:         prev,
+		Balance:          bal,
+		Timestamp:        core.Now().UnixNano(),
+		Asset:            "XUSD",
+		Source:           leaseHash,
+		Amount:           0,
+		LeaseCapSet:      true,
+		LeaseCapDuration: capDuration,
+		LeaseCapCost:     capCost,
+	}
+
+	if err := core.SignBlock(b, n.KeyPair); err != nil {
+		return nil, fmt.Errorf("sign lease_cap: %w", err)
+	}
+	n.solvePoW(b)
+
+	if err := n.Ledger.AddBlock(b); err != nil {
+		return nil, fmt.Errorf("add lease_cap block: %w", err)
+	}
+	if n.Gossip != nil {
+		if err := n.Gossip.Publish(n.ctx, b); err != nil {
+			return nil, fmt.Errorf("gossip lease_cap: %w", err)
+		}
+	}
+	log.Printf("Capped lease %s: maxDur=%ds, maxCost=%d XUSD (block %s)", shortHash(leaseHash), capDuration, capCost, shortHash(b.Hash))
 	return b, nil
 }

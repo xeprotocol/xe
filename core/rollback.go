@@ -102,6 +102,9 @@ func (l *Ledger) priorLease(leaseHash string, target LeaseState) *Lease {
 		restored.LockedR = 0
 		restored.LockedPayoutCap = 0
 		restored.LockedTWAP = 0
+		restored.CapSet = false
+		restored.CapDuration = 0
+		restored.CapCost = 0
 	}
 	return &restored
 }
@@ -127,6 +130,23 @@ func (l *Ledger) escrowPendingOf(leaseHash string) *PendingSend {
 		Amount:      amount,
 		Asset:       "XUSD",
 	}
+}
+
+
+func (l *Ledger) priorLeaseUncap(leaseHash string) *Lease {
+	ls, ok := l.store.(LeaseStore)
+	if !ok {
+		return nil
+	}
+	cur, err := ls.GetLease(leaseHash)
+	if err != nil || cur == nil {
+		return nil
+	}
+	restored := *cur
+	restored.CapSet = false
+	restored.CapDuration = 0
+	restored.CapCost = 0
+	return &restored
 }
 
 func (l *Ledger) priorLeasePopRenewal(leaseHash string) *Lease {
@@ -241,6 +261,8 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		restoreLease = l.priorLeasePopRenewal(b.Source)
 		reducePendingID = b.Source
 		reducePendingAmount = b.Amount
+	case BlockLeaseCap:
+		restoreLease = l.priorLeaseUncap(b.Source)
 	case BlockMultisigOpen:
 		deleteKeysetAccount = b.Account
 	case BlockMultisigUpdate:
@@ -249,7 +271,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 	case BlockBurn, BlockMint:
 
 	}
-	if (b.Type == BlockLeaseAccept || b.Type == BlockLeaseSettle || b.Type == BlockLeaseForceSettle || b.Type == BlockLeaseCancel || b.Type == BlockLeaseRenew) && restoreLease == nil {
+	if (b.Type == BlockLeaseAccept || b.Type == BlockLeaseSettle || b.Type == BlockLeaseForceSettle || b.Type == BlockLeaseCancel || b.Type == BlockLeaseRenew || b.Type == BlockLeaseCap) && restoreLease == nil {
 		return nil, nil, fmt.Errorf("undo: lease %s not found while reversing %s", shortHash(b.Source), b.Type)
 	}
 

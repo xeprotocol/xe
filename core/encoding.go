@@ -24,6 +24,7 @@ const (
 	typeByteLeaseForceSettle = byte(0x0C)
 	typeByteMint             = byte(0x0D)
 	typeByteLeaseRenew       = byte(0x0E)
+	typeByteLeaseCap         = byte(0x0F)
 
 	assetFieldSize      = 8
 	fixedHeaderSize     = 90
@@ -32,6 +33,7 @@ const (
 	leaseTailSize       = 104
 	leaseAcceptTailSize = 64
 	leaseSettleTailSize = 40
+	leaseCapTailSize    = 48
 	burnTailSize        = 8
 	mintTailSize        = 8
 	representativeSize  = 32
@@ -69,6 +71,8 @@ func MarshalBlockCanonical(b *Block) ([]byte, error) {
 		typeByte = typeByteMint
 	case BlockLeaseRenew:
 		typeByte = typeByteLeaseRenew
+	case BlockLeaseCap:
+		typeByte = typeByteLeaseCap
 	default:
 		return nil, fmt.Errorf("MarshalBlock: unknown block type %q", b.Type)
 	}
@@ -223,7 +227,27 @@ func MarshalBlockCanonical(b *Block) ([]byte, error) {
 			binary.BigEndian.PutUint64(locked[8:16], b.LockedPayoutCap)
 			binary.BigEndian.PutUint64(locked[16:24], b.LockedTWAP)
 			buf.Write(locked[:])
+			if b.LeaseCapSet {
+				var caps [16]byte
+				binary.BigEndian.PutUint64(caps[0:8], b.LeaseCapDuration)
+				binary.BigEndian.PutUint64(caps[8:16], b.LeaseCapCost)
+				buf.Write(caps[:])
+			}
 		}
+
+	case BlockLeaseCap:
+		source, err := hex.DecodeString(b.Source)
+		if err != nil {
+			return nil, fmt.Errorf("MarshalBlock: invalid source hex: %w", err)
+		}
+		if len(source) != 32 {
+			return nil, fmt.Errorf("MarshalBlock: source must be 32 bytes, got %d", len(source))
+		}
+		buf.Write(source)
+		var caps [16]byte
+		binary.BigEndian.PutUint64(caps[0:8], b.LeaseCapDuration)
+		binary.BigEndian.PutUint64(caps[8:16], b.LeaseCapCost)
+		buf.Write(caps[:])
 
 	case BlockLeaseRenew:
 
@@ -402,6 +426,12 @@ func unmarshalBlock(data []byte) (*Block, error) {
 	case typeByteMint:
 		blockType = BlockMint
 		minLen = fixedHeaderSize + mintTailSize + representativeSize
+	case typeByteLeaseRenew:
+		blockType = BlockLeaseRenew
+		minLen = fixedHeaderSize + 32 + 16 + 24 + representativeSize
+	case typeByteLeaseCap:
+		blockType = BlockLeaseCap
+		minLen = fixedHeaderSize + leaseCapTailSize + representativeSize
 	default:
 		return nil, fmt.Errorf("UnmarshalBlock: unknown type byte 0x%02x", data[1])
 	}
@@ -471,6 +501,26 @@ func unmarshalBlock(data []byte) (*Block, error) {
 		b.LockedPayoutCap = binary.BigEndian.Uint64(data[138:146])
 		b.LockedTWAP = binary.BigEndian.Uint64(data[146:154])
 		repOffset = 154
+		if len(data) >= 154+16+representativeSize {
+			b.LeaseCapSet = true
+			b.LeaseCapDuration = binary.BigEndian.Uint64(data[154:162])
+			b.LeaseCapCost = binary.BigEndian.Uint64(data[162:170])
+			repOffset = 170
+		}
+	case BlockLeaseRenew:
+		b.Source = hex.EncodeToString(data[90:122])
+		b.Amount = binary.BigEndian.Uint64(data[122:130])
+		b.Duration = binary.BigEndian.Uint64(data[130:138])
+		b.LockedR = binary.BigEndian.Uint64(data[138:146])
+		b.LockedPayoutCap = binary.BigEndian.Uint64(data[146:154])
+		b.LockedTWAP = binary.BigEndian.Uint64(data[154:162])
+		repOffset = 162
+	case BlockLeaseCap:
+		b.Source = hex.EncodeToString(data[90:122])
+		b.LeaseCapSet = true
+		b.LeaseCapDuration = binary.BigEndian.Uint64(data[122:130])
+		b.LeaseCapCost = binary.BigEndian.Uint64(data[130:138])
+		repOffset = 138
 	case BlockMultisigOpen, BlockMultisigUpdate:
 		ks, ksLen, err := unmarshalKeysetCanonical(data[90:])
 		if err != nil {
@@ -496,7 +546,7 @@ func unmarshalBlock(data []byte) (*Block, error) {
 		b.Representative = hex.EncodeToString(repBytes)
 	}
 
-	tailOffset := minLen
+	tailOffset := repOffset + representativeSize
 
 	if blockType == BlockGenesis && len(data) >= repOffset+32+genesisTimingSize {
 		t := data[repOffset+32 : repOffset+32+genesisTimingSize]
