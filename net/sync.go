@@ -3,6 +3,7 @@ package net
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -284,6 +285,23 @@ func (q *blockQuarantine) len() int {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	return len(q.hashes)
+}
+
+func blockQuarantineKey(b *core.Block) string {
+	if b == nil {
+		return ""
+	}
+	if len(b.Signatures) > 0 {
+		var sigs []string
+		for _, s := range b.Signatures {
+			sigs = append(sigs, s.Sig)
+		}
+		return fmt.Sprintf("%s:ms:%s", b.Hash, strings.Join(sigs, ","))
+	}
+	if b.Signature != "" {
+		return fmt.Sprintf("%s:%s", b.Hash, b.Signature)
+	}
+	return b.Hash
 }
 
 func frontiersEqual(a, b map[string]string) bool {
@@ -589,7 +607,10 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	filtered := allBlocks[:0]
 	skipped := 0
 	for _, b := range allBlocks {
-		if quarantine.contains(b.Hash) {
+		if b == nil {
+			continue
+		}
+		if quarantine.contains(blockQuarantineKey(b)) {
 			skipped++
 		} else {
 			filtered = append(filtered, b)
@@ -610,7 +631,7 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 					retryable = append(retryable, b)
 				} else {
 					rejected++
-					quarantine.add(b.Hash)
+					quarantine.add(blockQuarantineKey(b))
 					if rejected <= 3 {
 						logging.Warnf("sync: block %s rejected (quarantined): %v", shortHash(b.Hash), err)
 					}
