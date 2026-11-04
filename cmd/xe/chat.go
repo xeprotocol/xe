@@ -227,6 +227,9 @@ func printEnvelope(w io.Writer, env *chat.Envelope, asJSON bool) error {
 		return err
 	}
 	ts := time.Unix(0, env.Timestamp).UTC().Format(time.RFC3339)
-	_, err := fmt.Fprintf(w, "%s %s -> %s %s\n", ts, env.From, env.To, env.Message)
+	cleanFrom := chat.SanitizeTerminal(env.From)
+	cleanTo := chat.SanitizeTerminal(env.To)
+	cleanMsg := chat.SanitizeTerminal(env.Message)
+	_, err := fmt.Fprintf(w, "%s %s -> %s %s\n", ts, cleanFrom, cleanTo, cleanMsg)
 	return err
 }

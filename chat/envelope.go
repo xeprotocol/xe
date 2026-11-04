@@ -58,6 +58,9 @@ func ComputeEnvelopeID(from, pubKey, to, message string, timestamp int64) string
 }
 
 func NewEnvelope(from, to, message string, kp *core.KeyPair, difficulty uint64) (*Envelope, error) {
+	if err := ValidateMessage(message); err != nil {
+		return nil, fmt.Errorf("new envelope: %w", err)
+	}
 	ts := core.Now().UnixNano()
 
 	pubKey := kp.PubKeyHex()
@@ -85,8 +88,8 @@ func (e *Envelope) VerifyFull(difficulty uint64) error {
 	if e.From == "" || e.PubKey == "" || e.To == "" || e.Message == "" || e.Timestamp == 0 || e.Signature == "" {
 		return fmt.Errorf("missing required fields")
 	}
-	if len(e.Message) > MaxMessageBytes {
-		return fmt.Errorf("message exceeds maximum length of %d bytes", MaxMessageBytes)
+	if err := ValidateMessage(e.Message); err != nil {
+		return fmt.Errorf("invalid envelope message: %w", err)
 	}
 
 	if skew := core.Now().UnixNano() - e.Timestamp; skew > int64(MaxEnvelopeSkew) || skew < -int64(MaxEnvelopeSkew) {
