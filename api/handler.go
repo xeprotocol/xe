@@ -1,6 +1,7 @@
 package api
 
 import (
+	"container/list"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -278,13 +279,16 @@ func corsMiddleware(next http.Handler, allowedOrigin string) http.Handler {
 type ipRateLimiter struct {
 	mu      sync.Mutex
 	entries map[string]*rateLimiterEntry
+	lru     *list.List
 	rate    rate.Limit
 	burst   int
+	max     int
 }
 
 type rateLimiterEntry struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
+	element  *list.Element
 }
 
 const (
@@ -324,8 +328,10 @@ func (rls *rateLimiters) pick(r *http.Request) *ipRateLimiter {
 func newIPRateLimiter(r rate.Limit, burst int) *ipRateLimiter {
 	rl := &ipRateLimiter{
 		entries: make(map[string]*rateLimiterEntry),
+		lru:     list.New(),
 		rate:    r,
 		burst:   burst,
+		max:     maxRateLimiterIPs,
 	}
 	go rl.sweepLoop()
 	return rl
@@ -336,15 +342,38 @@ func (rl *ipRateLimiter) getLimiter(ip string) *rate.Limiter {
 	defer rl.mu.Unlock()
 	e, ok := rl.entries[ip]
 	if !ok {
-
-		if len(rl.entries) >= maxRateLimiterIPs {
-			return rate.NewLimiter(0, 0)
+		maxEntries := rl.max
+		if maxEntries <= 0 {
+			maxEntries = maxRateLimiterIPs
 		}
-		e = &rateLimiterEntry{limiter: rate.NewLimiter(rl.rate, rl.burst)}
+		for len(rl.entries) >= maxEntries {
+			if !rl.evictOldestLocked() {
+				break
+			}
+		}
+		elem := rl.lru.PushBack(ip)
+		e = &rateLimiterEntry{
+			limiter:  rate.NewLimiter(rl.rate, rl.burst),
+			element:  elem,
+			lastSeen: time.Now(),
+		}
 		rl.entries[ip] = e
+		return e.limiter
 	}
+	rl.lru.MoveToBack(e.element)
 	e.lastSeen = time.Now()
 	return e.limiter
+}
+
+func (rl *ipRateLimiter) evictOldestLocked() bool {
+	elem := rl.lru.Front()
+	if elem == nil {
+		return false
+	}
+	oldIP := elem.Value.(string)
+	rl.lru.Remove(elem)
+	delete(rl.entries, oldIP)
+	return true
 }
 
 func (rl *ipRateLimiter) sweepLoop() {
@@ -354,6 +383,9 @@ func (rl *ipRateLimiter) sweepLoop() {
 		cutoff := time.Now().Add(-rateLimiterTTL)
 		for ip, e := range rl.entries {
 			if e.lastSeen.Before(cutoff) {
+				if e.element != nil {
+					rl.lru.Remove(e.element)
+				}
 				delete(rl.entries, ip)
 			}
 		}
