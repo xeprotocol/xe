@@ -180,7 +180,8 @@ Compute:
   lease [flags]           Create a lease
   lease status <hash>     Check lease status
   vm <hash>               Get VM info
-  ssh <hash>              SSH into a leased VM
+  ssh <hash>              SSH into a leased VM (env: XE_SSH_HOST, XE_SSH_PORT,
+                          XE_SSH_STRICT_HOST_KEY_CHECKING, XE_SSH_KNOWN_HOSTS)
 
 Messaging (off-chain, funds-free):
   directory register [--watch]
@@ -1201,17 +1202,10 @@ func cmdSSH(leaseHash string) {
 		gwPort = "2222"
 	}
 
-	proxyCmd := fmt.Sprintf("ssh -p %s -i %s -W %%h:%%p -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR %s@%s",
-		gwPort, pemPath, leaseHash, gwHost)
+	strictCheck := os.Getenv("XE_SSH_STRICT_HOST_KEY_CHECKING")
+	knownHosts := os.Getenv("XE_SSH_KNOWN_HOSTS")
 
-	sshArgs := []string{
-		"-o", "ProxyCommand=" + proxyCmd,
-		"-i", pemPath,
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"root@vm",
-	}
+	sshArgs := buildSSHArgs(gwHost, gwPort, pemPath, leaseHash, strictCheck, knownHosts)
 
 	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Stdin = os.Stdin
@@ -1223,6 +1217,35 @@ func cmdSSH(leaseHash string) {
 		}
 		fatal("ssh: %v", err)
 	}
+}
+
+func buildSSHArgs(gwHost, gwPort, pemPath, leaseHash, strictCheck, knownHosts string) []string {
+	strictVal := "no"
+	if strictCheck != "" {
+		strictVal = strictCheck
+	}
+
+	proxyOpts := fmt.Sprintf("-o StrictHostKeyChecking=%s", strictVal)
+	vmOpts := []string{"-o", "StrictHostKeyChecking=" + strictVal}
+
+	if knownHosts != "" {
+		proxyOpts += fmt.Sprintf(" -o UserKnownHostsFile=%s", knownHosts)
+		vmOpts = append(vmOpts, "-o", "UserKnownHostsFile="+knownHosts)
+	} else if strictVal == "no" {
+		proxyOpts += " -o UserKnownHostsFile=/dev/null"
+		vmOpts = append(vmOpts, "-o", "UserKnownHostsFile=/dev/null")
+	}
+
+	proxyCmd := fmt.Sprintf("ssh -p %s -i %s -W %%h:%%p %s -o LogLevel=ERROR %s@%s",
+		gwPort, pemPath, proxyOpts, leaseHash, gwHost)
+
+	args := []string{
+		"-o", "ProxyCommand=" + proxyCmd,
+		"-i", pemPath,
+	}
+	args = append(args, vmOpts...)
+	args = append(args, "-o", "LogLevel=ERROR", "root@vm")
+	return args
 }
 
 func cmdKeygen() {
