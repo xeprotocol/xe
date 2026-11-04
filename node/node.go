@@ -2375,11 +2375,18 @@ func (n *Node) selfRegister() {
 
 func (n *Node) handleDirectoryGossip(regs <-chan *directory.Registration) {
 	for reg := range regs {
-		if err := n.Directory.Register(reg); err != nil {
-			logging.Warnf("directory: rejected registration for %s: %v", shortAddr(reg.Account), err)
-		} else {
-			logging.Debugf("directory: accepted registration for %s on %s", shortAddr(reg.Account), reg.NodePeer[:12])
-		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Errorf("directory: recovered from panic in gossip registration: %v", r)
+				}
+			}()
+			if err := n.Directory.Register(reg); err != nil {
+				logging.Warnf("directory: rejected registration for %s: %v", shortAddr(reg.Account), err)
+			} else {
+				logging.Debugf("directory: accepted registration for %s on %s", shortAddr(reg.Account), shortHash(reg.NodePeer))
+			}
+		}()
 	}
 }
 
