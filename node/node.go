@@ -994,20 +994,22 @@ func (n *Node) GetAllAccounts() []AccountSummary {
 	frontiers := n.Ledger.Frontiers()
 	out := make([]AccountSummary, 0, len(frontiers))
 	for account, hash := range frontiers {
-		chain := n.Ledger.GetChain(account)
+		frontierBlock := n.Ledger.GetBlock(hash)
 		var balance uint64
-		if len(chain) > 0 {
-			balance = chain[len(chain)-1].Balance
-		}
 		var ts int64
-		if len(chain) > 0 {
-			ts = chain[len(chain)-1].Timestamp
+		if frontierBlock != nil {
+			balance = frontierBlock.Balance
+			ts = frontierBlock.Timestamp
+		}
+		blockCount := 1
+		if count, err := n.Ledger.GetAccountChainLength(account); err == nil && count > 0 {
+			blockCount = count
 		}
 		out = append(out, AccountSummary{
 			Address:            account,
 			Balance:            balance,
 			Balances:           n.Ledger.GetAssetBalances(account),
-			BlockCount:         len(chain),
+			BlockCount:         blockCount,
 			Frontier:           hash,
 			LastBlockTimestamp: ts,
 		})

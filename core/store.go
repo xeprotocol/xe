@@ -6,6 +6,7 @@ type Store interface {
 	GetBlock(hash string) (*Block, error)
 	PutBlock(block *Block) error
 	GetAccountChain(account string) (*AccountChain, error)
+	GetAccountChainLength(account string) (int, error)
 	PutAccountChain(account string, chain *AccountChain) error
 	GetPendingSend(sendHash string) (*PendingSend, error)
 	PutPendingSend(ps *PendingSend) error
