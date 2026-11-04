@@ -76,6 +76,7 @@ type Node struct {
 	providerAds      sync.Map
 	blockCreateMu    sync.Mutex
 	reservedRes      vm.Resources
+	reservedStake    uint64
 	reservedResMu    sync.Mutex
 	syncTracker      *xenet.SyncTracker
 	syncWait         func()
@@ -1361,9 +1362,12 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 				continue
 			}
 			stake := core.LeaseStake(totalCost)
-			if xusdBal < stake {
-				log.Printf("Skipping request %s: insufficient XUSD for stake (%d < %d)",
-					shortHash(req.RequestID), xusdBal, stake)
+			n.reservedResMu.Lock()
+			availStake := satSub(xusdBal, n.reservedStake)
+			n.reservedResMu.Unlock()
+			if availStake < stake {
+				log.Printf("Skipping request %s: insufficient XUSD for stake (%d avail < %d)",
+					shortHash(req.RequestID), availStake, stake)
 				continue
 			}
 			offer := &xenet.ResourceOffer{
@@ -1482,8 +1486,12 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	myAddr := n.KeyPair.Address()
 	stake := core.LeaseStake(leaseBlock.Amount)
 
-	if stake > n.Ledger.GetAssetBalances(myAddr)["XUSD"] {
-		log.Printf("Cannot auto-accept lease %s: insufficient XUSD for stake", shortHash(leaseBlock.Hash))
+	n.reservedResMu.Lock()
+	availStake := satSub(n.Ledger.GetAssetBalances(myAddr)["XUSD"], n.reservedStake)
+	n.reservedResMu.Unlock()
+	if stake > availStake {
+		log.Printf("Cannot auto-accept lease %s: insufficient XUSD for stake (%d avail < %d)",
+			shortHash(leaseBlock.Hash), availStake, stake)
 		return
 	}
 
@@ -1509,11 +1517,21 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	n.blockCreateMu.Lock()
 
 	xusdBal := n.Ledger.GetAssetBalances(myAddr)["XUSD"]
-	if stake > xusdBal {
+	n.reservedResMu.Lock()
+	availStake = satSub(xusdBal, n.reservedStake)
+	if stake > availStake {
+		n.reservedResMu.Unlock()
 		n.blockCreateMu.Unlock()
-		log.Printf("Cannot auto-accept lease %s: insufficient XUSD for stake (have %d, need %d)", shortHash(leaseBlock.Hash), xusdBal, stake)
+		log.Printf("Cannot auto-accept lease %s: insufficient XUSD for stake (have %d avail, need %d)", shortHash(leaseBlock.Hash), availStake, stake)
 		return
 	}
+	n.reservedStake += stake
+	n.reservedResMu.Unlock()
+	defer func() {
+		n.reservedResMu.Lock()
+		n.reservedStake = satSub(n.reservedStake, stake)
+		n.reservedResMu.Unlock()
+	}()
 
 	if n.VMManager != nil {
 		var usedVCPUs, usedMemMB, usedDiskGB uint64

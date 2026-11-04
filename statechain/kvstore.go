@@ -104,10 +104,18 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 		if tk.Threshold < 1 || tk.Threshold > len(tk.Keys) {
 			return fmt.Errorf("timekeepers threshold %d invalid for %d keys", tk.Threshold, len(tk.Keys))
 		}
+		seen := make(map[string]bool, len(tk.Keys))
 		for i, k := range tk.Keys {
 			if len(k) != 64 {
 				return fmt.Errorf("timekeepers key[%d] invalid length: got %d, want 64 hex chars", i, len(k))
 			}
+			if _, err := hex.DecodeString(k); err != nil {
+				return fmt.Errorf("timekeepers key[%d] invalid hex: %w", i, err)
+			}
+			if seen[k] {
+				return fmt.Errorf("timekeepers key[%d] is a duplicate", i)
+			}
+			seen[k] = true
 		}
 	case "sys.minter":
 
