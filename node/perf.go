@@ -298,7 +298,23 @@ func (n *Node) certificateInfoByHash(hash string) *core.CertificateInfo {
 		return nil
 	}
 	return &core.CertificateInfo{
+		Hash:                 cert.Hash,
 		Provider:             cert.Provider,
+		IssuedAt:             cert.IssuedAt,
+		ExpiresAt:            cert.ExpiresAt,
+		PriceMultiplierMilli: cert.PriceMultiplierMilli,
+	}
+}
+
+func (n *Node) CertificateInfoByProviderAt(provider string, at int64) *core.CertificateInfo {
+	cert := n.GetCertificateByProviderAt(provider, at)
+	if cert == nil {
+		return nil
+	}
+	return &core.CertificateInfo{
+		Hash:                 cert.Hash,
+		Provider:             cert.Provider,
+		IssuedAt:             cert.IssuedAt,
 		ExpiresAt:            cert.ExpiresAt,
 		PriceMultiplierMilli: cert.PriceMultiplierMilli,
 	}
@@ -314,12 +330,18 @@ func (n *Node) certs() *certSet {
 }
 
 func (n *Node) GetCertificateByProvider(provider string) *perf.Certificate {
-	now := core.Now().UnixNano()
+	return n.GetCertificateByProviderAt(provider, 0)
+}
 
-	if lc := n.perfCert.Load(); lc != nil && lc.cert.Provider == provider && lc.cert.ExpiresAt > now {
+func (n *Node) GetCertificateByProviderAt(provider string, at int64) *perf.Certificate {
+	if at == 0 {
+		at = core.Now().UnixNano()
+	}
+
+	if lc := n.perfCert.Load(); lc != nil && lc.cert.Provider == provider && lc.cert.ExpiresAt > at && (lc.cert.IssuedAt == 0 || lc.cert.IssuedAt <= at) {
 		return lc.cert
 	}
-	return n.certs().currentValid(provider, now)
+	return n.certs().currentValid(provider, at)
 }
 
 func (n *Node) GetCertificateByHash(hash string) *perf.Certificate {

@@ -81,6 +81,26 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 			shortHash(b.CertificateHash), cert.ExpiresAt, renewTime)
 	}
 
+	if l.currentCertificateLookupFn == nil {
+		return fmt.Errorf("lease_renew: current certificate lookup not configured")
+	}
+	currentCert := l.currentCertificateLookupFn(lease.Provider, renewTime)
+	if currentCert == nil {
+		return fmt.Errorf("lease_renew: provider %s has no current certificate", shortHash(lease.Provider))
+	}
+	if currentCert.ExpiresAt != 0 && renewTime > currentCert.ExpiresAt {
+		return fmt.Errorf("lease_renew: provider %s current certificate expired at %d, renewal time %d",
+			shortHash(lease.Provider), currentCert.ExpiresAt, renewTime)
+	}
+	if currentCert.Hash != "" && b.CertificateHash != currentCert.Hash {
+		return fmt.Errorf("lease_renew: certificate %s is not provider's current certificate %s",
+			shortHash(b.CertificateHash), shortHash(currentCert.Hash))
+	}
+	if cert.PriceMultiplierMilli < currentCert.PriceMultiplierMilli {
+		return fmt.Errorf("lease_renew: certificate multiplier %d is lower than provider's current multiplier %d",
+			cert.PriceMultiplierMilli, currentCert.PriceMultiplierMilli)
+	}
+
 	expectedCost, err := LeaseCost(lease.VCPUs, lease.MemoryMB, lease.DiskGB, b.Duration, cert.PriceMultiplierMilli)
 	if err != nil {
 		return fmt.Errorf("lease_renew cost %w", err)
