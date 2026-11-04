@@ -81,7 +81,7 @@ func (a *AmbientDiscovery) loop(ctx context.Context) {
 		}
 
 		wait := discoveryInterval
-		if a.peerCount() < a.target {
+		if a.outboundPeerCount() < a.target {
 			if n := a.round(ctx); n == 0 {
 
 				wait = discoveryBackoff
@@ -106,7 +106,7 @@ func (a *AmbientDiscovery) round(ctx context.Context) int {
 	found, dialed := 0, 0
 	for pi := range ch {
 		found++
-		if dialed >= discoveryDialsPerRound || a.peerCount() >= a.target {
+		if dialed >= discoveryDialsPerRound || a.outboundPeerCount() >= a.target {
 			continue
 		}
 		if pi.ID == a.host.ID() || len(pi.Addrs) == 0 {
@@ -128,14 +128,30 @@ func (a *AmbientDiscovery) round(ctx context.Context) int {
 
 	a.found.Add(uint64(found))
 	if found > 0 {
-		log.Printf("discovery: round found %d peer record(s), dialled %d, now %d peer(s)",
-			found, dialed, a.peerCount())
+		log.Printf("discovery: round found %d peer record(s), dialled %d, now %d outbound peer(s) (%d total)",
+			found, dialed, a.outboundPeerCount(), a.peerCount())
 	}
 	return found
 }
 
 func (a *AmbientDiscovery) peerCount() int {
+	if a == nil || a.host == nil || a.host.Network() == nil {
+		return 0
+	}
 	return len(a.host.Network().Peers())
+}
+
+func (a *AmbientDiscovery) outboundPeerCount() int {
+	if a == nil || a.host == nil || a.host.Network() == nil {
+		return 0
+	}
+	outboundPeers := make(map[peer.ID]struct{})
+	for _, conn := range a.host.Network().Conns() {
+		if conn != nil && conn.Stat().Direction == network.DirOutbound {
+			outboundPeers[conn.RemotePeer()] = struct{}{}
+		}
+	}
+	return len(outboundPeers)
 }
 
 func (a *AmbientDiscovery) Stats() (rounds, found, connected uint64) {
