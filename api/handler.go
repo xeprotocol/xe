@@ -232,7 +232,7 @@ func (h *Handler) Mux() http.Handler {
 
 	origin := h.corsOrigin
 	if origin == "" {
-		origin = "http://localhost:3000"
+		origin = "*"
 	}
 
 	return corsMiddleware(rateLimitMiddleware(mux, newRateLimiters()), origin)
@@ -262,8 +262,44 @@ func (h *Handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func corsMiddleware(next http.Handler, allowedOrigin string) http.Handler {
+	var origins []string
+	if allowedOrigin != "" && allowedOrigin != "*" {
+		for _, o := range strings.Split(allowedOrigin, ",") {
+			trimmed := strings.TrimSpace(o)
+			if trimmed != "" {
+				origins = append(origins, trimmed)
+			}
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		reqOrigin := r.Header.Get("Origin")
+		var matchedOrigin string
+		if allowedOrigin == "*" {
+			matchedOrigin = "*"
+		} else if reqOrigin != "" && len(origins) > 0 {
+			for _, o := range origins {
+				if o == "*" {
+					matchedOrigin = "*"
+					break
+				}
+				if o == reqOrigin {
+					matchedOrigin = reqOrigin
+					w.Header().Set("Vary", "Origin")
+					break
+				}
+			}
+		}
+		if matchedOrigin == "" {
+			if len(origins) > 0 {
+				matchedOrigin = origins[0]
+			} else {
+				matchedOrigin = allowedOrigin
+			}
+		}
+
+		if matchedOrigin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", matchedOrigin)
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Max-Age", "3600")

@@ -24,7 +24,7 @@ fields you see against your own node will differ.
 - **Errors.** Non-2xx responses are `{"error":"<message>"}`. Common: `400` bad input, `404` not found, `429` rate limited, `503` busy.
 - **Rate limit.** Per-IP token buckets, split by request class → `429 {"error":"rate limit exceeded"}`: **reads** (any GET) 200 req/s sustained, burst 1000; **writes** (POST block/state submit, chat, directory register) 10 req/s, burst 50; **probes** (`GET /health`, `GET /ready`) 20 req/s, burst 100 in a bucket of their own, so browsing traffic can never 429 a supervisor's probe into killing a healthy node. Behind the local reverse proxy the real client IP is taken from the rightmost `X-Forwarded-For` hop. Clients doing bulk reads must handle `429` and back off — a plain sequential sweep of the public `*.core.test.network` URLs can trip the limiter because external clients behind Caddy/NAT share an egress bucket.
 - **Body cap.** POST bodies are capped at **1 MiB** → `400`.
-- **CORS.** `Access-Control-Allow-Methods: GET, POST, OPTIONS`; allowed origin is configurable (default `http://localhost:3000`). `OPTIONS` preflight returns `204`.
+- **CORS.** `Access-Control-Allow-Methods: GET, POST, OPTIONS`; allowed origin is configurable (default `*`, supports comma-separated list). `OPTIONS` preflight returns `204`.
 - **Auth.** The public API is unauthenticated **except** operator-only endpoints (`POST /lease/request`, `POST /lease/{hash}/renew`, the unfiltered `GET /chat/events` firehose, and the node-wide `GET /chat/contacts` list), which require `Authorization: Bearer <token>` where the token is set via `XE_API_ADMIN_TOKEN`. If no token is configured the endpoint returns `403`.
 
 ### Addresses vs. keys
