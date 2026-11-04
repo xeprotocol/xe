@@ -73,7 +73,10 @@ type Node struct {
 	consumerVMs      sync.Map
 	pendingOffersMu  sync.Mutex
 	pendingOffers    map[string]*xenet.ResourceOffer
+	providerAdsMu    sync.Mutex
 	providerAds      sync.Map
+	seenRequestsMu   sync.Mutex
+	seenRequests     map[string]int64
 	blockCreateMu    sync.Mutex
 	reservedRes      vm.Resources
 	reservedResMu    sync.Mutex
@@ -1047,7 +1050,76 @@ func (n *Node) advertiseResources() {
 		log.Printf("Failed to publish resource advertisement: %v", err)
 	}
 
+	n.StoreProviderAd(ad)
+}
+
+func (n *Node) StoreProviderAd(ad *xenet.ResourceAdvertisement) bool {
+	if ad == nil || ad.Provider == "" {
+		return false
+	}
+	n.providerAdsMu.Lock()
+	defer n.providerAdsMu.Unlock()
+	if existing, ok := n.providerAds.Load(ad.Provider); ok {
+		if prev, ok := existing.(*xenet.ResourceAdvertisement); ok && prev != nil && prev.Timestamp >= ad.Timestamp {
+			return false
+		}
+	}
 	n.providerAds.Store(ad.Provider, ad)
+	return true
+}
+
+func (n *Node) PruneProviderAds() int {
+	n.providerAdsMu.Lock()
+	defer n.providerAdsMu.Unlock()
+	now := core.Now().UnixNano()
+	cutoff := now - int64(xenet.MaxAdvertisementAge)
+	futureLimit := now + int64(xenet.MaxMarketplaceFutureSkew)
+	pruned := 0
+	n.providerAds.Range(func(key, value any) bool {
+		ad, ok := value.(*xenet.ResourceAdvertisement)
+		if !ok || ad == nil || ad.Timestamp < cutoff || ad.Timestamp > futureLimit {
+			n.providerAds.Delete(key)
+			pruned++
+		}
+		return true
+	})
+	return pruned
+}
+
+func (n *Node) markRequestSeen(req *xenet.ResourceRequest) bool {
+	if req == nil {
+		return false
+	}
+	reqHash := xenet.RequestHash(req)
+	if reqHash == "" {
+		return false
+	}
+	idKey := req.Consumer + ":" + req.RequestID
+	now := core.Now().UnixNano()
+	cutoff := now - int64(xenet.MaxRequestAge)
+
+	n.seenRequestsMu.Lock()
+	defer n.seenRequestsMu.Unlock()
+	if n.seenRequests == nil {
+		n.seenRequests = make(map[string]int64)
+	}
+	for k, ts := range n.seenRequests {
+		if ts < cutoff {
+			delete(n.seenRequests, k)
+		}
+	}
+	if _, exists := n.seenRequests[reqHash]; exists {
+		return false
+	}
+	if _, exists := n.seenRequests[idKey]; exists {
+		return false
+	}
+	if len(n.seenRequests) >= 10000 {
+		return false
+	}
+	n.seenRequests[reqHash] = req.Timestamp
+	n.seenRequests[idKey] = req.Timestamp
+	return true
 }
 
 type ProviderInfo struct {
@@ -1069,11 +1141,19 @@ func leaseHoldsCapacity(lease *core.Lease) bool {
 }
 
 func (n *Node) GetProviders() []*ProviderInfo {
+	n.PruneProviderAds()
 	leases := n.GetLeases()
+
+	now := core.Now().UnixNano()
+	cutoff := now - int64(xenet.MaxAdvertisementAge)
+	futureLimit := now + int64(xenet.MaxMarketplaceFutureSkew)
 
 	providers := make([]*ProviderInfo, 0)
 	n.providerAds.Range(func(key, value any) bool {
 		ad := value.(*xenet.ResourceAdvertisement)
+		if ad == nil || ad.Timestamp < cutoff || ad.Timestamp > futureLimit {
+			return true
+		}
 		info := &ProviderInfo{
 			Account:             ad.Provider,
 			VCPUs:               ad.VCPUs,
@@ -1321,6 +1401,10 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 				continue
 			}
 			req := msg.Request
+			if !n.markRequestSeen(req) {
+				logging.Debugf("Dropping duplicate resource request %s", shortHash(req.RequestID))
+				continue
+			}
 
 			if err := core.ValidateLeaseDimensions(req.VCPUs, req.MemoryMB, req.DiskGB, req.Duration); err != nil {
 				log.Printf("Skipping request %s: %v", shortHash(req.RequestID), err)
@@ -1396,7 +1480,11 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 				logging.Warnf("Rejecting resource advertisement: %v", err)
 				continue
 			}
-			n.providerAds.Store(msg.Ad.Provider, msg.Ad)
+			n.PruneProviderAds()
+			if !n.StoreProviderAd(msg.Ad) {
+				logging.Debugf("Ignoring stale or duplicate resource advertisement from %s", shortAddr(msg.Ad.Provider))
+				continue
+			}
 
 		case "offer":
 			if msg.Offer == nil {
@@ -1410,7 +1498,7 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 
 			n.pendingOffersMu.Lock()
 
-			cutoff := time.Now().Add(-60 * time.Second).UnixNano()
+			cutoff := core.Now().Add(-60 * time.Second).UnixNano()
 			for id, o := range n.pendingOffers {
 				if o.Timestamp < cutoff {
 					delete(n.pendingOffers, id)
@@ -2393,6 +2481,9 @@ func (n *Node) directoryPruneLoop() {
 		case <-ticker.C:
 			if pruned := n.Directory.Prune(); pruned > 0 {
 				logging.Debugf("directory: pruned %d expired registrations", pruned)
+			}
+			if prunedAds := n.PruneProviderAds(); prunedAds > 0 {
+				logging.Debugf("marketplace: pruned %d expired provider advertisements", prunedAds)
 			}
 		}
 	}
