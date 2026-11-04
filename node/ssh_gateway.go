@@ -121,6 +121,9 @@ func (gw *SSHGateway) handleConnection(conn net.Conn) {
 			if lease.State != core.LeaseAccepted {
 				return nil, fmt.Errorf("lease not active")
 			}
+			if lease.StartTime > 0 && core.Now().UnixNano() >= lease.EffectiveExpiry() {
+				return nil, fmt.Errorf("lease expired")
+			}
 			if lease.AccessPubKey == "" {
 				return nil, fmt.Errorf("lease has no ssh key")
 			}

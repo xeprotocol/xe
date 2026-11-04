@@ -26,6 +26,10 @@ func (h *Handler) handleTunnelTCP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusGone, "lease not active")
 		return
 	}
+	if lease.StartTime > 0 && core.Now().UnixNano() >= lease.EffectiveExpiry() {
+		writeError(w, http.StatusGone, "lease expired")
+		return
+	}
 
 	if lease.AccessPubKey == "" {
 		writeError(w, http.StatusForbidden, "lease has no access key")
