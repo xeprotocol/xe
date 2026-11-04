@@ -62,7 +62,20 @@ func NewUIHandler(fsys fs.FS, cfg UIConfig) (http.Handler, error) {
 
 	fileServer := http.FileServer(http.FS(fsys))
 	mux.Handle("/", walletGate(cfg.WalletEnabled, fileServer))
-	return mux, nil
+	return securityHeadersMiddleware(mux), nil
+}
+
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func newPrefixProxy(prefix, base string) (http.Handler, error) {
