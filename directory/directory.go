@@ -40,9 +40,13 @@ func (d *Directory) Register(reg *Registration) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	now := time.Now().UnixNano()
 	existing, ok := d.registrations[reg.Account]
-	if ok && existing.Timestamp >= reg.Timestamp {
-		return nil
+	if ok {
+		existingValid := (now-existing.Timestamp <= int64(d.ttl)) && (existing.Timestamp-now <= int64(MaxRegistrationSkew))
+		if existingValid && existing.Timestamp >= reg.Timestamp {
+			return nil
+		}
 	}
 
 	d.registrations[reg.Account] = reg
@@ -58,7 +62,8 @@ func (d *Directory) Lookup(account string) (*Registration, bool) {
 		return nil, false
 	}
 
-	if time.Since(time.Unix(0, reg.Timestamp)) > d.ttl {
+	now := time.Now().UnixNano()
+	if now-reg.Timestamp > int64(d.ttl) || reg.Timestamp-now > int64(MaxRegistrationSkew) {
 		return nil, false
 	}
 
@@ -78,7 +83,7 @@ func (d *Directory) List() []*Registration {
 	now := time.Now().UnixNano()
 	out := make([]*Registration, 0, len(d.registrations))
 	for _, reg := range d.registrations {
-		if now-reg.Timestamp <= int64(d.ttl) {
+		if now-reg.Timestamp <= int64(d.ttl) && reg.Timestamp-now <= int64(MaxRegistrationSkew) {
 			out = append(out, reg)
 		}
 	}
@@ -92,7 +97,7 @@ func (d *Directory) Prune() int {
 	now := time.Now().UnixNano()
 	pruned := 0
 	for account, reg := range d.registrations {
-		if now-reg.Timestamp > int64(d.ttl) {
+		if now-reg.Timestamp > int64(d.ttl) || reg.Timestamp-now > int64(MaxRegistrationSkew) {
 			delete(d.registrations, account)
 			pruned++
 		}

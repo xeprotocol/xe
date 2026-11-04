@@ -2444,6 +2444,10 @@ func (n *Node) LookupDirectory(account string) *directory.Registration {
 	return reg
 }
 
+func (n *Node) RemoveDirectory(account string) {
+	n.Directory.Remove(account)
+}
+
 func (n *Node) validateChatEnvelope(env *chat.Envelope) error {
 	return env.VerifyFull(n.chatDifficulty)
 }
