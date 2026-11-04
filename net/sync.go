@@ -585,7 +585,7 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			rejectedAccounts = resp.Rejected
 			gotTerminal = true
 		}
-		if len(allBlocks) >= maxTotalBlocks {
+		if len(allBlocks) >= maxTotalBlocks && resp.HasMore {
 			logging.Warnf("sync: hit maxTotalBlocks cap (%d), stopping", maxTotalBlocks)
 			isTruncated = true
 			break
@@ -699,11 +699,6 @@ func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.
 
 		capHit := false
 		for _, account := range accounts {
-			if totalSent+len(pending) >= maxServerBlocks {
-				capHit = true
-				break
-			}
-
 			remoteFrontier, exists := remoteFrontiers[account]
 			var toSend []*core.Block
 
@@ -764,6 +759,10 @@ func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.
 			ch <- SyncResponse{
 				HasMore:   true,
 				Truncated: true,
+			}
+		} else {
+			ch <- SyncResponse{
+				HasMore: false,
 			}
 		}
 	}()

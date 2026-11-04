@@ -123,3 +123,100 @@ func TestSyncResponseTruncatedJSON(t *testing.T) {
 		t.Fatalf("expected omitempty to drop 'truncated' field when false, got %s", string(cleanData))
 	}
 }
+
+func TestSyncExactCapWithSynchronizedSecondaryAccount(t *testing.T) {
+	s := store.NewMemStore()
+	l := core.NewLedger(s, core.LedgerConfig{})
+	const account1 = "synthetic-cap-account-1"
+	const account2 = "synthetic-synced-account-2"
+
+	// account1 has exactly 10,000 blocks (maxServerBlocks cap)
+	const totalBlocks1 = 10000
+	blocks1 := make([]*core.Block, totalBlocks1)
+	for i := range blocks1 {
+		blocks1[i] = &core.Block{Account: account1, Hash: fmt.Sprintf("%064x", i+1)}
+	}
+	if err := s.PutAccountChain(account1, &core.AccountChain{Blocks: blocks1}); err != nil {
+		t.Fatalf("PutAccountChain acc1: %v", err)
+	}
+	if err := s.PutFrontier(account1, blocks1[totalBlocks1-1].Hash); err != nil {
+		t.Fatalf("PutFrontier acc1: %v", err)
+	}
+
+	// account2 has 5 blocks and is already synchronized on remote peer
+	const totalBlocks2 = 5
+	blocks2 := make([]*core.Block, totalBlocks2)
+	for i := range blocks2 {
+		blocks2[i] = &core.Block{Account: account2, Hash: fmt.Sprintf("%064x", 100000+i+1)}
+	}
+	if err := s.PutAccountChain(account2, &core.AccountChain{Blocks: blocks2}); err != nil {
+		t.Fatalf("PutAccountChain acc2: %v", err)
+	}
+	if err := s.PutFrontier(account2, blocks2[totalBlocks2-1].Hash); err != nil {
+		t.Fatalf("PutFrontier acc2: %v", err)
+	}
+
+	// Request has all other frontiers (including genesis and account2) already matched, but account1 unknown
+	request := l.Frontiers()
+	delete(request, account1)
+
+	var pages []SyncResponse
+	totalDelivered := 0
+	for resp := range findMissingBlocksPaginated(request, l, 64) {
+		pages = append(pages, resp)
+		totalDelivered += len(resp.Blocks)
+	}
+
+	if totalDelivered != 10000 {
+		t.Fatalf("expected exactly 10,000 delivered blocks, got %d", totalDelivered)
+	}
+
+	if len(pages) == 0 {
+		t.Fatalf("expected at least one page returned")
+	}
+
+	lastPage := pages[len(pages)-1]
+	// All missing blocks were delivered. The second account is already synchronized,
+	// so the server MUST NOT falsely signal truncation or hasMore: true.
+	if lastPage.HasMore {
+		t.Fatalf("expected final page to have hasMore=false, got true")
+	}
+	if lastPage.Truncated {
+		t.Fatalf("expected final page to have truncated=false, got true")
+	}
+}
+
+func TestSyncIdenticalFrontiersTerminalResponse(t *testing.T) {
+	s := store.NewMemStore()
+	l := core.NewLedger(s, core.LedgerConfig{})
+	const account = "synced-acc"
+
+	blocks := []*core.Block{
+		{Account: account, Hash: fmt.Sprintf("%064x", 1)},
+	}
+	if err := s.PutAccountChain(account, &core.AccountChain{Blocks: blocks}); err != nil {
+		t.Fatalf("PutAccountChain: %v", err)
+	}
+	if err := s.PutFrontier(account, blocks[0].Hash); err != nil {
+		t.Fatalf("PutFrontier: %v", err)
+	}
+
+	request := l.Frontiers()
+	var pages []SyncResponse
+	for resp := range findMissingBlocksPaginated(request, l, 64) {
+		pages = append(pages, resp)
+	}
+
+	if len(pages) != 1 {
+		t.Fatalf("expected exactly 1 terminal page for identical frontiers, got %d", len(pages))
+	}
+	if pages[0].HasMore {
+		t.Fatalf("expected hasMore=false for identical frontiers, got true")
+	}
+	if pages[0].Truncated {
+		t.Fatalf("expected truncated=false for identical frontiers, got true")
+	}
+	if len(pages[0].Blocks) != 0 {
+		t.Fatalf("expected 0 blocks for identical frontiers, got %d", len(pages[0].Blocks))
+	}
+}
