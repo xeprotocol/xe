@@ -87,9 +87,10 @@ type nodeBackend interface {
 }
 
 type Handler struct {
-	node       nodeBackend
-	corsOrigin string
-	adminToken string
+	node         nodeBackend
+	corsOrigin   string
+	adminToken   string
+	trustedProxy bool
 
 	chatAuthMu    sync.Mutex
 	chatAuthState *chatAuthState
@@ -111,6 +112,10 @@ func (h *Handler) SetCORSOrigin(origin string) {
 
 func (h *Handler) SetAdminToken(token string) {
 	h.adminToken = token
+}
+
+func (h *Handler) SetTrustedProxy(trusted bool) {
+	h.trustedProxy = trusted
 }
 
 func (h *Handler) checkAdmin(w http.ResponseWriter, r *http.Request) bool {
@@ -235,7 +240,7 @@ func (h *Handler) Mux() http.Handler {
 		origin = "http://localhost:3000"
 	}
 
-	return corsMiddleware(rateLimitMiddleware(mux, newRateLimiters()), origin)
+	return corsMiddleware(h.rateLimitMiddleware(mux, newRateLimiters()), origin)
 }
 
 func (h *Handler) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -361,9 +366,9 @@ func (rl *ipRateLimiter) sweepLoop() {
 	}
 }
 
-func rateLimitMiddleware(next http.Handler, rls *rateLimiters) http.Handler {
+func (h *Handler) rateLimitMiddleware(next http.Handler, rls *rateLimiters) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
+		ip := h.clientIP(r)
 		if !rls.pick(r).getLimiter(ip).Allow() {
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
@@ -372,27 +377,64 @@ func rateLimitMiddleware(next http.Handler, rls *rateLimiters) http.Handler {
 	})
 }
 
+func rateLimitMiddleware(next http.Handler, rls *rateLimiters) http.Handler {
+	return (&Handler{}).rateLimitMiddleware(next, rls)
+}
+
+func (h *Handler) clientIP(r *http.Request) string {
+	return resolveClientIP(r, h.trustedProxy)
+}
+
 func clientIP(r *http.Request) string {
+	return resolveClientIP(r, false)
+}
+
+func resolveClientIP(r *http.Request, trustedProxy bool) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if !isLoopbackHost(host) {
+	host = strings.Trim(host, "[]")
+	if !trustedProxy || !isLoopbackHost(host) {
 		return host
 	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
-			return last
+		for i := len(parts) - 1; i >= 0; i-- {
+			candidate := strings.TrimSpace(parts[i])
+			if candidate == "" {
+				continue
+			}
+			if candHost, _, err := net.SplitHostPort(candidate); err == nil {
+				candidate = candHost
+			}
+			candidate = strings.Trim(candidate, "[]")
+			if !isLoopbackHost(candidate) {
+				return candidate
+			}
+		}
+		for i := len(parts) - 1; i >= 0; i-- {
+			candidate := strings.TrimSpace(parts[i])
+			if candidate == "" {
+				continue
+			}
+			if candHost, _, err := net.SplitHostPort(candidate); err == nil {
+				candidate = candHost
+			}
+			return strings.Trim(candidate, "[]")
 		}
 	}
 	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
-		return xr
+		if candHost, _, err := net.SplitHostPort(xr); err == nil {
+			xr = candHost
+		}
+		return strings.Trim(xr, "[]")
 	}
 	return host
 }
 
 func isLoopbackHost(host string) bool {
+	host = strings.Trim(host, "[]")
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()
 	}
@@ -927,7 +969,7 @@ func (h *Handler) handleAttestationRequest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	att, err := h.node.RequestAttestation(clientIP(r), req.LeaseHash)
+	att, err := h.node.RequestAttestation(h.clientIP(r), req.LeaseHash)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
