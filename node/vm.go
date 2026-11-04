@@ -172,6 +172,11 @@ func (n *Node) RequestAndCreateLease(ctx context.Context, vcpus, memoryMB, diskG
 		return "", fmt.Errorf("request lease: %w", err)
 	}
 
+	if offer.VCPUs < vcpus || offer.MemoryMB < memoryMB || offer.DiskGB < diskGB || offer.Duration < durationSecs {
+		return "", fmt.Errorf("offer spec insufficient: requested (%d vcpus, %d MB, %d GB, %ds), got (%d vcpus, %d MB, %d GB, %ds)",
+			vcpus, memoryMB, diskGB, durationSecs, offer.VCPUs, offer.MemoryMB, offer.DiskGB, offer.Duration)
+	}
+
 	if err := n.CreateLeaseBlock(offer.Provider, offer.VCPUs, offer.MemoryMB, offer.DiskGB, durationSecs, offer.TotalCost, accessPubKey, offer.CertificateHash); err != nil {
 		return "", fmt.Errorf("create lease block: %w", err)
 	}

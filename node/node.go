@@ -73,6 +73,7 @@ type Node struct {
 	consumerVMs      sync.Map
 	pendingOffersMu  sync.Mutex
 	pendingOffers    map[string]*xenet.ResourceOffer
+	activeRequests   map[string]*xenet.ResourceRequest
 	providerAds      sync.Map
 	blockCreateMu    sync.Mutex
 	reservedRes      vm.Resources
@@ -495,6 +496,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		gater:                  gater,
 		activationLog:          newActivationReporter(),
 		pendingOffers:          make(map[string]*xenet.ResourceOffer),
+		activeRequests:         make(map[string]*xenet.ResourceRequest),
 		acceptInFlight:         make(map[string]struct{}),
 		pullSem:                make(chan struct{}, maxInFlightVotePulls),
 		ctx:                    ctx,
@@ -1410,6 +1412,21 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 
 			n.pendingOffersMu.Lock()
 
+			// 1. Only admit offers answering an active request published by this node
+			req, isMine := n.activeRequests[msg.Offer.RequestID]
+			if !isMine || req == nil {
+				n.pendingOffersMu.Unlock()
+				continue
+			}
+
+			// 2. Validate offer satisfies the minimum requested spec
+			if msg.Offer.VCPUs < req.VCPUs || msg.Offer.MemoryMB < req.MemoryMB || msg.Offer.DiskGB < req.DiskGB || msg.Offer.Duration < req.Duration {
+				n.pendingOffersMu.Unlock()
+				logging.Warnf("Rejecting under-spec offer %s from %s", shortHash(msg.Offer.RequestID), shortAddr(msg.Offer.Provider))
+				continue
+			}
+
+			// 3. Prune stale offers (> 60s)
 			cutoff := time.Now().Add(-60 * time.Second).UnixNano()
 			for id, o := range n.pendingOffers {
 				if o.Timestamp < cutoff {
@@ -1417,6 +1434,27 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 				}
 			}
 
+			// 4. Per-sender quota (max 5 pending offers per provider)
+			providerCount := 0
+			for _, o := range n.pendingOffers {
+				if o.Provider == msg.Offer.Provider {
+					providerCount++
+				}
+			}
+			if providerCount >= 5 {
+				n.pendingOffersMu.Unlock()
+				logging.Warnf("Rejecting offer from %s: sender quota exceeded (%d >= 5)", shortAddr(msg.Offer.Provider), providerCount)
+				continue
+			}
+
+			// 5. First-wins per RequestID (prevent last-wins overwrite diversion)
+			if existing, exists := n.pendingOffers[msg.Offer.RequestID]; exists {
+				n.pendingOffersMu.Unlock()
+				log.Printf("Ignoring secondary offer for request %s (first-wins kept %s)", shortHash(msg.Offer.RequestID), shortAddr(existing.Provider))
+				continue
+			}
+
+			// 6. Enforce store capacity
 			if len(n.pendingOffers) < 1000 {
 				n.pendingOffers[msg.Offer.RequestID] = msg.Offer
 			}
@@ -2055,6 +2093,21 @@ func (n *Node) RequestLease(vcpus, memoryMB, diskGB, durationSecs uint64) (*xene
 		Type:    "request",
 		Request: req,
 	}
+
+	n.pendingOffersMu.Lock()
+	if n.activeRequests == nil {
+		n.activeRequests = make(map[string]*xenet.ResourceRequest)
+	}
+	n.activeRequests[requestID] = req
+	n.pendingOffersMu.Unlock()
+
+	defer func() {
+		n.pendingOffersMu.Lock()
+		delete(n.activeRequests, requestID)
+		delete(n.pendingOffers, requestID)
+		n.pendingOffersMu.Unlock()
+	}()
+
 	if err := n.MarketGossip.Publish(n.ctx, msg); err != nil {
 		return nil, fmt.Errorf("publish request: %w", err)
 	}
