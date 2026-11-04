@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math/big"
 	"sync/atomic"
 	"time"
 
@@ -163,8 +164,13 @@ func (g *Gossip) Subscribe(ctx context.Context) <-chan *core.Block {
 }
 
 type VoteGossip struct {
-	topic *pubsub.Topic
-	sub   *pubsub.Subscription
+	topic      *pubsub.Topic
+	sub        *pubsub.Subscription
+	voteWeight func(string) *big.Int
+}
+
+func (vg *VoteGossip) SetVoteWeight(fn func(string) *big.Int) {
+	vg.voteWeight = fn
 }
 
 func NewVoteGossip(ps *pubsub.PubSub) (*VoteGossip, error) {
@@ -221,7 +227,7 @@ func (vg *VoteGossip) Subscribe(ctx context.Context) <-chan *core.Vote {
 				continue
 			}
 
-			if !ingestVote(ctx, ch, seen, v, core.VerifyVoteSignature, time.Now().UnixNano()) {
+			if !ingestVote(ctx, ch, seen, v, core.VerifyVoteSignature, vg.voteWeight, time.Now().UnixNano()) {
 
 				if ctx.Err() != nil {
 					return
@@ -234,9 +240,31 @@ func (vg *VoteGossip) Subscribe(ctx context.Context) <-chan *core.Vote {
 
 const voteDedupTTL = int64(200 * time.Millisecond)
 
-func ingestVote(ctx context.Context, ch chan<- *core.Vote, seen map[string]int64, v *core.Vote, verify func(*core.Vote) bool, now int64) bool {
+func ingestVote(ctx context.Context, ch chan<- *core.Vote, seen map[string]int64, v *core.Vote, verify func(*core.Vote) bool, voteWeight func(string) *big.Int, now int64) bool {
 	if !verify(v) {
 		return false
+	}
+	if v.Timestamp < 0 {
+		return false
+	}
+	var delta int64
+	if v.Timestamp > now {
+		delta = v.Timestamp - now
+	} else {
+		delta = now - v.Timestamp
+	}
+	if delta > core.VoteWindowNanos {
+		return false
+	}
+	if voteWeight != nil {
+		repAcc := v.RepAccount()
+		if repAcc == "" {
+			return false
+		}
+		w := voteWeight(repAcc)
+		if w == nil || w.Sign() <= 0 {
+			return false
+		}
 	}
 	return enqueueVote(ctx, ch, seen, v, now)
 }

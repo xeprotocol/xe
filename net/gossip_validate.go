@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -18,6 +19,8 @@ type GossipConfig struct {
 	Difficulty uint64
 
 	Trusted func(peer.ID) bool
+
+	VoteWeight func(repAccount string) *big.Int
 
 	ScoreInspect func(map[peer.ID]float64)
 
@@ -38,7 +41,7 @@ func gossipTopics() []string {
 func RegisterTopicValidators(ps *pubsub.PubSub, cfg GossipConfig) error {
 	validators := map[string]pubsub.ValidatorEx{
 		BlockTopic:       blockValidator(cfg),
-		VoteTopic:        voteValidator(core.VerifyVoteSignature),
+		VoteTopic:        voteValidator(cfg, core.VerifyVoteSignature),
 		StateChainTopic:  stateChainValidator(),
 		DirectoryTopic:   directoryValidator(),
 		CertificateTopic: certificateValidator(),
@@ -97,7 +100,7 @@ func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 	}
 }
 
-func voteValidator(verify func(*core.Vote) bool) pubsub.ValidatorEx {
+func voteValidator(cfg GossipConfig, verify func(*core.Vote) bool) pubsub.ValidatorEx {
 	return func(_ context.Context, _ peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
 		var vm VoteMsg
 		if err := json.Unmarshal(msg.Data, &vm); err != nil {
@@ -110,12 +113,45 @@ func voteValidator(verify func(*core.Vote) bool) pubsub.ValidatorEx {
 		if !isHex64(v.RepPubKey) || !isHex64(v.BlockHash) {
 			return pubsub.ValidationReject
 		}
+		if v.ConflictAccount != "" && !isHex64(v.ConflictAccount) {
+			return pubsub.ValidationReject
+		}
+		if v.ConflictPrev != "" && v.ConflictPrev != "0" && !isHex64(v.ConflictPrev) {
+			return pubsub.ValidationReject
+		}
 		if len(v.Signature) != 64 {
 			return pubsub.ValidationReject
 		}
+
+		if v.Timestamp < 0 {
+			return pubsub.ValidationReject
+		}
+		nowNanos := time.Now().UnixNano()
+		var delta int64
+		if v.Timestamp > nowNanos {
+			delta = v.Timestamp - nowNanos
+		} else {
+			delta = nowNanos - v.Timestamp
+		}
+		if delta > core.VoteWindowNanos {
+			return pubsub.ValidationReject
+		}
+
 		if !verify(v) {
 			return pubsub.ValidationReject
 		}
+
+		if cfg.VoteWeight != nil {
+			repAcc := v.RepAccount()
+			if repAcc == "" {
+				return pubsub.ValidationReject
+			}
+			weight := cfg.VoteWeight(repAcc)
+			if weight == nil || weight.Sign() <= 0 {
+				return pubsub.ValidationReject
+			}
+		}
+
 		return pubsub.ValidationAccept
 	}
 }

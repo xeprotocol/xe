@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -162,9 +163,17 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 
 	xenet.SetupNetworkCheck(h, gater)
 
+	var voteWeightLookup func(repAccount string) *big.Int
+
 	ps, err := xenet.NewPubSub(ctx, h, xenet.GossipConfig{
 		Difficulty: cfg.Difficulty,
 		Trusted:    gater.IsTrusted,
+		VoteWeight: func(repAccount string) *big.Int {
+			if voteWeightLookup != nil {
+				return voteWeightLookup(repAccount)
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		cancel()
@@ -265,6 +274,9 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		EpochAtFn:           func(ns int64) []core.EpochParams { return epochAtFn(ns) },
 		FeatureActiveFn:     func(feature string) bool { return featureActiveFn(feature) },
 	})
+
+	voteWeightLookup = ledger.GetVoteWeight
+	voteGossip.SetVoteWeight(voteWeightLookup)
 
 	vs := s.(core.VoteStore)
 	cs := s.(core.ConflictStore)

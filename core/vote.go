@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-const voteWindowNanos = int64(5 * 60 * 1e9)
+const VoteWindowNanos = int64(5 * 60 * 1e9)
+const voteWindowNanos = VoteWindowNanos
 
 const maxPendingVotesPerConflict = 10
 
