@@ -27,5 +27,18 @@ type Info struct {
 
 type Credentials struct {
 	Username string `json:"username"`
-	Password string `json:"password"`
+	Password string `json:"password,omitempty"`
+}
+
+func (info *Info) Redacted() *Info {
+	if info == nil {
+		return nil
+	}
+	cp := *info
+	if cp.Credentials != nil {
+		cpCred := *cp.Credentials
+		cpCred.Password = ""
+		cp.Credentials = &cpCred
+	}
+	return &cp
 }
