@@ -2563,6 +2563,16 @@ func (l *Ledger) Frontiers() map[string]string {
 	return map[string]string{}
 }
 
+func (l *Ledger) AccountChainLength(account string) int {
+	if clr, ok := l.store.(ChainLengthReader); ok {
+		length, err := clr.GetAccountChainLength(account)
+		if err == nil {
+			return length
+		}
+	}
+	return len(l.GetChain(account))
+}
+
 func (l *Ledger) LocksCount() int {
 	l.locksMu.Lock()
 	defer l.locksMu.Unlock()

@@ -51,6 +51,10 @@ type FrontierLister interface {
 	AllFrontiers() map[string]string
 }
 
+type ChainLengthReader interface {
+	GetAccountChainLength(account string) (int, error)
+}
+
 type CertificateStore interface {
 	PutCertificate(hash string, data []byte) error
 	CertificateByHash(hash string) ([]byte, error)

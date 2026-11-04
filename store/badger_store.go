@@ -165,6 +165,31 @@ func (s *BadgerStore) GetAccountChain(account string) (*core.AccountChain, error
 	return chain, nil
 }
 
+func (s *BadgerStore) GetAccountChainLength(account string) (int, error) {
+	var count int
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(prefixedKey(prefixChain, account))
+		if err != nil {
+			return err
+		}
+		var hashes []string
+		if err := item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &hashes)
+		}); err != nil {
+			return err
+		}
+		count = len(hashes)
+		return nil
+	})
+	if err == badger.ErrKeyNotFound {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (s *BadgerStore) PutAccountChain(account string, chain *core.AccountChain) error {
 	hashes := make([]string, len(chain.Blocks))
 	for i, b := range chain.Blocks {

@@ -966,16 +966,39 @@ type FrontierInfo struct {
 }
 
 func (n *Node) GetFrontiersDetailed() []FrontierInfo {
+	return n.GetFrontiersDetailedPaged(0, 0)
+}
+
+func (n *Node) GetFrontiersDetailedPaged(offset, limit int) []FrontierInfo {
 	frontiers := n.Ledger.Frontiers()
-	out := make([]FrontierInfo, 0, len(frontiers))
-	for account, hash := range frontiers {
+	accounts := make([]string, 0, len(frontiers))
+	for account := range frontiers {
+		accounts = append(accounts, account)
+	}
+	sort.Strings(accounts)
+
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(accounts) {
+		return []FrontierInfo{}
+	}
+	end := len(accounts)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	page := accounts[offset:end]
+
+	out := make([]FrontierInfo, 0, len(page))
+	for _, account := range page {
+		hash := frontiers[account]
 		info := FrontierInfo{Account: account, Frontier: hash}
 		if b := n.Ledger.GetBlock(hash); b != nil {
 			info.BlockType = string(b.Type)
 			info.Timestamp = b.Timestamp
 			info.Representative = b.Representative
 		}
-		info.BlockCount = len(n.Ledger.GetChain(account))
+		info.BlockCount = n.Ledger.AccountChainLength(account)
 		out = append(out, info)
 	}
 	return out
