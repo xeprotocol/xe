@@ -33,8 +33,12 @@ const (
 	prefixKeyset      = byte(0x0f)
 	prefixReputation  = byte(0x10)
 	prefixFinalVote   = byte(0x11)
-	prefixCertificate = byte(0x12)
-	prefixAccountKey  = byte(0x13)
+	prefixCertificate   = byte(0x12)
+	prefixAccountKey    = byte(0x13)
+	prefixLeaseState    = byte(0x14)
+	prefixLeaseProvider = byte(0x15)
+	prefixChainBlock    = byte(0x16)
+	prefixChainHeight   = byte(0x17)
 )
 
 type BadgerStore struct {
@@ -94,6 +98,66 @@ func prefixedKey(prefix byte, key string) []byte {
 	return b
 }
 
+func leaseStateKey(state core.LeaseState, leaseHash string) []byte {
+	return append([]byte{prefixLeaseState}, []byte(string(state)+"/"+leaseHash)...)
+}
+
+func leaseStatePrefix(state core.LeaseState) []byte {
+	return append([]byte{prefixLeaseState}, []byte(string(state)+"/")...)
+}
+
+func leaseProviderKey(provider, leaseHash string) []byte {
+	return append([]byte{prefixLeaseProvider}, []byte(provider+"/"+leaseHash)...)
+}
+
+func leaseProviderPrefix(provider string) []byte {
+	return append([]byte{prefixLeaseProvider}, []byte(provider+"/")...)
+}
+
+func chainBlockKey(account string, index uint64) []byte {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, index)
+	return append(append([]byte{prefixChainBlock}, []byte(account+"/")...), buf...)
+}
+
+func chainBlockPrefix(account string) []byte {
+	return append([]byte{prefixChainBlock}, []byte(account+"/")...)
+}
+
+func chainHeightKey(account string) []byte {
+	return prefixedKey(prefixChainHeight, account)
+}
+
+func indexLeaseTxn(txn *badger.Txn, oldLease, newLease *core.Lease) error {
+	if oldLease != nil {
+		if oldLease.State != newLease.State {
+			_ = txn.Delete(leaseStateKey(oldLease.State, oldLease.LeaseHash))
+		}
+		if oldLease.Provider != newLease.Provider {
+			_ = txn.Delete(leaseProviderKey(oldLease.Provider, oldLease.LeaseHash))
+		}
+	}
+	if err := txn.Set(leaseStateKey(newLease.State, newLease.LeaseHash), nil); err != nil {
+		return err
+	}
+	if newLease.Provider != "" {
+		if err := txn.Set(leaseProviderKey(newLease.Provider, newLease.LeaseHash), nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deleteLeaseIndexTxn(txn *badger.Txn, lease *core.Lease) {
+	if lease == nil {
+		return
+	}
+	_ = txn.Delete(leaseStateKey(lease.State, lease.LeaseHash))
+	if lease.Provider != "" {
+		_ = txn.Delete(leaseProviderKey(lease.Provider, lease.LeaseHash))
+	}
+}
+
 func (s *BadgerStore) GetBlock(hash string) (*core.Block, error) {
 	var block core.Block
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -127,6 +191,48 @@ func (s *BadgerStore) PutBlock(block *core.Block) error {
 func (s *BadgerStore) GetAccountChain(account string) (*core.AccountChain, error) {
 	var chain *core.AccountChain
 	err := s.db.View(func(txn *badger.Txn) error {
+		// 1. Fast path: check indexed chain height
+		heightItem, err := txn.Get(chainHeightKey(account))
+		if err == nil {
+			var height uint64
+			if err := heightItem.Value(func(val []byte) error {
+				if len(val) >= 8 {
+					height = binary.BigEndian.Uint64(val)
+				}
+				return nil
+			}); err == nil && height > 0 {
+				chain = &core.AccountChain{
+					Blocks: make([]*core.Block, 0, height),
+				}
+				prefix := chainBlockPrefix(account)
+				opts := badger.DefaultIteratorOptions
+				it := txn.NewIterator(opts)
+				defer it.Close()
+				for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+					var hash string
+					if err := it.Item().Value(func(val []byte) error {
+						hash = string(val)
+						return nil
+					}); err != nil {
+						return err
+					}
+					blockItem, err := txn.Get(prefixedKey(prefixBlock, hash))
+					if err != nil {
+						return fmt.Errorf("chain references missing block %s: %w", hash, err)
+					}
+					var b core.Block
+					if err := blockItem.Value(func(val []byte) error {
+						return json.Unmarshal(val, &b)
+					}); err != nil {
+						return fmt.Errorf("unmarshal block %s: %w", hash, err)
+					}
+					chain.Blocks = append(chain.Blocks, &b)
+				}
+				return nil
+			}
+		}
+
+		// 2. Fallback to legacy monolithic JSON array
 		item, err := txn.Get(prefixedKey(prefixChain, account))
 		if err != nil {
 			return err
@@ -175,7 +281,20 @@ func (s *BadgerStore) PutAccountChain(account string, chain *core.AccountChain) 
 		return err
 	}
 	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Set(prefixedKey(prefixChain, account), data)
+		for i, b := range chain.Blocks {
+			if err := txn.Set(chainBlockKey(account, uint64(i)), []byte(b.Hash)); err != nil {
+				return err
+			}
+		}
+		hBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(hBuf, uint64(len(chain.Blocks)))
+		if err := txn.Set(chainHeightKey(account), hBuf); err != nil {
+			return err
+		}
+		if len(chain.Blocks) <= 64 {
+			return txn.Set(prefixedKey(prefixChain, account), data)
+		}
+		return nil
 	})
 }
 
@@ -743,8 +862,35 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 			return err
 		}
 
-		if err := txn.Set(prefixedKey(prefixChain, c.Account), chainData); err != nil {
-			return err
+		chainLen := uint64(len(c.Chain.Blocks))
+		if chainLen > 0 {
+			if _, err := txn.Get(chainHeightKey(c.Account)); err == badger.ErrKeyNotFound {
+				// Migrate previous blocks to modern index
+				for i, b := range c.Chain.Blocks {
+					if err := txn.Set(chainBlockKey(c.Account, uint64(i)), []byte(b.Hash)); err != nil {
+						return err
+					}
+				}
+			} else {
+				// O(1) append of new block
+				blockIdx := chainLen - 1
+				if err := txn.Set(chainBlockKey(c.Account, blockIdx), []byte(c.Block.Hash)); err != nil {
+					return err
+				}
+			}
+			hBuf := make([]byte, 8)
+			binary.BigEndian.PutUint64(hBuf, chainLen)
+			if err := txn.Set(chainHeightKey(c.Account), hBuf); err != nil {
+				return err
+			}
+		}
+
+		if chainLen <= 64 {
+			if err := txn.Set(prefixedKey(prefixChain, c.Account), chainData); err != nil {
+				return err
+			}
+		} else {
+			_ = txn.Delete(prefixedKey(prefixChain, c.Account))
 		}
 
 		if c.FrontierHash != "" {
@@ -790,6 +936,18 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 			if err != nil {
 				return err
 			}
+			var oldLease *core.Lease
+			if oldItem, err := txn.Get(prefixedKey(prefixLease, c.PutLease.LeaseHash)); err == nil {
+				var ol core.Lease
+				if err := oldItem.Value(func(val []byte) error {
+					return json.Unmarshal(val, &ol)
+				}); err == nil {
+					oldLease = &ol
+				}
+			}
+			if err := indexLeaseTxn(txn, oldLease, c.PutLease); err != nil {
+				return err
+			}
 			if err := txn.Set(prefixedKey(prefixLease, c.PutLease.LeaseHash), leaseData); err != nil {
 				return err
 			}
@@ -807,8 +965,12 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 			}); err != nil {
 				return err
 			}
+			oldLease := lease
 			lease.Settled = true
 			lease.State = core.LeaseSettled
+			if err := indexLeaseTxn(txn, &oldLease, &lease); err != nil {
+				return err
+			}
 			settledData, err := json.Marshal(&lease)
 			if err != nil {
 				return err
@@ -830,7 +992,11 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 			}); err != nil {
 				return err
 			}
+			oldLease := lease
 			lease.State = core.LeaseCancelled
+			if err := indexLeaseTxn(txn, &oldLease, &lease); err != nil {
+				return err
+			}
 			cancelData, err := json.Marshal(&lease)
 			if err != nil {
 				return err
@@ -852,8 +1018,12 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 			}); err != nil {
 				return err
 			}
+			oldLease := lease
 			lease.Settled = true
 			lease.State = core.LeaseUnfulfilled
+			if err := indexLeaseTxn(txn, &oldLease, &lease); err != nil {
+				return err
+			}
 			unfulfilledData, err := json.Marshal(&lease)
 			if err != nil {
 				return err
@@ -968,6 +1138,13 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 
 	{
 		if u.DeleteAccount {
+			_ = txn.Delete(chainHeightKey(u.Account))
+			pfx := chainBlockPrefix(u.Account)
+			it := txn.NewIterator(badger.DefaultIteratorOptions)
+			for it.Seek(pfx); it.ValidForPrefix(pfx); it.Next() {
+				_ = txn.Delete(it.Item().KeyCopy(nil))
+			}
+			it.Close()
 
 			if err := txn.Delete(prefixedKey(prefixChain, u.Account)); err != nil {
 				return err
@@ -976,9 +1153,30 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 				return err
 			}
 		} else {
+			uLen := uint64(len(u.Chain.Blocks))
+			hBuf := make([]byte, 8)
+			binary.BigEndian.PutUint64(hBuf, uLen)
+			_ = txn.Set(chainHeightKey(u.Account), hBuf)
 
-			if err := txn.Set(prefixedKey(prefixChain, u.Account), chainData); err != nil {
-				return err
+			pfx := chainBlockPrefix(u.Account)
+			it := txn.NewIterator(badger.DefaultIteratorOptions)
+			for it.Seek(pfx); it.ValidForPrefix(pfx); it.Next() {
+				k := it.Item().Key()
+				if len(k) >= 8 {
+					idx := binary.BigEndian.Uint64(k[len(k)-8:])
+					if idx >= uLen {
+						_ = txn.Delete(it.Item().KeyCopy(nil))
+					}
+				}
+			}
+			it.Close()
+
+			if uLen <= 64 {
+				if err := txn.Set(prefixedKey(prefixChain, u.Account), chainData); err != nil {
+					return err
+				}
+			} else {
+				_ = txn.Delete(prefixedKey(prefixChain, u.Account))
 			}
 
 			if err := txn.Set(prefixedKey(prefixFrontier, u.Account), []byte(u.FrontierHash)); err != nil {
@@ -1094,11 +1292,31 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 			if err != nil {
 				return err
 			}
+			var oldLease *core.Lease
+			if oldItem, err := txn.Get(prefixedKey(prefixLease, u.RestoreLease.LeaseHash)); err == nil {
+				var ol core.Lease
+				if err := oldItem.Value(func(val []byte) error {
+					return json.Unmarshal(val, &ol)
+				}); err == nil {
+					oldLease = &ol
+				}
+			}
+			if err := indexLeaseTxn(txn, oldLease, u.RestoreLease); err != nil {
+				return err
+			}
 			if err := txn.Set(prefixedKey(prefixLease, u.RestoreLease.LeaseHash), leaseData); err != nil {
 				return err
 			}
 		}
 		if u.DeleteLeaseHash != "" {
+			if oldItem, err := txn.Get(prefixedKey(prefixLease, u.DeleteLeaseHash)); err == nil {
+				var ol core.Lease
+				if err := oldItem.Value(func(val []byte) error {
+					return json.Unmarshal(val, &ol)
+				}); err == nil {
+					deleteLeaseIndexTxn(txn, &ol)
+				}
+			}
 			if err := txn.Delete(prefixedKey(prefixLease, u.DeleteLeaseHash)); err != nil {
 				return err
 			}
@@ -1565,6 +1783,18 @@ func (s *BadgerStore) PutLease(lease *core.Lease) error {
 		return err
 	}
 	return s.db.Update(func(txn *badger.Txn) error {
+		var oldLease *core.Lease
+		if oldItem, err := txn.Get(prefixedKey(prefixLease, lease.LeaseHash)); err == nil {
+			var ol core.Lease
+			if err := oldItem.Value(func(val []byte) error {
+				return json.Unmarshal(val, &ol)
+			}); err == nil {
+				oldLease = &ol
+			}
+		}
+		if err := indexLeaseTxn(txn, oldLease, lease); err != nil {
+			return err
+		}
 		return txn.Set(prefixedKey(prefixLease, lease.LeaseHash), data)
 	})
 }
@@ -1592,12 +1822,43 @@ func (s *BadgerStore) GetLease(leaseHash string) (*core.Lease, error) {
 func (s *BadgerStore) GetLeasesByProvider(provider string) ([]*core.Lease, error) {
 	out := make([]*core.Lease, 0)
 	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte{prefixLease}
+		prefix := leaseProviderPrefix(provider)
 		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
 		it := txn.NewIterator(opts)
 		defer it.Close()
+		foundAny := false
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
+			foundAny = true
+			key := it.Item().Key()
+			pfxLen := len(prefix)
+			if len(key) <= pfxLen {
+				continue
+			}
+			leaseHash := string(key[pfxLen:])
+			item, err := txn.Get(prefixedKey(prefixLease, leaseHash))
+			if err != nil {
+				continue
+			}
+			var l core.Lease
+			if err := item.Value(func(val []byte) error {
+				return json.Unmarshal(val, &l)
+			}); err != nil {
+				return err
+			}
+			out = append(out, &l)
+		}
+		if foundAny {
+			return nil
+		}
+
+		// Fallback to table scan for legacy unindexed DBs
+		legacyPrefix := []byte{prefixLease}
+		legacyOpts := badger.DefaultIteratorOptions
+		legacyIt := txn.NewIterator(legacyOpts)
+		defer legacyIt.Close()
+		for legacyIt.Seek(legacyPrefix); legacyIt.ValidForPrefix(legacyPrefix); legacyIt.Next() {
+			item := legacyIt.Item()
 			var l core.Lease
 			if err := item.Value(func(val []byte) error {
 				return json.Unmarshal(val, &l)
@@ -1619,12 +1880,43 @@ func (s *BadgerStore) GetLeasesByProvider(provider string) ([]*core.Lease, error
 func (s *BadgerStore) GetLeasesByState(state core.LeaseState) ([]*core.Lease, error) {
 	out := make([]*core.Lease, 0)
 	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte{prefixLease}
+		prefix := leaseStatePrefix(state)
 		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
 		it := txn.NewIterator(opts)
 		defer it.Close()
+		foundAny := false
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
+			foundAny = true
+			key := it.Item().Key()
+			pfxLen := len(prefix)
+			if len(key) <= pfxLen {
+				continue
+			}
+			leaseHash := string(key[pfxLen:])
+			item, err := txn.Get(prefixedKey(prefixLease, leaseHash))
+			if err != nil {
+				continue
+			}
+			var l core.Lease
+			if err := item.Value(func(val []byte) error {
+				return json.Unmarshal(val, &l)
+			}); err != nil {
+				return err
+			}
+			out = append(out, &l)
+		}
+		if foundAny {
+			return nil
+		}
+
+		// Fallback to table scan for legacy unindexed DBs
+		legacyPrefix := []byte{prefixLease}
+		legacyOpts := badger.DefaultIteratorOptions
+		legacyIt := txn.NewIterator(legacyOpts)
+		defer legacyIt.Close()
+		for legacyIt.Seek(legacyPrefix); legacyIt.ValidForPrefix(legacyPrefix); legacyIt.Next() {
+			item := legacyIt.Item()
 			var l core.Lease
 			if err := item.Value(func(val []byte) error {
 				return json.Unmarshal(val, &l)
