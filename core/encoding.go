@@ -496,7 +496,9 @@ func unmarshalBlock(data []byte) (*Block, error) {
 		b.Representative = hex.EncodeToString(repBytes)
 	}
 
-	tailOffset := minLen
+	// Compute tailOffset from decoded representative boundary so variable-length
+	// blocks (e.g. multisig with variable keyset size) correctly preserve PoWNonce (#100).
+	tailOffset := repOffset + representativeSize
 
 	if blockType == BlockGenesis && len(data) >= repOffset+32+genesisTimingSize {
 		t := data[repOffset+32 : repOffset+32+genesisTimingSize]
