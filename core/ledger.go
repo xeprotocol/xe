@@ -654,7 +654,7 @@ func (l *Ledger) rebuildReputation() {
 			Provider:     lease.Provider,
 			Consumer:     lease.Consumer,
 			Timestamp:    settleTs,
-			DurationSecs: lease.Duration,
+			DurationSecs: lease.EffectiveDurationSecs(),
 		})
 	}
 
@@ -685,27 +685,27 @@ func (l *Ledger) rebuildReputation() {
 func lookupLeaseSettleTimestamp(store Store, lease *Lease) int64 {
 	chain, err := store.GetAccountChain(lease.Provider)
 	if err != nil || chain == nil {
-		return lease.StartTime + int64(lease.Duration)*1e9
+		return lease.EffectiveExpiry()
 	}
 	for _, b := range chain.Blocks {
 		if b.Type == BlockLeaseSettle && b.Source == lease.LeaseHash {
 			return b.Timestamp
 		}
 	}
-	return lease.StartTime + int64(lease.Duration)*1e9
+	return lease.EffectiveExpiry()
 }
 
 func lookupLeaseForceSettleTimestamp(store Store, lease *Lease) int64 {
 	chain, err := store.GetAccountChain(lease.Consumer)
 	if err != nil || chain == nil {
-		return lease.StartTime + int64(lease.Duration)*1e9
+		return lease.EffectiveExpiry()
 	}
 	for _, b := range chain.Blocks {
 		if b.Type == BlockLeaseForceSettle && b.Source == lease.LeaseHash {
 			return b.Timestamp
 		}
 	}
-	return lease.StartTime + int64(lease.Duration)*1e9
+	return lease.EffectiveExpiry()
 }
 
 func normalizeBlockHex(b *Block) {
@@ -1298,11 +1298,7 @@ func (l *Ledger) validateAndAddMultisigOpen(b *Block) error {
 		return err
 	}
 	commit.PutKeyset = b.MSKeyset
-	if err := l.commitBlockWrite(commit, prevBalance); err != nil {
-		return err
-	}
-	l.setKeyset(b.Account, b.MSKeyset)
-	return nil
+	return l.commitBlockWrite(commit, prevBalance)
 }
 
 func (l *Ledger) validateAndAddMultisigUpdate(b *Block) error {
@@ -1345,11 +1341,7 @@ func (l *Ledger) validateAndAddMultisigUpdate(b *Block) error {
 		return err
 	}
 	commit.PutKeyset = b.MSKeyset
-	if err := l.commitBlockWrite(commit, prevBalance); err != nil {
-		return err
-	}
-	l.setKeyset(b.Account, b.MSKeyset)
-	return nil
+	return l.commitBlockWrite(commit, prevBalance)
 }
 
 func (l *Ledger) GetKeyset(account string) *Keyset {
@@ -1400,6 +1392,7 @@ func (l *Ledger) setAccountKey(account, pubKey string) {
 }
 
 func (l *Ledger) rebuildAccountKeys() {
+	l.accountKeys = make(map[string]string)
 	for acc := range l.Frontiers() {
 		chain, err := l.store.GetAccountChain(acc)
 		if err != nil || chain == nil {
@@ -1423,7 +1416,7 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 		if b.Type == BlockMultisigOpen {
 			ks = b.MSKeyset
 		} else {
-			ks = l.GetKeyset(b.Account)
+			ks = l.getKeysetOverlay(b.Account)
 		}
 		if ks == nil {
 			ks2, err := l.resolveMissingKeyset(b.Account)
@@ -1444,7 +1437,7 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 		return nil
 	}
 
-	if l.GetKeyset(b.Account) != nil {
+	if l.getKeysetOverlay(b.Account) != nil {
 
 		return fmt.Errorf("multisig account requires signatures")
 	}
@@ -1453,7 +1446,7 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 	if b.Previous == "0" {
 		pubKey = b.PubKey
 	} else {
-		pubKey = l.GetAccountKey(b.Account)
+		pubKey = l.getAccountKeyOverlay(b.Account)
 		if pubKey == "" {
 			return fmt.Errorf("signature: unopened account %s has no declared public key", shortAddr(b.Account))
 		}
@@ -1465,12 +1458,12 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 }
 
 func (l *Ledger) resolveMissingKeyset(account string) (*Keyset, error) {
-	chain, err := l.store.GetAccountChain(account)
+	chain, err := l.getAccountChainOverlay(account)
 	if err != nil {
 
 		return nil, fmt.Errorf("GetAccountChain (keyset lookup): %w", err)
 	}
-	if chain == nil {
+	if chain == nil || len(chain.Blocks) == 0 {
 		return nil, fmt.Errorf("block has signatures but multisig keyset is not known: unopened account %s (multisig_open not yet synced)", shortAddr(account))
 	}
 	var found *Keyset
@@ -1482,11 +1475,14 @@ func (l *Ledger) resolveMissingKeyset(account string) (*Keyset, error) {
 	if found == nil {
 		return nil, fmt.Errorf("block has signatures but account is not multisig")
 	}
-	l.setKeyset(account, found)
+	if l.activeCascadeFor() == nil {
+		l.setKeyset(account, found)
+	}
 	return found, nil
 }
 
 func (l *Ledger) rebuildKeysets() {
+	l.keysets = make(map[string]*Keyset)
 	frontiers := l.Frontiers()
 	for acc := range frontiers {
 		chain, err := l.store.GetAccountChain(acc)
@@ -2241,7 +2237,7 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 		Provider:     lease.Provider,
 		Consumer:     lease.Consumer,
 		Timestamp:    b.Timestamp,
-		DurationSecs: lease.Duration,
+		DurationSecs: lease.EffectiveDurationSecs(),
 	})
 
 	return nil
@@ -2310,6 +2306,9 @@ func (l *Ledger) commitBlockWrite(c *BlockCommit, prevBalance uint64) error {
 		if c.PutAccountKey != "" {
 			l.setAccountKey(c.Account, c.PutAccountKey)
 		}
+		if c.PutKeyset != nil {
+			l.setKeyset(c.Account, c.PutKeyset)
+		}
 
 		if c.AssetCredit != nil {
 			l.addAssetBalance(c.AssetCredit.Account, c.AssetCredit.Asset, c.AssetCredit.Amount)
@@ -2334,6 +2333,9 @@ func (l *Ledger) commitBlockWrite(c *BlockCommit, prevBalance uint64) error {
 
 	if c.PutAccountKey != "" {
 		l.setAccountKey(c.Account, c.PutAccountKey)
+	}
+	if c.PutKeyset != nil {
+		l.setKeyset(c.Account, c.PutKeyset)
 	}
 
 	if c.AssetCredit != nil {
@@ -2570,6 +2572,8 @@ func (l *Ledger) LocksCount() int {
 }
 
 func (l *Ledger) rebuildDelegation() error {
+	l.delegation = make(map[string]string)
+	l.weights = make(map[string]*big.Int)
 	di, ok := l.store.(DelegationIterator)
 	if !ok {
 		return nil
@@ -2988,7 +2992,7 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 			snap = s
 			snapshots[st.account] = snap
 		}
-		undo, apply, berr := l.buildBlockUndo(st.account, st.b, snap)
+		undo, apply, berr := l.buildBlockUndoWithCascade(st.account, st.b, snap, cascade)
 		if berr != nil {
 			return fmt.Errorf("SwapBlock: build undo for %s: %w", shortHash(st.b.Hash), berr)
 		}
@@ -3001,6 +3005,10 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 		return fmt.Errorf("SwapBlock: %w", err)
 	}
 
+	if err := l.verifyBlockCredential(newBlock); err != nil {
+		l.deactivateCascade()
+		return fmt.Errorf("SwapBlock: %w %s, loser kept: %w", ErrWinnerFullValidation, shortHash(newHash), err)
+	}
 	if err := l.dispatchValidateAndAdd(newBlock, true); err != nil {
 
 		l.deactivateCascade()
