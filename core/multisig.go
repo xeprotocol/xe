@@ -70,6 +70,13 @@ func mustDecodeHex(s string) []byte {
 	return b
 }
 
+func shortKey(s string) string {
+	if len(s) <= 12 {
+		return s
+	}
+	return s[:12]
+}
+
 func VerifyMultisig(hash string, sigs []BlockSignature, ks *Keyset) error {
 	if len(sigs) == 0 {
 		return fmt.Errorf("no signatures")
@@ -91,16 +98,16 @@ func VerifyMultisig(hash string, sigs []BlockSignature, ks *Keyset) error {
 	for _, sig := range sigs {
 		pk := sig.PublicKey
 		if seen[pk] {
-			return fmt.Errorf("duplicate signer: %s", pk[:12])
+			return fmt.Errorf("duplicate signer: %s", shortKey(pk))
 		}
 		seen[pk] = true
 
 		if !keysetMap[pk] {
-			return fmt.Errorf("signer %s not in keyset", pk[:12])
+			return fmt.Errorf("signer %s not in keyset", shortKey(pk))
 		}
 
 		if err := VerifyHexSignature(pk, sig.Sig, hashBytes); err != nil {
-			return fmt.Errorf("sig from %s: %w", pk[:12], err)
+			return fmt.Errorf("sig from %s: %w", shortKey(pk), err)
 		}
 		validCount++
 	}
