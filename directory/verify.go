@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/xeprotocol/xe/core"
 )
 
@@ -27,6 +28,9 @@ func canonicalBytes(account, pubKey, nodePeer string, timestamp int64) []byte {
 }
 
 func VerifyRegistration(reg *Registration) error {
+	if reg == nil {
+		return fmt.Errorf("missing registration")
+	}
 	if reg.Account == "" {
 		return fmt.Errorf("missing account")
 	}
@@ -35,6 +39,9 @@ func VerifyRegistration(reg *Registration) error {
 	}
 	if reg.NodePeer == "" {
 		return fmt.Errorf("missing node_peer")
+	}
+	if _, err := peer.Decode(reg.NodePeer); err != nil {
+		return fmt.Errorf("invalid node_peer: %w", err)
 	}
 	if reg.Timestamp == 0 {
 		return fmt.Errorf("missing timestamp")

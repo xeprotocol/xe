@@ -572,7 +572,15 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	go func() { defer n.wg.Done(); n.handleMarketplace(marketGossip.Subscribe(ctx)) }()
 	go func() { defer n.wg.Done(); n.settleLoop() }()
 	go func() { defer n.wg.Done(); n.handleStateChain(scGossip.Subscribe(ctx)) }()
-	go func() { defer n.wg.Done(); n.handleDirectoryGossip(dirGossip.Subscribe(ctx)) }()
+	go func() {
+		defer n.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("directory: recovered panic in directory gossip loop: %v", r)
+			}
+		}()
+		n.handleDirectoryGossip(dirGossip.Subscribe(ctx))
+	}()
 	go func() { defer n.wg.Done(); n.directoryPruneLoop() }()
 	go func() { defer n.wg.Done(); n.directoryReRegisterLoop() }()
 	go func() { defer n.wg.Done(); n.handleCertificateGossip(certGossip.Subscribe(ctx)) }()
@@ -2375,11 +2383,21 @@ func (n *Node) selfRegister() {
 
 func (n *Node) handleDirectoryGossip(regs <-chan *directory.Registration) {
 	for reg := range regs {
-		if err := n.Directory.Register(reg); err != nil {
-			logging.Warnf("directory: rejected registration for %s: %v", shortAddr(reg.Account), err)
-		} else {
-			logging.Debugf("directory: accepted registration for %s on %s", shortAddr(reg.Account), reg.NodePeer[:12])
-		}
+		func(reg *directory.Registration) {
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Errorf("directory: recovered panic in handleDirectoryGossip: %v", r)
+				}
+			}()
+			if reg == nil {
+				return
+			}
+			if err := n.Directory.Register(reg); err != nil {
+				logging.Warnf("directory: rejected registration for %s: %v", shortAddr(reg.Account), err)
+			} else {
+				logging.Debugf("directory: accepted registration for %s on %s", shortAddr(reg.Account), shortHash(reg.NodePeer))
+			}
+		}(reg)
 	}
 }
 
