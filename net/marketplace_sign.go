@@ -8,15 +8,35 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/xeprotocol/xe/core"
 )
 
 const (
+	MarketplaceMaxAge     = 15 * time.Minute
+	MarketplaceFutureSkew = 1 * time.Minute
+	ProviderAdTTL         = 15 * time.Minute
+
 	advertisementDomainTag = "xe/marketplace-advertisement/v1\x00"
 	requestDomainTag       = "xe/marketplace-request/v1\x00"
 	offerDomainTag         = "xe/marketplace-offer/v1\x00"
 )
+
+func verifyTimestampFreshness(ts int64, entity string) error {
+	if ts <= 0 {
+		return fmt.Errorf("invalid %s timestamp: %d", entity, ts)
+	}
+	t := time.Unix(0, ts)
+	now := time.Now()
+	if now.Sub(t) > MarketplaceMaxAge {
+		return fmt.Errorf("%s timestamp expired: %v old (max %v)", entity, now.Sub(t), MarketplaceMaxAge)
+	}
+	if t.Sub(now) > MarketplaceFutureSkew {
+		return fmt.Errorf("%s timestamp too far in future: %v ahead (max %v)", entity, t.Sub(now), MarketplaceFutureSkew)
+	}
+	return nil
+}
 
 func canonicalFields(domainTag string, fields ...string) []byte {
 	var b bytes.Buffer
@@ -107,6 +127,9 @@ func VerifyAdvertisement(ad *ResourceAdvertisement) error {
 	if ad.Provider == "" {
 		return fmt.Errorf("missing provider")
 	}
+	if err := verifyTimestampFreshness(ad.Timestamp, "advertisement"); err != nil {
+		return err
+	}
 	return verifyPayload(advertisementCanonical(ad), ad.ProviderPubKey, ad.Provider, ad.Signature)
 }
 
@@ -119,6 +142,9 @@ func VerifyRequest(req *ResourceRequest) error {
 	if req.Consumer == "" {
 		return fmt.Errorf("missing consumer")
 	}
+	if err := verifyTimestampFreshness(req.Timestamp, "request"); err != nil {
+		return err
+	}
 	return verifyPayload(requestCanonical(req), req.ConsumerPubKey, req.Consumer, req.Signature)
 }
 
@@ -130,6 +156,9 @@ func SignOffer(offer *ResourceOffer, privKey ed25519.PrivateKey) {
 func VerifyOffer(offer *ResourceOffer) error {
 	if offer.Provider == "" {
 		return fmt.Errorf("missing provider")
+	}
+	if err := verifyTimestampFreshness(offer.Timestamp, "offer"); err != nil {
+		return err
 	}
 	return verifyPayload(offerCanonical(offer), offer.ProviderPubKey, offer.Provider, offer.Signature)
 }

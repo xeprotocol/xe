@@ -74,6 +74,8 @@ type Node struct {
 	pendingOffersMu  sync.Mutex
 	pendingOffers    map[string]*xenet.ResourceOffer
 	providerAds      sync.Map
+	seenRequestsMu   sync.Mutex
+	seenRequests     map[string]int64
 	blockCreateMu    sync.Mutex
 	reservedRes      vm.Resources
 	reservedResMu    sync.Mutex
@@ -495,6 +497,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		gater:                  gater,
 		activationLog:          newActivationReporter(),
 		pendingOffers:          make(map[string]*xenet.ResourceOffer),
+		seenRequests:           make(map[string]int64),
 		acceptInFlight:         make(map[string]struct{}),
 		pullSem:                make(chan struct{}, maxInFlightVotePulls),
 		ctx:                    ctx,
@@ -1072,8 +1075,13 @@ func (n *Node) GetProviders() []*ProviderInfo {
 	leases := n.GetLeases()
 
 	providers := make([]*ProviderInfo, 0)
+	cutoff := time.Now().Add(-xenet.ProviderAdTTL).UnixNano()
 	n.providerAds.Range(func(key, value any) bool {
 		ad := value.(*xenet.ResourceAdvertisement)
+		if ad.Timestamp < cutoff {
+			n.providerAds.Delete(key)
+			return true
+		}
 		info := &ProviderInfo{
 			Account:             ad.Provider,
 			VCPUs:               ad.VCPUs,
@@ -1322,6 +1330,22 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 			}
 			req := msg.Request
 
+			n.seenRequestsMu.Lock()
+			cutoff := time.Now().Add(-xenet.MarketplaceMaxAge).UnixNano()
+			for reqID, ts := range n.seenRequests {
+				if ts < cutoff {
+					delete(n.seenRequests, reqID)
+				}
+			}
+			if _, seen := n.seenRequests[req.RequestID]; seen {
+				n.seenRequestsMu.Unlock()
+				continue
+			}
+			if len(n.seenRequests) < 5000 {
+				n.seenRequests[req.RequestID] = req.Timestamp
+			}
+			n.seenRequestsMu.Unlock()
+
 			if err := core.ValidateLeaseDimensions(req.VCPUs, req.MemoryMB, req.DiskGB, req.Duration); err != nil {
 				log.Printf("Skipping request %s: %v", shortHash(req.RequestID), err)
 				continue
@@ -1395,6 +1419,11 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 			if err := xenet.VerifyAdvertisement(msg.Ad); err != nil {
 				logging.Warnf("Rejecting resource advertisement: %v", err)
 				continue
+			}
+			if existing, ok := n.providerAds.Load(msg.Ad.Provider); ok {
+				if existing.(*xenet.ResourceAdvertisement).Timestamp >= msg.Ad.Timestamp {
+					continue
+				}
 			}
 			n.providerAds.Store(msg.Ad.Provider, msg.Ad)
 
