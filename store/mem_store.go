@@ -256,6 +256,11 @@ func (m *MemStore) applyUndoLocked(u *core.BlockUndo) error {
 	if u.DeleteLeaseHash != "" {
 		delete(m.leases, u.DeleteLeaseHash)
 	}
+	if u.RestoreKeyset != nil {
+		cp := *u.RestoreKeyset
+		cp.Keys = append([]string(nil), u.RestoreKeyset.Keys...)
+		m.keysets[u.Account] = &cp
+	}
 	if u.DeleteKeysetAccount != "" {
 		delete(m.keysets, u.DeleteKeysetAccount)
 	}

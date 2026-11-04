@@ -30,10 +30,14 @@ type Envelope struct {
 	PoWNonce  uint64 `json:"pow_nonce"`
 }
 
-func envelopeCanonical(from, pubKey, to, message string, timestamp int64) []byte {
+const chatEnvelopeDomainTag = "xe/chat-envelope/v1\x00"
 
-	size := 4 + len(from) + 4 + len(pubKey) + 4 + len(to) + 4 + len(message) + 8
+func envelopeCanonical(from, pubKey, to, message string, timestamp int64) []byte {
+	netID := core.GetNetworkID()
+	size := len(chatEnvelopeDomainTag) + 4 + len(netID) + 4 + len(from) + 4 + len(pubKey) + 4 + len(to) + 4 + len(message) + 8
 	buf := make([]byte, 0, size)
+	buf = append(buf, chatEnvelopeDomainTag...)
+	buf = appendField(buf, []byte(netID))
 	buf = appendField(buf, []byte(from))
 	buf = appendField(buf, []byte(pubKey))
 	buf = appendField(buf, []byte(to))
@@ -58,6 +62,12 @@ func ComputeEnvelopeID(from, pubKey, to, message string, timestamp int64) string
 }
 
 func NewEnvelope(from, to, message string, kp *core.KeyPair, difficulty uint64) (*Envelope, error) {
+	if err := core.ValidateAddress(from); err != nil {
+		return nil, fmt.Errorf("invalid sender address: %w", err)
+	}
+	if err := core.ValidateAddress(to); err != nil {
+		return nil, fmt.Errorf("invalid recipient address: %w", err)
+	}
 	ts := core.Now().UnixNano()
 
 	pubKey := kp.PubKeyHex()
@@ -82,14 +92,22 @@ func NewEnvelope(from, to, message string, kp *core.KeyPair, difficulty uint64) 
 }
 
 func (e *Envelope) VerifyFull(difficulty uint64) error {
-	if e.From == "" || e.PubKey == "" || e.To == "" || e.Message == "" || e.Timestamp == 0 || e.Signature == "" {
+	if e.From == "" || e.PubKey == "" || e.To == "" || e.Message == "" || e.Timestamp <= 0 || e.Signature == "" {
 		return fmt.Errorf("missing required fields")
+	}
+	if err := core.ValidateAddress(e.From); err != nil {
+		return fmt.Errorf("invalid sender address: %w", err)
+	}
+	if err := core.ValidateAddress(e.To); err != nil {
+		return fmt.Errorf("invalid recipient address: %w", err)
 	}
 	if len(e.Message) > MaxMessageBytes {
 		return fmt.Errorf("message exceeds maximum length of %d bytes", MaxMessageBytes)
 	}
 
-	if skew := core.Now().UnixNano() - e.Timestamp; skew > int64(MaxEnvelopeSkew) || skew < -int64(MaxEnvelopeSkew) {
+	now := core.Now().UnixNano()
+	maxSkew := int64(MaxEnvelopeSkew)
+	if (e.Timestamp > now && e.Timestamp-now > maxSkew) || (now > e.Timestamp && now-e.Timestamp > maxSkew) {
 		return fmt.Errorf("envelope timestamp outside freshness window")
 	}
 

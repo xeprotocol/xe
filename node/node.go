@@ -2452,6 +2452,16 @@ func (n *Node) ChatPoWDifficulty() uint64 {
 	return n.chatDifficulty
 }
 
+func (n *Node) isHostedChatRecipient(account string) bool {
+	if n.KeyPair != nil && account == n.KeyPair.Address() {
+		return true
+	}
+	if n.Host != nil && n.PeerForAccount(account) == n.Host.ID() {
+		return true
+	}
+	return false
+}
+
 func (n *Node) registerChatHandler() {
 	n.Msg.Handle("account_chat", func(from peer.ID, payload json.RawMessage) (json.RawMessage, error) {
 		var env chat.Envelope
@@ -2460,6 +2470,9 @@ func (n *Node) registerChatHandler() {
 		}
 		if err := n.validateChatEnvelope(&env); err != nil {
 			return nil, fmt.Errorf("envelope verification failed: %w", err)
+		}
+		if !n.isHostedChatRecipient(env.To) {
+			return nil, fmt.Errorf("recipient %s is not hosted on this node", shortAddr(env.To))
 		}
 		if !n.ChatStore.Store(&env) {
 			return nil, fmt.Errorf("duplicate envelope")
