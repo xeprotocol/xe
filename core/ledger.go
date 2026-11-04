@@ -1746,14 +1746,14 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 	return nil
 }
 
-func (l *Ledger) resolveCancelWinsOverAccept(leaseHash, provider string) error {
-	pchain, err := l.store.GetAccountChain(provider)
+func (l *Ledger) findUnwindableAcceptForCancel(leaseHash, provider string) (*Block, error) {
+	pchain, err := l.getAccountChainOverlay(provider)
 	if err != nil {
-		return fmt.Errorf("cancel-wins: GetAccountChain(provider): %w", err)
+		return nil, fmt.Errorf("cancel-wins: GetAccountChain(provider): %w", err)
 	}
 	if pchain == nil || len(pchain.Blocks) == 0 {
 
-		return fmt.Errorf("cancel-wins: provider accept not found locally: retry after sync")
+		return nil, fmt.Errorf("cancel-wins: provider accept not found locally: retry after sync")
 	}
 	acceptIdx := -1
 	for i, blk := range pchain.Blocks {
@@ -1763,26 +1763,50 @@ func (l *Ledger) resolveCancelWinsOverAccept(leaseHash, provider string) error {
 		}
 	}
 	if acceptIdx == -1 {
-		return fmt.Errorf("cancel-wins: provider accept not found locally: retry after sync")
+		return nil, fmt.Errorf("cancel-wins: provider accept not found locally: retry after sync")
 	}
 	if acceptIdx != len(pchain.Blocks)-1 {
 
-		return fmt.Errorf("cancel-wins: provider built on the accept: retry after sync")
+		return nil, fmt.Errorf("cancel-wins: provider built on the accept: retry after sync")
 	}
 	if fh := l.FinalHeight(provider); uint64(acceptIdx+1) <= fh {
 
-		return fmt.Errorf("cannot cancel lease in accepted state: accept is finalized")
+		return nil, fmt.Errorf("cannot cancel lease in accepted state: accept is finalized")
 	}
-	acceptBlock := pchain.Blocks[acceptIdx]
+	return pchain.Blocks[acceptIdx], nil
+}
 
+func (l *Ledger) canUnwindAcceptForCancel(leaseHash, provider string) error {
+	_, err := l.findUnwindableAcceptForCancel(leaseHash, provider)
+	return err
+}
+
+func (l *Ledger) resolveCancelWinsOverAccept(leaseHash, provider string) error {
 	entry, ok := l.acquireAccountLockTry(provider)
 	if !ok {
 		return fmt.Errorf("cancel-wins: provider chain busy: retry after sync")
 	}
 	defer l.releaseAccountLock(provider, entry)
 
-	if err := l.undoBlockApply(provider, acceptBlock); err != nil {
-		return fmt.Errorf("cancel-wins: unwind provider accept: %w", err)
+	acceptBlock, err := l.findUnwindableAcceptForCancel(leaseHash, provider)
+	if err != nil {
+		return err
+	}
+
+	if cb := l.activeCascadeFor(); cb != nil {
+		pchain, err := l.getAccountChainOverlay(provider)
+		if err != nil {
+			return fmt.Errorf("cancel-wins: GetAccountChain(provider): %w", err)
+		}
+		undo, apply, err := l.buildBlockUndo(provider, acceptBlock, pchain)
+		if err != nil {
+			return fmt.Errorf("cancel-wins: unwind provider accept: %w", err)
+		}
+		cb.addUndo(undo, apply)
+	} else {
+		if err := l.undoBlockApply(provider, acceptBlock); err != nil {
+			return fmt.Errorf("cancel-wins: unwind provider accept: %w", err)
+		}
 	}
 	log.Printf("lease %s: cancel-wins over a racing accept — unwound provider %s's accept %s",
 		shortHash(leaseHash), shortAddr(provider), shortHash(acceptBlock.Hash))
@@ -1811,14 +1835,16 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 		return fmt.Errorf("lease_cancel: only the consumer can cancel a lease")
 	}
 
+	var unwindProvider string
 	if existing, ok, err := l.getLeaseOverlay(b.Source); ok {
 		if err != nil {
 			return fmt.Errorf("GetLease: %w", err)
 		}
 		if existing != nil && existing.State == LeaseAccepted && existing.Provider != b.Account {
-			if rerr := l.resolveCancelWinsOverAccept(b.Source, existing.Provider); rerr != nil {
-				return rerr
+			if cerr := l.canUnwindAcceptForCancel(b.Source, existing.Provider); cerr != nil {
+				return cerr
 			}
+			unwindProvider = existing.Provider
 		} else if existing != nil && existing.State != LeaseCreated {
 			return fmt.Errorf("cannot cancel lease in %s state", existing.State)
 		}
@@ -1851,8 +1877,17 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 
 	oldBal := l.getAssetBalanceOverlay(b.Account, "XUSD")
 	expectedBal := oldBal + leaseBlock.Amount
+	if expectedBal < oldBal {
+		return fmt.Errorf("lease_cancel balance would overflow uint64")
+	}
 	if b.Balance != expectedBal {
 		return fmt.Errorf("balance mismatch: expected %d, got %d", expectedBal, b.Balance)
+	}
+
+	if unwindProvider != "" {
+		if rerr := l.resolveCancelWinsOverAccept(b.Source, unwindProvider); rerr != nil {
+			return rerr
+		}
 	}
 
 	commit, prevBalance, err := l.prepareBlockWrite(b)
