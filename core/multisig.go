@@ -139,7 +139,7 @@ func VerifyMultisigAny(hash string, sigs []BlockSignature, ks *Keyset) error {
 
 func IsSpendingOp(t BlockType) bool {
 	switch t {
-	case BlockSend, BlockBurn, BlockLease, BlockLeaseRenew, BlockMultisigOpen, BlockMultisigUpdate, BlockMint:
+	case BlockSend, BlockBurn, BlockLease, BlockLeaseAccept, BlockLeaseRenew, BlockMultisigOpen, BlockMultisigUpdate, BlockMint:
 		return true
 	default:
 		return false
