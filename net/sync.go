@@ -3,6 +3,7 @@ package net
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -526,6 +527,97 @@ func streamPages(enc pageEncoder, ch <-chan SyncResponse) (int, error) {
 	return total, encErr
 }
 
+func decodeSyncResponse(dec *json.Decoder, maxBlocks int) (*SyncResponse, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '{' {
+		return nil, fmt.Errorf("sync: expected '{', got %v", tok)
+	}
+
+	var resp SyncResponse
+
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, fmt.Errorf("sync: expected string key, got %v", keyTok)
+		}
+
+		switch key {
+		case "blocks":
+			arrTok, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			if arrTok == nil {
+				resp.Blocks = nil
+				continue
+			}
+			arrDelim, ok := arrTok.(json.Delim)
+			if !ok || arrDelim != '[' {
+				return nil, fmt.Errorf("sync: expected '[' for blocks, got %v", arrTok)
+			}
+
+			count := 0
+			for dec.More() {
+				count++
+				if count > maxBlocks {
+					return nil, fmt.Errorf("sync: page contains %d blocks, exceeding maxPageSize %d", count, maxBlocks)
+				}
+				var b core.Block
+				if err := dec.Decode(&b); err != nil {
+					return nil, err
+				}
+				resp.Blocks = append(resp.Blocks, &b)
+			}
+			endArr, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			if endDelim, ok := endArr.(json.Delim); !ok || endDelim != ']' {
+				return nil, fmt.Errorf("sync: expected ']' after blocks, got %v", endArr)
+			}
+
+		case "has_more":
+			if err := dec.Decode(&resp.HasMore); err != nil {
+				return nil, err
+			}
+
+		case "cursor":
+			if err := dec.Decode(&resp.Cursor); err != nil {
+				return nil, err
+			}
+
+		case "rejected":
+			if err := dec.Decode(&resp.Rejected); err != nil {
+				return nil, err
+			}
+
+		default:
+			var discard json.RawMessage
+			if err := dec.Decode(&discard); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	endObj, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if endDelim, ok := endObj.(json.Delim); !ok || endDelim != '}' {
+		return nil, fmt.Errorf("sync: expected '}', got %v", endObj)
+	}
+
+	return &resp, nil
+}
+
 func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *blockQuarantine, tracker *syncTracker) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -560,15 +652,25 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	gotTerminal := false
 
 	for {
-		lr.N = maxSyncResponseBytes
-		var resp SyncResponse
-		if err := dec.Decode(&resp); err != nil {
+		if len(allBlocks) >= maxTotalBlocks {
+			logging.Warnf("sync: hit maxTotalBlocks cap (%d), stopping", maxTotalBlocks)
+			break
+		}
+
+		resp, err := decodeSyncResponse(dec, maxPageSize)
+		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			return err
 		}
-		allBlocks = append(allBlocks, resp.Blocks...)
+
+		remaining := maxTotalBlocks - len(allBlocks)
+		blocksToAdd := resp.Blocks
+		if len(blocksToAdd) > remaining {
+			blocksToAdd = blocksToAdd[:remaining]
+		}
+		allBlocks = append(allBlocks, blocksToAdd...)
 		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)", pid.ShortString(), len(resp.Blocks), len(allBlocks), resp.HasMore)
 		if !resp.HasMore {
 			rejectedAccounts = resp.Rejected

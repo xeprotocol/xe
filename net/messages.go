@@ -1,6 +1,9 @@
 package net
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/xeprotocol/xe/core"
 	"github.com/xeprotocol/xe/statechain"
 )
@@ -23,6 +26,33 @@ type SyncResponse struct {
 	HasMore  bool          `json:"has_more"`
 	Cursor   string        `json:"cursor"`
 	Rejected []string      `json:"rejected,omitempty"`
+}
+
+func (sr *SyncResponse) UnmarshalJSON(data []byte) error {
+	type Alias SyncResponse
+	aux := &struct {
+		Blocks []json.RawMessage `json:"blocks"`
+		*Alias
+	}{
+		Alias: (*Alias)(sr),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(aux.Blocks) > maxPageSize {
+		return fmt.Errorf("sync: page contains %d blocks, exceeding maxPageSize %d", len(aux.Blocks), maxPageSize)
+	}
+	if aux.Blocks != nil {
+		sr.Blocks = make([]*core.Block, 0, len(aux.Blocks))
+		for _, raw := range aux.Blocks {
+			var b core.Block
+			if err := json.Unmarshal(raw, &b); err != nil {
+				return err
+			}
+			sr.Blocks = append(sr.Blocks, &b)
+		}
+	}
+	return nil
 }
 
 type ResourceAdvertisement struct {
