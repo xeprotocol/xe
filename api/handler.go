@@ -382,8 +382,16 @@ func clientIP(r *http.Request) string {
 	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
-			return last
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := strings.TrimSpace(parts[i])
+			if ip != "" && !isLoopbackHost(ip) {
+				return ip
+			}
+		}
+		for i := len(parts) - 1; i >= 0; i-- {
+			if ip := strings.TrimSpace(parts[i]); ip != "" {
+				return ip
+			}
 		}
 	}
 	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
