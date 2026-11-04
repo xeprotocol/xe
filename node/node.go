@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -2215,16 +2216,38 @@ func (n *Node) OpenTunnelForLease(ctx context.Context, leaseHash string) (io.Rea
 	return xenet.OpenTunnel(ctx, n.Host, n.DHT, providerPeer, leaseHash)
 }
 
-func (n *Node) RequestAttestation(source, identifier string) (*core.TimekeeperAttestation, error) {
+func (n *Node) isTimekeeper() bool {
+	if n == nil || n.KeyPair == nil {
+		return false
+	}
+	tkConfig := n.getTimekeeperConfig()
+	if tkConfig == nil {
+		return false
+	}
+	myPub := n.KeyPair.PubKeyHex()
+	for _, k := range tkConfig.Keys {
+		if strings.EqualFold(k, myPub) {
+			return true
+		}
+	}
+	return false
+}
 
+func (n *Node) IsTimekeeper() bool {
+	return n.isTimekeeper()
+}
+
+func (n *Node) RequestAttestation(source, identifier string) (*core.TimekeeperAttestation, error) {
 	if len(identifier) != 64 {
 		return nil, fmt.Errorf("invalid attestation identifier length: %d", len(identifier))
+	}
+	if !n.isTimekeeper() {
+		return nil, fmt.Errorf("node is not an authorized timekeeper")
 	}
 	if err := n.allowAttestation(source, identifier); err != nil {
 		return nil, err
 	}
 	if err := n.canAttest(identifier); err != nil {
-
 		logging.Warnf("Attestation request from %s rejected: %v", source, err)
 		return nil, err
 	}
