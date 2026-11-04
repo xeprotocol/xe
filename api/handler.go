@@ -99,6 +99,10 @@ type Handler struct {
 	recentAt     time.Time
 
 	observer *node.Observer
+
+	tunnelMu       sync.Mutex
+	tunnelConnSem  chan struct{}
+	tunnelSeenSigs map[string]int64
 }
 
 func NewHandler(n *node.Node) *Handler {

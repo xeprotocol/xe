@@ -964,8 +964,8 @@ All VMs running on this node (provider mode). No params. Array of VM info:
 VM info for a single lease. Path: `lease`. Errors: `400 missing lease hash`, `404 vm not found`.
 
 ### POST /tunnel/{leaseHash}/tcp
-Open a raw bidirectional **TCP tunnel** into a lease's VM. The HTTP connection is **hijacked**: after a `200 OK` the node streams raw bytes both ways. Path: `leaseHash`. Header `X-Signature` required — a hex ed25519 signature of the lease hash by the lease's `access_pub_key`.
-> Errors: `400 missing/invalid lease hash`, `401 missing X-Signature header`, `403 lease has no access key` / `signature verification failed`, `404 lease not found`, `410 lease settled`, `502 tunnel error: <msg>`, `500 hijacking not supported`.
+Open a raw bidirectional **TCP tunnel** into a lease's VM. The HTTP connection is **hijacked**: after a `200 OK` the node streams raw bytes both ways. Path: `leaseHash`. Header `X-Signature` required — a single-use hex ed25519 signature of the lease hash by the lease's `access_pub_key`. Optional `X-Timestamp` and `X-Nonce` headers bind the signature to the specific request (`sha256(leaseHash:METHOD:PATH:timestamp:nonce)`) within a 5-minute skew window. Signatures are protected against replay attacks. Max concurrent hijacked connections capped at 100.
+> Errors: `400 missing/invalid lease hash` / `invalid X-Timestamp header`, `401 missing X-Signature header`, `403 lease has no access key` / `signature verification failed` / `signature already used / replay detected` / `timestamp expired or out of allowed window`, `404 lease not found`, `410 lease settled`, `503 maximum concurrent tunnel connections reached`, `502 tunnel error: <msg>`, `500 hijacking not supported`.
 
 ---
 
