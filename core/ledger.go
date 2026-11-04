@@ -1789,6 +1789,94 @@ func (l *Ledger) resolveCancelWinsOverAccept(leaseHash, provider string) error {
 	return nil
 }
 
+func (l *Ledger) ResolveRenewWinsOverSettle(leaseHash, provider string) error {
+	pchain, err := l.store.GetAccountChain(provider)
+	if err != nil {
+		return fmt.Errorf("renew-wins: GetAccountChain(provider): %w", err)
+	}
+	if pchain == nil || len(pchain.Blocks) == 0 {
+		return fmt.Errorf("renew-wins: provider settle not found locally: retry after sync")
+	}
+	settleIdx := -1
+	for i, blk := range pchain.Blocks {
+		if blk.Type == BlockLeaseSettle && blk.Source == leaseHash {
+			settleIdx = i
+			break
+		}
+	}
+	if settleIdx == -1 {
+		return fmt.Errorf("renew-wins: provider settle not found locally: retry after sync")
+	}
+	if settleIdx != len(pchain.Blocks)-1 {
+		return fmt.Errorf("renew-wins: provider built on the settle: retry after sync")
+	}
+	if fh := l.FinalHeight(provider); uint64(settleIdx+1) <= fh {
+		return fmt.Errorf("cannot renew lease in settled state: settle is finalized")
+	}
+	settleBlock := pchain.Blocks[settleIdx]
+
+	entry, ok := l.acquireAccountLockTry(provider)
+	if !ok {
+		return fmt.Errorf("renew-wins: provider chain busy: retry after sync")
+	}
+	defer l.releaseAccountLock(provider, entry)
+
+	if err := l.undoBlockApply(provider, settleBlock); err != nil {
+		return fmt.Errorf("renew-wins: unwind provider settle: %w", err)
+	}
+	log.Printf("lease %s: renew-wins over a racing settle — unwound provider %s's settle %s",
+		shortHash(leaseHash), shortAddr(provider), shortHash(settleBlock.Hash))
+	return nil
+}
+
+func (l *Ledger) resolveRenewWinsOverSettle(leaseHash, provider string) error {
+	return l.ResolveRenewWinsOverSettle(leaseHash, provider)
+}
+
+func (l *Ledger) ResolveSettleWinsOverForceSettle(leaseHash, consumer string) error {
+	cchain, err := l.store.GetAccountChain(consumer)
+	if err != nil {
+		return fmt.Errorf("settle-wins: GetAccountChain(consumer): %w", err)
+	}
+	if cchain == nil || len(cchain.Blocks) == 0 {
+		return fmt.Errorf("settle-wins: consumer force-settle not found locally: retry after sync")
+	}
+	forceIdx := -1
+	for i, blk := range cchain.Blocks {
+		if blk.Type == BlockLeaseForceSettle && blk.Source == leaseHash {
+			forceIdx = i
+			break
+		}
+	}
+	if forceIdx == -1 {
+		return fmt.Errorf("settle-wins: consumer force-settle not found locally: retry after sync")
+	}
+	if forceIdx != len(cchain.Blocks)-1 {
+		return fmt.Errorf("settle-wins: consumer built on the force-settle: retry after sync")
+	}
+	if fh := l.FinalHeight(consumer); uint64(forceIdx+1) <= fh {
+		return fmt.Errorf("cannot settle lease: force-settle is finalized")
+	}
+	forceBlock := cchain.Blocks[forceIdx]
+
+	entry, ok := l.acquireAccountLockTry(consumer)
+	if !ok {
+		return fmt.Errorf("settle-wins: consumer chain busy: retry after sync")
+	}
+	defer l.releaseAccountLock(consumer, entry)
+
+	if err := l.undoBlockApply(consumer, forceBlock); err != nil {
+		return fmt.Errorf("settle-wins: unwind consumer force-settle: %w", err)
+	}
+	log.Printf("lease %s: settle-wins over a racing force-settle — unwound consumer %s's force-settle %s",
+		shortHash(leaseHash), shortAddr(consumer), shortHash(forceBlock.Hash))
+	return nil
+}
+
+func (l *Ledger) resolveSettleWinsOverForceSettle(leaseHash, consumer string) error {
+	return l.ResolveSettleWinsOverForceSettle(leaseHash, consumer)
+}
+
 func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 	if b.Asset != "XUSD" {
 		return fmt.Errorf("lease_cancel block must have asset=XUSD")
@@ -2133,7 +2221,17 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 		return fmt.Errorf("lease not found: %s", shortHash(b.Source))
 	}
 	if lease.Settled {
-		return fmt.Errorf("lease already settled")
+		if lease.State == LeaseUnfulfilled {
+			if rerr := l.resolveSettleWinsOverForceSettle(b.Source, lease.Consumer); rerr != nil {
+				return rerr
+			}
+			lease, ok, err = l.getLeaseOverlay(b.Source)
+			if !ok || err != nil || lease == nil {
+				return fmt.Errorf("lease reload after force-settle unwind failed")
+			}
+		} else {
+			return fmt.Errorf("lease already settled")
+		}
 	}
 	if lease.Provider != b.Account {
 		return fmt.Errorf("lease_settle: provider account mismatch")
@@ -2160,6 +2258,9 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 
 	expiry := lease.EffectiveExpiry()
 	if settleTime < expiry {
+		if skipSkew {
+			return fmt.Errorf("lease not yet expired: need timestamp >= %d, got %d: retry after sync", expiry, settleTime)
+		}
 		return fmt.Errorf("lease not yet expired: need timestamp >= %d, got %d", expiry, settleTime)
 	}
 

@@ -25,6 +25,14 @@ func IsRetryableError(err error) bool {
 
 		"unknown block type",
 		"not yet activated",
+		"lease already settled",
+		"lease not yet expired",
+		"lease settle past grace",
+		"renew-wins: provider built on",
+		"settle-wins: consumer built on",
+		"cannot force-settle lease in",
+		"lease not renewable in",
+		"lease_settle XE mismatch",
 	}
 	for _, p := range retryablePatterns {
 		if strings.Contains(msg, p) {
