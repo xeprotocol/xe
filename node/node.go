@@ -2220,11 +2220,12 @@ func (n *Node) RequestAttestation(source, identifier string) (*core.TimekeeperAt
 	if len(identifier) != 64 {
 		return nil, fmt.Errorf("invalid attestation identifier length: %d", len(identifier))
 	}
-	if err := n.allowAttestation(source, identifier); err != nil {
+	rollback, err := n.acquireAttestation(source, identifier)
+	if err != nil {
 		return nil, err
 	}
 	if err := n.canAttest(identifier); err != nil {
-
+		rollback()
 		logging.Warnf("Attestation request from %s rejected: %v", source, err)
 		return nil, err
 	}
