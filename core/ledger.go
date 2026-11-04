@@ -207,7 +207,8 @@ type LedgerConfig struct {
 
 	MinterConfigFn func() *MinterConfig
 
-	CertificateLookupFn func(hash string) *CertificateInfo
+	CertificateLookupFn  func(hash string) *CertificateInfo
+	CurrentCertificateFn func(provider string) *CertificateInfo
 
 	EpochRFn func() uint64
 
@@ -261,7 +262,8 @@ type Ledger struct {
 	blockAddedCallback  func(*Block)
 	timekeeperConfigFn  func() *TimekeeperConfig
 	minterConfigFn      func() *MinterConfig
-	certificateLookupFn func(hash string) *CertificateInfo
+	certificateLookupFn  func(hash string) *CertificateInfo
+	currentCertificateFn func(provider string) *CertificateInfo
 	epochRFn            func() uint64
 	epochPayoutCapFn    func() uint64
 	epochTWAPFn         func() uint64
@@ -299,7 +301,8 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 		timestampWindow:     cfg.TimestampWindow,
 		timekeeperConfigFn:  cfg.TimekeeperConfigFn,
 		minterConfigFn:      cfg.MinterConfigFn,
-		certificateLookupFn: cfg.CertificateLookupFn,
+		certificateLookupFn:  cfg.CertificateLookupFn,
+		currentCertificateFn: cfg.CurrentCertificateFn,
 		epochRFn:            cfg.EpochRFn,
 		featureActiveFn:     cfg.FeatureActiveFn,
 		epochPayoutCapFn:    cfg.EpochPayoutCapFn,
@@ -3090,4 +3093,10 @@ func (l *Ledger) FinalizedChildHash(account, prev string) string {
 		}
 	}
 	return ""
+}
+
+func (l *Ledger) SetCurrentCertificateFn(fn func(provider string) *CertificateInfo) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.currentCertificateFn = fn
 }

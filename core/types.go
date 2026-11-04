@@ -252,6 +252,7 @@ func (l *Lease) BackfillState() {
 }
 
 type CertificateInfo struct {
+	Hash                 string
 	Provider             string
 	ExpiresAt            int64
 	PriceMultiplierMilli uint64
