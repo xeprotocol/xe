@@ -31,9 +31,9 @@ func (h *Handler) handleDirectoryList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleDirectoryLookup(w http.ResponseWriter, r *http.Request) {
-	account := r.PathValue("account")
-	if account == "" {
-		writeError(w, http.StatusBadRequest, "missing account")
+	account, err := parseAccountParam(r.PathValue("account"), "account")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	reg := h.node.LookupDirectory(account)

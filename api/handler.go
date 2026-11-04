@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -421,10 +423,28 @@ func writeSubmitError(w http.ResponseWriter, err error) {
 	})
 }
 
+func parseAccountParam(raw, name string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("missing " + name)
+	}
+	if len(raw) != 64 {
+		return "", errors.New("invalid " + name + ": must be 64 hex characters")
+	}
+	if _, err := hex.DecodeString(raw); err != nil {
+		return "", errors.New("invalid " + name + ": must be valid hex")
+	}
+	return strings.ToLower(raw), nil
+}
+
+func parseAccountAddress(raw string) (string, error) {
+	return parseAccountParam(raw, "address")
+}
+
 func (h *Handler) handleGetBalance(w http.ResponseWriter, r *http.Request) {
-	address := r.PathValue("address")
-	if address == "" {
-		writeError(w, http.StatusBadRequest, "missing address")
+	address, err := parseAccountAddress(r.PathValue("address"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	balances := h.node.GetAssetBalances(address)
@@ -449,9 +469,9 @@ func (h *Handler) handleGetBalance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetChain(w http.ResponseWriter, r *http.Request) {
-	address := r.PathValue("address")
-	if address == "" {
-		writeError(w, http.StatusBadRequest, "missing address")
+	address, err := parseAccountAddress(r.PathValue("address"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	blocks := h.node.GetChain(address)
@@ -527,9 +547,9 @@ func (h *Handler) handleGetBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetPending(w http.ResponseWriter, r *http.Request) {
-	address := r.PathValue("address")
-	if address == "" {
-		writeError(w, http.StatusBadRequest, "missing address")
+	address, err := parseAccountAddress(r.PathValue("address"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	pending := h.node.GetPending(address)
@@ -711,9 +731,9 @@ func (h *Handler) handleGetReadiness(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetAccountConflicts(w http.ResponseWriter, r *http.Request) {
-	account := r.PathValue("account")
-	if account == "" {
-		writeError(w, http.StatusBadRequest, "missing account")
+	account, err := parseAccountParam(r.PathValue("account"), "account")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, h.node.GetConflicts(account))
@@ -793,9 +813,9 @@ func (h *Handler) handleSubmitMint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetKeyset(w http.ResponseWriter, r *http.Request) {
-	addr := r.PathValue("address")
-	if addr == "" {
-		writeError(w, http.StatusBadRequest, "missing address")
+	addr, err := parseAccountAddress(r.PathValue("address"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	ks := h.node.GetKeyset(addr)
@@ -807,9 +827,9 @@ func (h *Handler) handleGetKeyset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetReputation(w http.ResponseWriter, r *http.Request) {
-	addr := r.PathValue("address")
-	if addr == "" {
-		writeError(w, http.StatusBadRequest, "missing address")
+	addr, err := parseAccountAddress(r.PathValue("address"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	agg := h.node.GetReputation(addr)
