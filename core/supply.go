@@ -60,6 +60,7 @@ type chainTerms struct {
 	burned  map[string]uint64
 
 	leaseCost      map[string]uint64
+	leaseRenewCost map[string]uint64
 	acceptStake    map[string]uint64
 	settleEmission map[string]uint64
 
@@ -73,6 +74,7 @@ func termsFromChain(blocks []*Block) *chainTerms {
 		minted:         map[string]uint64{},
 		burned:         map[string]uint64{},
 		leaseCost:      map[string]uint64{},
+		leaseRenewCost: map[string]uint64{},
 		acceptStake:    map[string]uint64{},
 		settleEmission: map[string]uint64{},
 	}
@@ -94,6 +96,8 @@ func termsFromChain(blocks []*Block) *chainTerms {
 			c.burned[b.Asset] += b.Amount
 		case BlockLease:
 			c.leaseCost[b.Hash] = b.Amount
+		case BlockLeaseRenew:
+			c.leaseRenewCost[b.Source] += b.Amount
 		case BlockLeaseAccept:
 			c.acceptStake[b.Source] = b.Amount
 		case BlockLeaseSettle:
@@ -186,6 +190,7 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 	rep.Accounts = len(before)
 
 	costs := map[string]uint64{}
+	renewCosts := map[string]uint64{}
 	stakes := map[string]uint64{}
 	emissions := map[string]uint64{}
 
@@ -212,6 +217,9 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 		}
 		for h, v := range c.leaseCost {
 			costs[h] = v
+		}
+		for h, v := range c.leaseRenewCost {
+			renewCosts[h] += v
 		}
 		for h, v := range c.acceptStake {
 			stakes[h] = v
@@ -243,7 +251,8 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 		add(&get(AssetXE.Symbol).Emitted, em)
 
 		if cost, ok := costs[h]; ok {
-			add(&get(AssetXUSD.Symbol).EscrowBurned, cost)
+			totalEscrow := cost + renewCosts[h]
+			add(&get(AssetXUSD.Symbol).EscrowBurned, totalEscrow)
 		} else {
 			rep.Notes = append(rep.Notes, fmt.Sprintf("settle for lease %s has no lease block in the census; escrow unaccounted", shortHash(h)))
 			rep.Conserved = false
@@ -279,7 +288,7 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 
 	for _, l := range leases {
 		if l.State == LeaseExpired {
-			add(&get(AssetXUSD.Symbol).EscrowBurned, l.Cost)
+			add(&get(AssetXUSD.Symbol).EscrowBurned, l.TotalCost())
 		}
 	}
 
@@ -295,7 +304,7 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 		}
 	}
 
-	for _, a := range rep.Assets {
+	for sym, a := range rep.Assets {
 		a.Created = sumU64(&overflow, a.Genesis, a.Minted, a.Emitted)
 		a.Destroyed = sumU64(&overflow, a.Burned, a.EscrowBurned, a.StakeForfeited)
 		a.Observed = sumU64(&overflow, a.Balances, a.InFlight)
@@ -304,6 +313,7 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 		a.Discrepancy = signedDelta(a.Accounted, a.Created)
 		if !a.Conserved {
 			rep.Conserved = false
+			rep.Notes = append(rep.Notes, fmt.Sprintf("asset %s discrepancy: accounted %d != created %d (delta %d)", sym, a.Accounted, a.Created, a.Discrepancy))
 		}
 	}
 	if overflow {
