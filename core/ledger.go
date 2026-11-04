@@ -1811,17 +1811,18 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 		return fmt.Errorf("lease_cancel: only the consumer can cancel a lease")
 	}
 
+	var existingLease *Lease
 	if existing, ok, err := l.getLeaseOverlay(b.Source); ok {
 		if err != nil {
 			return fmt.Errorf("GetLease: %w", err)
 		}
-		if existing != nil && existing.State == LeaseAccepted && existing.Provider != b.Account {
-			if rerr := l.resolveCancelWinsOverAccept(b.Source, existing.Provider); rerr != nil {
-				return rerr
-			}
-		} else if existing != nil && existing.State != LeaseCreated {
+		if existing != nil && existing.State != LeaseCreated && existing.State != LeaseAccepted {
 			return fmt.Errorf("cannot cancel lease in %s state", existing.State)
 		}
+		if existing != nil && existing.State == LeaseAccepted && existing.Provider == b.Account {
+			return fmt.Errorf("cannot cancel lease in accepted state as provider")
+		}
+		existingLease = existing
 	}
 
 	pending, err := l.getPendingSendOverlay(b.Source)
@@ -1859,6 +1860,13 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 	if err != nil {
 		return err
 	}
+
+	if existingLease != nil && existingLease.State == LeaseAccepted && existingLease.Provider != b.Account {
+		if rerr := l.resolveCancelWinsOverAccept(b.Source, existingLease.Provider); rerr != nil {
+			return rerr
+		}
+	}
+
 	commit.DeletePendingID = b.Source
 	commit.CancelLeaseHash = b.Source
 
