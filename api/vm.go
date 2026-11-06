@@ -8,7 +8,9 @@ import (
 )
 
 func (h *Handler) handleGetProviders(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.node.GetProviders())
+	offset, limit := parsePagination(r)
+	providers := paginateSlice(h.node.GetProviders(), offset, limit)
+	writeJSON(w, http.StatusOK, providers)
 }
 
 func (h *Handler) handleGetCertificate(w http.ResponseWriter, r *http.Request) {
