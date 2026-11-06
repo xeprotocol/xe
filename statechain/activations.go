@@ -240,8 +240,8 @@ type FeatureStatus struct {
 }
 
 func (c *Chain) Activations() *Activations {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.activationsLocked()
 }
 
@@ -258,8 +258,8 @@ func (c *Chain) activationsLocked() *Activations {
 }
 
 func (c *Chain) FeatureActive(feature string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.tip == nil {
 		return false
 	}
@@ -267,14 +267,14 @@ func (c *Chain) FeatureActive(feature string) bool {
 }
 
 func (c *Chain) FeatureStatuses(known map[string]bool) []FeatureStatus {
-	c.mu.Lock()
+	c.mu.RLock()
 	a := c.activationsLocked()
 	var idx uint64
 	var ns int64
 	if c.tip != nil {
 		idx, ns = c.tip.Index, c.tip.Timestamp
 	}
-	c.mu.Unlock()
+	c.mu.RUnlock()
 
 	out := make([]FeatureStatus, 0, len(a.Features))
 	for _, name := range a.Names() {
@@ -291,8 +291,8 @@ func (c *Chain) FeatureStatuses(known map[string]bool) []FeatureStatus {
 }
 
 func (c *Chain) MinProtocolVersion() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	raw, ok := c.kv.Get(MinProtocolVersionKey)
 	if !ok {
 		return ""
