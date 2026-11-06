@@ -35,7 +35,14 @@ func (c *Client) ChatPoWDifficulty() (uint64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("node advertises no chat_pow_difficulty")
 	}
-	return strconv.ParseUint(s, 16, 64)
+	d, err := strconv.ParseUint(s, 16, 64)
+	if err != nil {
+		return 0, err
+	}
+	if d > chat.MaxPoWDifficulty {
+		return 0, fmt.Errorf("node advertised excessive chat_pow_difficulty %s (max %016x)", s, chat.MaxPoWDifficulty)
+	}
+	return d, nil
 }
 
 func (c *Client) SendChat(env *chat.Envelope) error {
