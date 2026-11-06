@@ -107,8 +107,14 @@ func (c *Client) GetProviders() ([]ProviderInfo, error) {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	var providers []ProviderInfo
-	_ = json.NewDecoder(resp.Body).Decode(&providers)
+	if err := json.NewDecoder(resp.Body).Decode(&providers); err != nil {
+		return nil, err
+	}
 	return providers, nil
 }
 
@@ -153,14 +159,20 @@ func (c *Client) GetLeases() ([]map[string]interface{}, error) {
 func (c *Client) GetVM(leaseHash string) (map[string]interface{}, error) {
 	resp, err := http.Get(fmt.Sprintf("%s/vms/%s", c.BaseURL, leaseHash))
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil
 	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	var result map[string]interface{}
-	_ = json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -170,8 +182,17 @@ func (c *Client) getJSON(url string) (map[string]interface{}, error) {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	var result map[string]interface{}
-	_ = json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
