@@ -664,30 +664,51 @@ func cmdWalletBalance() {
 	}
 }
 
+func parseSendArgs(args []string) (dest, amountStr, asset, memo string, err error) {
+	if len(args) < 2 {
+		return "", "", "", "", fmt.Errorf("usage: xe send <to> <amount> [--asset XUSD|XE] [--memo <text>]")
+	}
+	dest = args[0]
+	amountStr = args[1]
+	asset = "XUSD"
+	for i := 2; i < len(args); i++ {
+		switch args[i] {
+		case "--asset":
+			if i+1 >= len(args) {
+				return "", "", "", "", fmt.Errorf("--asset requires a value")
+			}
+			i++
+			asset = args[i]
+		case "--memo":
+			if i+1 >= len(args) {
+				return "", "", "", "", fmt.Errorf("--memo requires a value")
+			}
+			i++
+			memo = args[i]
+		default:
+			return "", "", "", "", fmt.Errorf("unknown flag %q", args[i])
+		}
+	}
+	return dest, amountStr, asset, memo, nil
+}
+
 func cmdSend(args []string) {
 	initNetworkID()
 	kp := loadWallet()
 	addr := kp.Address()
 	c := apiClient()
 
-	dest := args[0]
-	asset := "XUSD"
-	memo := ""
-	for i, a := range args {
-		if a == "--asset" && i+1 < len(args) {
-			asset = args[i+1]
-		}
-		if a == "--memo" && i+1 < len(args) {
-			memo = args[i+1]
-		}
+	dest, amountStr, asset, memo, err := parseSendArgs(args)
+	if err != nil {
+		fatal("%v", err)
 	}
 	assetCfg, ok := core.AssetByName(asset)
 	if !ok {
 		fatal("unknown asset %q", asset)
 	}
-	amount, err := core.ParseAmount(args[1], assetCfg)
+	amount, err := core.ParseAmount(amountStr, assetCfg)
 	if err != nil {
-		fatal("invalid amount %q: %v", args[1], err)
+		fatal("invalid amount %q: %v", amountStr, err)
 	}
 	if amount == 0 {
 		fatal("send amount must be greater than zero")
@@ -863,29 +884,45 @@ func cmdMint(args []string) {
 	fmt.Printf("  New XUSD balance: %s\n", core.FormatAmount(bals["XUSD"]+amount, core.AssetXUSD))
 }
 
+func parseBurnArgs(args []string) (amountStr string, skipConfirm bool, memo string, err error) {
+	if len(args) < 1 {
+		return "", false, "", fmt.Errorf("usage: xe burn <amount> [--memo <text>] [--yes]")
+	}
+	amountStr = args[0]
+	rest := args[1:]
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case "--yes", "-y":
+			skipConfirm = true
+		case "--memo":
+			if i+1 >= len(rest) {
+				return "", false, "", fmt.Errorf("--memo requires a value")
+			}
+			i++
+			memo = rest[i]
+		default:
+			return "", false, "", fmt.Errorf("unknown flag %q", rest[i])
+		}
+	}
+	return amountStr, skipConfirm, memo, nil
+}
+
 func cmdBurn(args []string) {
 	initNetworkID()
 	kp := loadWallet()
 	addr := kp.Address()
 	c := apiClient()
 
-	amount, err := core.ParseAmount(args[0], core.AssetXE)
+	amountStr, skipConfirm, memo, err := parseBurnArgs(args)
+	if err != nil {
+		fatal("%v", err)
+	}
+	amount, err := core.ParseAmount(amountStr, core.AssetXE)
 	if err != nil || amount == 0 {
 		if err != nil {
-			fatal("invalid burn amount %q: %v", args[0], err)
+			fatal("invalid burn amount %q: %v", amountStr, err)
 		}
 		fatal("burn amount must be greater than zero")
-	}
-	skipConfirm := false
-	memo := ""
-	rest := args[1:]
-	for i, a := range rest {
-		if a == "--yes" || a == "-y" {
-			skipConfirm = true
-		}
-		if a == "--memo" && i+1 < len(rest) {
-			memo = rest[i+1]
-		}
 	}
 	if err := core.ValidateMemo(memo); err != nil {
 		fatal("invalid memo: %v", err)
@@ -940,7 +977,10 @@ func cmdBurn(args []string) {
 func cmdProviders() {
 	c := apiClient()
 	providers, err := c.GetProviders()
-	if err != nil || len(providers) == 0 {
+	if err != nil {
+		fatal("providers: %v", err)
+	}
+	if len(providers) == 0 {
 		fmt.Println("No providers found.")
 		return
 	}
@@ -1111,7 +1151,10 @@ func cmdLease(args []string) {
 func cmdLeaseStatus(hash string) {
 	c := apiClient()
 	lease, err := c.GetLease(hash)
-	if err != nil || lease == nil || lease["error"] != nil {
+	if err != nil {
+		fatal("lease status: %v", err)
+	}
+	if lease == nil || lease["error"] != nil {
 		fatal("lease not found: %s", hash)
 	}
 	data, _ := json.MarshalIndent(lease, "", "  ")
@@ -1162,7 +1205,10 @@ func cmdReputation(addr string) {
 func cmdVM(hash string) {
 	c := apiClient()
 	vm, err := c.GetVM(hash)
-	if err != nil || vm == nil {
+	if err != nil {
+		fatal("vm: %v", err)
+	}
+	if vm == nil {
 		fatal("VM not found for lease %s", hash)
 	}
 	data, _ := json.MarshalIndent(vm, "", "  ")

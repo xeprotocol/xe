@@ -73,6 +73,9 @@ type Node struct {
 	consumerVMs      sync.Map
 	pendingOffersMu  sync.Mutex
 	pendingOffers    map[string]*xenet.ResourceOffer
+	marketReqMu      sync.Mutex
+	seenMarketReqs   map[string]int64
+	consumerReqTimes map[string][]int64
 	providerAds      sync.Map
 	blockCreateMu    sync.Mutex
 	reservedRes      vm.Resources
@@ -495,6 +498,8 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		gater:                  gater,
 		activationLog:          newActivationReporter(),
 		pendingOffers:          make(map[string]*xenet.ResourceOffer),
+		seenMarketReqs:         make(map[string]int64),
+		consumerReqTimes:       make(map[string][]int64),
 		acceptInFlight:         make(map[string]struct{}),
 		pullSem:                make(chan struct{}, maxInFlightVotePulls),
 		ctx:                    ctx,
@@ -1308,6 +1313,71 @@ func (n *Node) Stop() {
 	_ = n.store.Close()
 }
 
+const (
+	marketReqDedupTTL             = int64(10 * time.Minute)
+	maxSeenMarketReqs             = 10000
+	marketConsumerRateWindow      = int64(time.Minute)
+	maxMarketReqsPerConsumerPerMin = 10
+)
+
+func (n *Node) allowMarketplaceRequest(req *xenet.ResourceRequest, now int64) bool {
+	if req == nil || req.RequestID == "" || req.Consumer == "" {
+		return false
+	}
+	n.marketReqMu.Lock()
+	defer n.marketReqMu.Unlock()
+
+	if n.seenMarketReqs == nil {
+		n.seenMarketReqs = make(map[string]int64)
+	}
+	if n.consumerReqTimes == nil {
+		n.consumerReqTimes = make(map[string][]int64)
+	}
+
+	dedupCutoff := now - marketReqDedupTTL
+	for id, ts := range n.seenMarketReqs {
+		if ts < dedupCutoff {
+			delete(n.seenMarketReqs, id)
+		}
+	}
+	if ts, exists := n.seenMarketReqs[req.RequestID]; exists && ts >= dedupCutoff {
+		return false
+	}
+
+	rateCutoff := now - marketConsumerRateWindow
+	prev := n.consumerReqTimes[req.Consumer]
+	kept := prev[:0]
+	for _, ts := range prev {
+		if ts >= rateCutoff {
+			kept = append(kept, ts)
+		}
+	}
+	if len(kept) >= maxMarketReqsPerConsumerPerMin {
+		n.consumerReqTimes[req.Consumer] = kept
+		return false
+	}
+
+	if len(n.seenMarketReqs) >= maxSeenMarketReqs {
+		var oldestID string
+		var oldestTS int64
+		first := true
+		for id, ts := range n.seenMarketReqs {
+			if first || ts < oldestTS {
+				oldestID = id
+				oldestTS = ts
+				first = false
+			}
+		}
+		if oldestID != "" {
+			delete(n.seenMarketReqs, oldestID)
+		}
+	}
+
+	n.seenMarketReqs[req.RequestID] = now
+	n.consumerReqTimes[req.Consumer] = append(kept, now)
+	return true
+}
+
 func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 	for msg := range msgs {
 		switch msg.Type {
@@ -1321,6 +1391,10 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 				continue
 			}
 			req := msg.Request
+			if !n.allowMarketplaceRequest(req, core.Now().UnixNano()) {
+				log.Printf("Skipping duplicate or rate-limited request %s from %s", shortHash(req.RequestID), shortAddr(req.Consumer))
+				continue
+			}
 
 			if err := core.ValidateLeaseDimensions(req.VCPUs, req.MemoryMB, req.DiskGB, req.Duration); err != nil {
 				log.Printf("Skipping request %s: %v", shortHash(req.RequestID), err)

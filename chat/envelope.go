@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
@@ -15,6 +16,10 @@ import (
 const MaxMessageBytes = 8192
 
 const DefaultPoWDifficulty uint64 = 0xffffc00000000000
+
+const MaxPoWDifficulty uint64 = 0xfffffc0000000000
+
+const DefaultPoWTimeout = 30 * time.Second
 
 const MaxEnvelopeSkew = 5 * time.Minute
 
@@ -58,6 +63,15 @@ func ComputeEnvelopeID(from, pubKey, to, message string, timestamp int64) string
 }
 
 func NewEnvelope(from, to, message string, kp *core.KeyPair, difficulty uint64) (*Envelope, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultPoWTimeout)
+	defer cancel()
+	return NewEnvelopeWithContext(ctx, from, to, message, kp, difficulty)
+}
+
+func NewEnvelopeWithContext(ctx context.Context, from, to, message string, kp *core.KeyPair, difficulty uint64) (*Envelope, error) {
+	if difficulty > MaxPoWDifficulty {
+		return nil, fmt.Errorf("chat PoW difficulty %016x exceeds maximum allowed %016x", difficulty, MaxPoWDifficulty)
+	}
 	ts := core.Now().UnixNano()
 
 	pubKey := kp.PubKeyHex()
@@ -76,7 +90,11 @@ func NewEnvelope(from, to, message string, kp *core.KeyPair, difficulty uint64) 
 		Signature: hex.EncodeToString(sig),
 	}
 	if difficulty > 0 {
-		env.PoWNonce = core.ComputePoWConcurrent(idBytes, difficulty, runtime.NumCPU())
+		nonce, err := core.ComputePoWWithContext(ctx, idBytes, difficulty, runtime.NumCPU())
+		if err != nil {
+			return nil, err
+		}
+		env.PoWNonce = nonce
 	}
 	return env, nil
 }
