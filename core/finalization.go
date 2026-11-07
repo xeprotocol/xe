@@ -65,6 +65,27 @@ func thresholdMet(weight, total *big.Int) bool {
 	return lhs.Cmp(rhs) >= 0
 }
 
+func blockMatchesPosition(b *Block, account, prev string) bool {
+	if b == nil || b.Account != account {
+		return false
+	}
+	if prev == "" || prev == "0" {
+		return b.Previous == "" || b.Previous == "0"
+	}
+	return b.Previous == prev
+}
+
+func (l *Ledger) blockForPosition(account, prev, hash string) *Block {
+	if l == nil || hash == "" {
+		return nil
+	}
+	b := l.GetBlockOrStaged(hash)
+	if !blockMatchesPosition(b, account, prev) {
+		return nil
+	}
+	return b
+}
+
 func (vm *VoteManager) CastVote(account, prev string, seed ...string) {
 	mu := vm.conflictLock(account, prev)
 	mu.Lock()
@@ -128,7 +149,7 @@ func (vm *VoteManager) castVoteLocked(account, prev string, seed ...string) {
 	conflict := vm.ledger.GetConflict(account, prev)
 	eligible := candidates[:0]
 	for _, h := range candidates {
-		if vm.ledger.GetBlockOrStaged(h) != nil ||
+		if vm.ledger.blockForPosition(account, prev, h) != nil ||
 			(conflict != nil && containsConflictHash(conflict.BlockHashes, h)) {
 			eligible = append(eligible, h)
 		}
@@ -137,7 +158,7 @@ func (vm *VoteManager) castVoteLocked(account, prev string, seed ...string) {
 		return
 	}
 	pref := lowestHash(eligible)
-	prefBlock := vm.ledger.GetBlockOrStaged(pref)
+	prefBlock := vm.ledger.blockForPosition(account, prev, pref)
 	if prefBlock == nil {
 		return
 	}
@@ -207,7 +228,7 @@ func (vm *VoteManager) noteHeldCandidatesLocked(account, prev string, candidates
 		if seen[h] {
 			continue
 		}
-		if vm.ledger.GetBlockOrStaged(h) == nil {
+		if vm.ledger.blockForPosition(account, prev, h) == nil {
 			continue
 		}
 		seen[h] = true
@@ -263,6 +284,9 @@ func (vm *VoteManager) Close() {
 }
 
 func (vm *VoteManager) emitFinalLocked(account, prev, lockTarget string) {
+	if vm.ledger.blockForPosition(account, prev, lockTarget) == nil {
+		return
+	}
 	rep := vm.keyPair.PubKeyHex()
 	locked := lockTarget
 	if vm.ledger.finalVoteStore != nil {
@@ -273,7 +297,7 @@ func (vm *VoteManager) emitFinalLocked(account, prev, lockTarget string) {
 		locked = stored
 	}
 
-	lockedBlock := vm.ledger.GetBlockOrStaged(locked)
+	lockedBlock := vm.ledger.blockForPosition(account, prev, locked)
 	if lockedBlock == nil {
 		return
 	}
@@ -336,6 +360,11 @@ func (vm *VoteManager) convergeWeights(account, prev string) (map[string]*big.In
 	votes, _ := vm.store.GetVotesByConflict(account, prev)
 	cw := make(map[string]*big.Int)
 	for _, v := range votes {
+		if vm.ledger != nil {
+			if b := vm.ledger.GetBlockOrStaged(v.BlockHash); b != nil && !blockMatchesPosition(b, account, prev) {
+				continue
+			}
+		}
 		if cw[v.BlockHash] == nil {
 			cw[v.BlockHash] = new(big.Int)
 		}
@@ -353,19 +382,28 @@ func (vm *VoteManager) electionTotalWeight(account, prev string) *big.Int {
 
 func (vm *VoteManager) gatherCandidates(account, prev string, seed ...string) []string {
 	set := make(map[string]bool)
-	for _, h := range seed {
-		if h != "" {
-			set[h] = true
+	add := func(h string) {
+		if h == "" {
+			return
 		}
+		if vm.ledger != nil {
+			if b := vm.ledger.GetBlockOrStaged(h); b != nil && !blockMatchesPosition(b, account, prev) {
+				return
+			}
+		}
+		set[h] = true
+	}
+	for _, h := range seed {
+		add(h)
 	}
 	if votes, _ := vm.store.GetVotesByConflict(account, prev); votes != nil {
 		for _, v := range votes {
-			set[v.BlockHash] = true
+			add(v.BlockHash)
 		}
 	}
 	if c := vm.ledger.GetConflict(account, prev); c != nil {
 		for _, h := range c.BlockHashes {
-			set[h] = true
+			add(h)
 		}
 	}
 	out := make([]string, 0, len(set))
