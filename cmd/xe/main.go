@@ -996,6 +996,8 @@ func parseLeaseArgs(args []string) (leaseArgs, error) {
 			} else {
 				la.provider = args[i]
 			}
+		default:
+			return leaseArgs{}, fmt.Errorf("unknown flag %q", args[i])
 		}
 		if err != nil {
 			return leaseArgs{}, err
@@ -1012,7 +1014,7 @@ func cmdLease(args []string) {
 
 	la, err := parseLeaseArgs(args)
 	if err != nil {
-		fatal("%v", err)
+		fatal("%v\nusage: xe lease [--vcpus N] [--memory MB] [--disk GB] [--duration SECONDS] [--provider ADDR]", err)
 	}
 	vcpus, memory, disk, duration := la.vcpus, la.memory, la.disk, la.duration
 	providerAddr := la.provider
