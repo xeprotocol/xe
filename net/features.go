@@ -81,9 +81,13 @@ func (t *peerCapTable) record(p peer.ID, c PeerCapabilities) {
 					break
 				}
 			}
-		}
-		// Fallback: if all entries are retained or no policy is set, evict oldest
-		if victimIdx == -1 {
+			// When all entries in the table are retained, drop/evict the incoming newcomer
+			// instead of displacing existing retained representatives.
+			if victimIdx == -1 {
+				victimIdx = len(t.order) - 1
+			}
+		} else {
+			// No retain policy configured: standard FIFO eviction
 			victimIdx = 0
 		}
 		victim := t.order[victimIdx]

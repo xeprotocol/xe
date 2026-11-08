@@ -507,10 +507,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 			if baseRetain != nil && baseRetain(p) {
 				return true
 			}
-			if n.Directory != nil && n.Directory.HasNodePeer(p.String()) {
-				return true
-			}
-			return false
+			return n.IsDelegatedRepPeer(p.String())
 		})
 	}
 
@@ -2455,6 +2452,26 @@ func (n *Node) LookupDirectory(account string) *directory.Registration {
 		return nil
 	}
 	return reg
+}
+
+func (n *Node) IsDelegatedRepPeer(nodePeer string) bool {
+	if n == nil || nodePeer == "" || n.Directory == nil {
+		return false
+	}
+	for _, reg := range n.Directory.List() {
+		if reg != nil && reg.NodePeer == nodePeer {
+			if n.Ledger == nil {
+				return true
+			}
+			if w := n.Ledger.GetVoteWeight(reg.Account); w != nil && w.Sign() > 0 {
+				return true
+			}
+			if all := n.Ledger.GetAllVoteWeights(); all[reg.Account] > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (n *Node) validateChatEnvelope(env *chat.Envelope) error {

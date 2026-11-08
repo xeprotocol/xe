@@ -121,7 +121,9 @@ func TestPeerCapTable_EvictsDisconnectedFirst(t *testing.T) {
 }
 
 func TestPeerCapTable_FallbackWhenAllRetained(t *testing.T) {
-	// If all entries are retained, table capacity bound is strictly honored via FIFO
+	// If all entries in the table are retained, incoming entries must NOT displace
+	// existing retained representatives; the newcomer is dropped/evicted so table
+	// size stays bounded at capacity while existing retained peers are protected.
 	table := newPeerCapTable(3)
 	table.setRetainPolicy(func(p peer.ID) bool {
 		return true // all retained
@@ -140,15 +142,39 @@ func TestPeerCapTable_FallbackWhenAllRetained(t *testing.T) {
 	if len(table.all()) != 3 {
 		t.Fatalf("table size = %d, want 3", len(table.all()))
 	}
-	// p1 was oldest, should be evicted as fallback
-	if _, ok := table.get(p1); ok {
-		t.Fatalf("p1 should be evicted under fallback FIFO")
+	// Existing retained peers p1, p2, p3 must remain intact; newcomer p4 must be evicted
+	if _, ok := table.get(p1); !ok {
+		t.Fatalf("p1 (existing retained peer) was displaced by newcomer")
 	}
 	if _, ok := table.get(p2); !ok {
-		t.Fatalf("p2 should be present")
+		t.Fatalf("p2 (existing retained peer) was displaced by newcomer")
 	}
-	if _, ok := table.get(p4); !ok {
-		t.Fatalf("p4 should be present")
+	if _, ok := table.get(p3); !ok {
+		t.Fatalf("p3 (existing retained peer) was displaced by newcomer")
+	}
+	if _, ok := table.get(p4); ok {
+		t.Fatalf("p4 (newcomer) should have been evicted when table was full of retained entries")
+	}
+
+	// Churning more retained newcomers must never evict existing retained entries
+	for i := 5; i <= 20; i++ {
+		table.record(peer.ID(fmt.Sprintf("p%d", i)), PeerCapabilities{Version: "1.0.0"})
+	}
+	if len(table.all()) != 3 {
+		t.Fatalf("table size = %d, want 3", len(table.all()))
+	}
+	if _, ok := table.get(p1); !ok {
+		t.Fatalf("p1 was displaced after flood of newcomers")
+	}
+
+	// Negative control: when no retain policy is set, standard FIFO evicts oldest entry
+	tableNoPolicy := newPeerCapTable(3)
+	tableNoPolicy.record(p1, PeerCapabilities{Version: "1.0.0"})
+	tableNoPolicy.record(p2, PeerCapabilities{Version: "1.0.0"})
+	tableNoPolicy.record(p3, PeerCapabilities{Version: "1.0.0"})
+	tableNoPolicy.record(p4, PeerCapabilities{Version: "1.0.0"})
+	if _, ok := tableNoPolicy.get(p1); ok {
+		t.Fatalf("expected p1 to be evicted under standard FIFO when no retain policy is set")
 	}
 }
 

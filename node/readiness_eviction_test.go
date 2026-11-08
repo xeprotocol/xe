@@ -97,16 +97,13 @@ func TestReadiness_ThrowawayIdentityFloodDoesNotBlindReadiness(t *testing.T) {
 		gater:     gater,
 	}
 
-	// Apply retain policy that protects directory peers
+	// Apply retain policy that protects delegated representative peers
 	baseRetain := gater.PeerRetainPolicy()
 	gater.SetPeerRetainPolicy(func(p peer.ID) bool {
 		if baseRetain != nil && baseRetain(p) {
 			return true
 		}
-		if n.Directory != nil && n.Directory.HasNodePeer(p.String()) {
-			return true
-		}
-		return false
+		return n.IsDelegatedRepPeer(p.String())
 	})
 
 	// Legitimate representative registers capabilities
@@ -140,5 +137,103 @@ func TestReadiness_ThrowawayIdentityFloodDoesNotBlindReadiness(t *testing.T) {
 	}
 	if got := readiness.FeatureReadyMilli["messaging"]; got != 1000 {
 		t.Fatalf("FeatureReadyMilli[\"messaging\"] = %d, want 1000 (readiness gate blinded!)", got)
+	}
+}
+
+func TestReadiness_DirectorySelfRegistrationThrowawaysCannotEvictDelegatedRep(t *testing.T) {
+	// Replicates the scenario in Issue #304:
+	// A legitimate representative holds delegated weight and registers in the directory.
+	// An attacker generates 4096 throwaway keypairs and self-registers each in the directory.
+	// Since directory self-registration is free and requires no stake/delegation,
+	// the node's retain policy must NOT grant retain protection to throwaways without delegated weight,
+	// and incoming throwaways must NOT displace the legitimate representative.
+	repKP, err := core.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(rep): %v", err)
+	}
+	localKP, err := core.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(local): %v", err)
+	}
+
+	const repWeight uint64 = 50_000
+	ledger := seedLedgerWithDelegatedWeightsHelper(t, map[string]uint64{
+		repKP.Address(): repWeight,
+	})
+
+	dir := directory.New(directory.DefaultTTL)
+	now := time.Now().UnixNano()
+	repPeer := peer.ID("12D3KooWLegitDelegatedRepPeer11111111111111111")
+
+	if err := dir.Register(directory.NewRegistration(repPeer.String(), now, repKP)); err != nil {
+		t.Fatalf("Register(rep): %v", err)
+	}
+
+	gater := xenet.NewNetworkGater()
+	n := &Node{
+		Ledger:    ledger,
+		Directory: dir,
+		KeyPair:   localKP,
+		gater:     gater,
+	}
+
+	baseRetain := gater.PeerRetainPolicy()
+	gater.SetPeerRetainPolicy(func(p peer.ID) bool {
+		if baseRetain != nil && baseRetain(p) {
+			return true
+		}
+		return n.IsDelegatedRepPeer(p.String())
+	})
+
+	// Verify IsDelegatedRepPeer identifies the legitimate rep
+	if !n.IsDelegatedRepPeer(repPeer.String()) {
+		t.Fatalf("expected IsDelegatedRepPeer to be true for legitimate rep with delegated weight")
+	}
+
+	// Record legitimate rep capabilities
+	gater.RecordPeerCapabilities(repPeer, xenet.PeerCapabilities{
+		Version:  xenet.NetcheckVersion,
+		Features: []string{"messaging"},
+	})
+
+	// Attacker generates and registers 4096 throwaway identities in the directory
+	for i := 0; i < 4096; i++ {
+		throwawayKP, err := core.GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair(throwaway): %v", err)
+		}
+		throwawayPeer := peer.ID(fmt.Sprintf("12D3KooWThrowawayPeer%05d11111111111111111", i))
+		if err := dir.Register(directory.NewRegistration(throwawayPeer.String(), now, throwawayKP)); err != nil {
+			t.Fatalf("dir.Register(throwaway %d): %v", i, err)
+		}
+
+		// Throwaways must NOT have delegated weight
+		if n.IsDelegatedRepPeer(throwawayPeer.String()) {
+			t.Fatalf("throwaway %d unexpectedly claimed delegated rep protection", i)
+		}
+
+		// Attacker completes handshake for each throwaway
+		gater.RecordPeerCapabilities(throwawayPeer, xenet.PeerCapabilities{
+			Version:  xenet.NetcheckVersion,
+			Features: []string{"noop"},
+		})
+	}
+
+	// Verify readiness: legitimate representative must NOT have been evicted!
+	readiness := n.GetReadiness()
+	if readiness.TotalWeight != repWeight {
+		t.Fatalf("TotalWeight = %d, want %d", readiness.TotalWeight, repWeight)
+	}
+	if readiness.UnknownWeight != 0 {
+		t.Fatalf("UnknownWeight = %d, want 0 (legitimate representative was evicted by directory throwaways!)", readiness.UnknownWeight)
+	}
+	if readiness.ResolvedReps != 1 {
+		t.Fatalf("ResolvedReps = %d, want 1", readiness.ResolvedReps)
+	}
+	if got := readiness.FeatureWeight["messaging"]; got != repWeight {
+		t.Fatalf("FeatureWeight[\"messaging\"] = %d, want %d", got, repWeight)
+	}
+	if got := readiness.FeatureReadyMilli["messaging"]; got != 1000 {
+		t.Fatalf("FeatureReadyMilli[\"messaging\"] = %d, want 1000", got)
 	}
 }
