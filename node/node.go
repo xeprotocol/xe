@@ -501,6 +501,19 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		cancel:                 cancel,
 	}
 
+	if n.gater != nil {
+		baseRetain := n.gater.PeerRetainPolicy()
+		n.gater.SetPeerRetainPolicy(func(p peer.ID) bool {
+			if baseRetain != nil && baseRetain(p) {
+				return true
+			}
+			if n.Directory != nil && n.Directory.HasNodePeer(p.String()) {
+				return true
+			}
+			return false
+		})
+	}
+
 	n.syncActivationPolicy()
 
 	sc.SetOnBlock(func(*statechain.Block) { go n.syncActivationPolicy() })
