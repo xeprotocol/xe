@@ -213,15 +213,15 @@ together with the features this **binary** implements. No params.
   "tip_index": 41230,
   "tip_timestamp": 1793558400000000000,
   "features": [
-    { "name": "messaging", "at_index": 41000, "not_before_ns": 1793558400000000000,
+    { "name": "noop", "at_index": 41000, "not_before_ns": 1793558400000000000,
       "active": true, "known_to_binary": true }
   ],
-  "known_features": ["messaging", "noop"],
-  "gated_block_types": { "message": "messaging" },
+  "known_features": ["noop"],
+  "gated_block_types": {},
   "unsupported_active": [],
   "unsupported_pending": [],
-  "min_protocol_version": "1.1.0",
-  "protocol_version": "1.1.0"
+  "min_protocol_version": "1.0.0",
+  "protocol_version": "1.0.0"
 }
 ```
 A feature is `active` when **both** trigger terms are met by the tip:
@@ -242,9 +242,9 @@ number the DAO gates an activation on (≥90% for 7 consecutive days). No params
 ```json
 {
   "total_weight": 41988300037286,
-  "feature_weight": { "messaging": 39100000000000 },
-  "feature_ready_milli": { "messaging": 931 },
-  "version_weight": [ { "version": "1.1.0", "weight": 39100000000000 } ],
+  "feature_weight": { "noop": 39100000000000 },
+  "feature_ready_milli": { "noop": 931 },
+  "version_weight": [ { "version": "1.0.0", "weight": 39100000000000 } ],
   "unknown_weight": 2888300037286,
   "resolved_reps": 4,
   "total_reps": 6
@@ -758,7 +758,7 @@ Reference implementations: `core.MarshalBlockAux` (Go),
 - `lease` — consumer-signed; `vcpus`, `memory_mb`, `disk_gb`, `duration` (secs), `access_pub_key`.
 - `lease_accept` — provider-signed; carries `certificate_hash`, `attestations`, and the locked emission params `locked_r` / `locked_payout_cap` / `locked_twap_milli`.
 - `lease_settle` / `lease_force_settle` — carry `attestations`.
-- `lease_renew` — consumer-signed; extends an accepted lease in place. Carries `source` (the lease hash), `amount` (additional XUSD escrowed at the provider's current rate), `duration` (additional secs), `certificate_hash` (the provider's current cert), the locked emission params `locked_r` / `locked_payout_cap` / `locked_twap_milli` (from the epoch at the attested renewal time), and `attestations`. It grows the single lease escrow in place; settle then sums emission over the base plus every renewal, each at its own locked R. **Gated on the `lease_renew` activation** (`sys.activations`): before activation the block is rejected retryably as "not yet activated"; a node that does not know the type ignores it.
+- `lease_renew` — consumer-signed; extends an accepted lease in place. Carries `source` (the lease hash), `amount` (additional XUSD escrowed at the provider's current rate), `duration` (additional secs), `certificate_hash` (the provider's current cert), the locked emission params `locked_r` / `locked_payout_cap` / `locked_twap_milli` (from the epoch at the attested renewal time), and `attestations`. It grows the single lease escrow in place; settle then sums emission over the base plus every renewal, each at its own locked R.
 - `multisig_open` / `multisig_update` — carry `keyset` and `signatures` (one per signer).
 - `burn` — **XE only** (enforced by the ledger validator); optional `memo`.
 - `mint` — **XUSD, authorized minter only** (`sys.minter`); rejected otherwise. `sys.minter.keys` holds account **addresses**, matched against the block's `account` (unlike `sys.timekeepers` / `sys.oracle` / `sys.dao_keyset`, which hold verifying keys matched against signatures).
