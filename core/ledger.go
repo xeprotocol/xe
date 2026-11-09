@@ -290,13 +290,17 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 	if !ok {
 		panic("ledger: store must implement AtomicBlockStore")
 	}
+	window := cfg.TimestampWindow
+	if window == 0 {
+		window = DefaultTimestampWindow
+	}
 	l := &Ledger{
 		locks:               make(map[string]*accountLock),
 		leaseLocks:          make(map[string]*accountLock),
 		store:               s,
 		atomicStore:         abs,
 		difficulty:          cfg.Difficulty,
-		timestampWindow:     cfg.TimestampWindow,
+		timestampWindow:     window,
 		timekeeperConfigFn:  cfg.TimekeeperConfigFn,
 		minterConfigFn:      cfg.MinterConfigFn,
 		certificateLookupFn: cfg.CertificateLookupFn,
@@ -766,19 +770,26 @@ func (l *Ledger) addBlock(b *Block, skipTimestamp bool) error {
 		}
 	}
 
-	if !skipTimestamp && l.timestampWindow > 0 {
-		if b.Timestamp < 0 {
-			return fmt.Errorf("block timestamp must not be negative")
+	if b.Timestamp < 0 {
+		return fmt.Errorf("block timestamp must not be negative")
+	}
+
+	if !skipTimestamp {
+		window := l.timestampWindow
+		if window == 0 {
+			window = DefaultTimestampWindow
 		}
-		nowNanos := Now().UnixNano()
-		var delta int64
-		if b.Timestamp > nowNanos {
-			delta = b.Timestamp - nowNanos
-		} else {
-			delta = nowNanos - b.Timestamp
-		}
-		if delta > l.timestampWindow {
-			return fmt.Errorf("block timestamp out of range: delta=%v", time.Duration(delta))
+		if window > 0 {
+			nowNanos := Now().UnixNano()
+			var delta int64
+			if b.Timestamp > nowNanos {
+				delta = b.Timestamp - nowNanos
+			} else {
+				delta = nowNanos - b.Timestamp
+			}
+			if delta > window {
+				return fmt.Errorf("block timestamp out of range: delta=%v", time.Duration(delta))
+			}
 		}
 	}
 
@@ -1102,6 +1113,9 @@ func (l *Ledger) validateAndAddReceive(b *Block) error {
 		if l.GetConflict(src.Account, src.Previous) != nil {
 			return fmt.Errorf("source send %s is contested by an unresolved conflict — receive deferred pending resolution", shortHash(b.Source))
 		}
+		if b.Timestamp < src.Timestamp {
+			return fmt.Errorf("block timestamp %d is before source send timestamp %d", b.Timestamp, src.Timestamp)
+		}
 	}
 
 	pendingAsset := pending.Asset
@@ -1117,9 +1131,11 @@ func (l *Ledger) validateAndAddReceive(b *Block) error {
 		return fmt.Errorf("GetAccountChain: %w", err)
 	}
 	if chain == nil {
-
 		if b.Previous != "0" {
 			return fmt.Errorf("first block on account must have previous=0")
+		}
+		if b.Timestamp < 0 {
+			return fmt.Errorf("block timestamp must not be negative")
 		}
 	} else {
 
@@ -2764,6 +2780,12 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		}
 		if pending.Destination != b.Account {
 			return fmt.Errorf("staged receive: send not addressed to this account")
+		}
+
+		if src, _ := l.store.GetBlock(b.Source); src != nil {
+			if b.Timestamp < src.Timestamp {
+				return fmt.Errorf("staged receive: timestamp %d is before source send timestamp %d", b.Timestamp, src.Timestamp)
+			}
 		}
 
 		if l.isLiveLeaseEscrow(b.Source) {
