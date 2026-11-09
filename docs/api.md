@@ -950,6 +950,25 @@ Request body: `vcpus`, `memory_mb`, `disk_gb` (uint64; at least one ≥1 require
 ```
 > Errors: `403 operator endpoint disabled: no admin token configured (set XE_API_ADMIN_TOKEN)`, `401 invalid or missing admin token`, `400 at least one resource required (vcpus, memory_mb, disk_gb)`, `400 duration required`.
 
+### POST /lease/{hash}/renew  — operator only
+Renew (extend) an accepted lease in place: the node builds, signs and PoWs the `lease_renew` block from the operator's wallet. **Requires `Authorization: Bearer <XE_API_ADMIN_TOKEN>`.**
+```bash
+curl -X POST https://localhost:8080/lease/<hash>/renew \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"additional_secs":3600}'
+```
+Request body: `additional_secs` (uint64 secs, **required**, must be > 0). Response `201`:
+```json
+{
+  "renew_hash": "<hash>",
+  "lease_hash": "<hash>",
+  "cost": 1000000,
+  "duration": 3600
+}
+```
+> Errors: `403 operator endpoint disabled: no admin token configured (set XE_API_ADMIN_TOKEN)`, `401 invalid or missing admin token`, `400 lease hash required`, `400 invalid request body`, `400 additional_secs required`, `400 <node error>`.
+
 ---
 
 ## VMs & tunnels
