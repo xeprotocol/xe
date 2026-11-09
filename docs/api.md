@@ -2,7 +2,7 @@
 
 This is the canonical reference for the core node's HTTP API. It reflects the
 code as of this PR's base (`master` @ `b352ef8`) and is derived from
-`core/api/handler.go` — the `Handler.routes()` table is the single source of
+`api/handler.go` — the `Handler.routes()` table is the single source of
 truth for the endpoint list, and the same list is served live at `GET /` as an
 auto-discovery manifest. When the doc and a running node disagree, trust the
 node and update this file.
@@ -130,6 +130,7 @@ key delivered alongside the address:
 | GET | `/directory/{account}` | Directory entry for an account |
 | POST | `/directory/register` | Register own account in the directory |
 | POST | `/chat/send` | Send a chat message |
+| GET | `/chat/auth/challenge` | Issue a short-lived challenge for chat read authentication |
 | GET | `/chat/messages` | Fetch chat messages for an account |
 | GET | `/chat/contacts` | Chat contacts for an account (ownership proof required); node-wide list is operator-only |
 | GET | `/chat/events` | Chat event stream (SSE) |
@@ -643,12 +644,12 @@ curl "https://ldn.core.test.network/pending?limit=2"
 ```
 
 ### GET /pending/{address}
-Pending sends destined for one account. Path: `address`. (Entries here are raw `PendingSend` with no `Timestamp` field.)
+Pending sends destined for one account. Path: `address`.
 ```json
 {
   "address": "334457d5...e80f",
   "pending": [
-    { "SendHash": "0099bb98...5d99", "Source": "5a598c38...b56d", "Destination": "334457d5...e80f", "Amount": 411203, "Asset": "XUSD" }
+    { "SendHash": "0099bb98...5d99", "Source": "5a598c38...b56d", "Destination": "334457d5...e80f", "Amount": 411203, "Asset": "XUSD", "Timestamp": 1781794221361820882 }
   ]
 }
 ```
@@ -676,8 +677,8 @@ Block by hash. Path: `hash` (64 hex). Returns the block plus a `"finalized"` boo
 ```
 > Errors: `400 missing hash`, `404 block not found`.
 
-### POST /blocks/{send,receive,lease,lease_accept,lease_settle,lease_cancel,lease_force_settle,multisig_open,multisig_update,burn,mint}
-Submit a **pre-signed, pre-PoW'd** block. The request body is a single **Block object** (see reference). The path determines the expected `type`; a mismatch is rejected. Success is `201` echoing the stored block. A rejected block returns the reason plus a stable machine-readable `retryable` flag: a **deterministically invalid** block (bad signature/PoW, structural or value validation) returns `400 {"error":"block rejected: <reason>","retryable":false}`; a **transient** failure — a dependency not yet synced on this node, e.g. a receive submitted before its source send, or a frontier race — returns `503 {"error":"block rejected: <reason>","retryable":true}`, signalling the same block may be retried once the dependency lands. Branch on the `retryable` field, not the prose. An empty or type-mismatched body returns `400 block type mismatch`.
+### POST /blocks/{send,receive,lease,lease_renew,lease_accept,lease_settle,lease_cancel,lease_force_settle,multisig_open,multisig_update,burn,mint}
+Submit a **pre-signed, pre-PoW'd** block. The request body is a single **Block object** (see reference). The path determines the expected `type`; a mismatch is rejected. Success is `201` echoing the stored block. A rejected block returns the reason plus a stable machine-readable `retryable` flag: a **deterministically invalid** block (bad signature/PoW, structural or value validation) returns `400 {"error":"block rejected: <reason>","retryable":false}`; a **transient** failure — a dependency not yet synced on this node, e.g. a receive submitted before its source send, or a frontier race — returns `503 {"error":"block rejected: <reason>","retryable":true}`, signalling the same block may be retried once the dependency lands. Branch on the `retryable` field, not the prose. An empty request body returns `400 invalid request body`. A body whose `type` does not match the URL path returns `400 block type mismatch`.
 
 Typical send submission:
 ```bash
@@ -766,7 +767,7 @@ Reference implementations: `core.MarshalBlockAux` (Go),
 ### Block object reference (the POST `/blocks/*` body)
 | Field | Type | Notes |
 |---|---|---|
-| `type` | string | one of `send,receive,lease,lease_accept,lease_settle,lease_cancel,lease_force_settle,multisig_open,multisig_update,burn,mint,genesis` |
+| `type` | string | one of `send,receive,lease,lease_renew,lease_accept,lease_settle,lease_cancel,lease_force_settle,multisig_open,multisig_update,burn,mint,genesis` |
 | `account` | string | account **address**, 64 hex — `sha256("xe/account/v1" \|\| pubkey)`, or a multisig keyset digest. **Not** a public key |
 | `previous` | string | prev block hash; `"0"` for first block |
 | `pub_key` | string | account's ed25519 **public key**, 64 hex. **Required** iff `previous == "0"` on a single-key chain; **forbidden** on every other block and on all multisig blocks |
@@ -944,11 +945,11 @@ curl -X POST https://localhost:8080/lease/request \
   -H 'Content-Type: application/json' \
   -d '{"vcpus":4,"memory_mb":8192,"disk_gb":50,"duration":3600,"access_pub_key":"<hex>"}'
 ```
-Request body: `vcpus`, `memory_mb`, `disk_gb` (uint64; at least one ≥1 required), `duration` (uint64 secs, **required**), `access_pub_key` (optional). Response `201`:
+Request body: `vcpus` (uint64, ≤ 4,096), `memory_mb` (uint64, ≤ 67,108,864), `disk_gb` (uint64, ≤ 1,048,576; at least one resource ≥1 required), `duration` (uint64 secs, **required**, 60 ≤ `duration` ≤ 31,536,000), `access_pub_key` (optional). Response `201`:
 ```json
 { "lease_hash": "<hash>" }
 ```
-> Errors: `403 operator endpoint disabled: no admin token configured (set XE_API_ADMIN_TOKEN)`, `401 invalid or missing admin token`, `400 at least one resource required (vcpus, memory_mb, disk_gb)`, `400 duration required`.
+> Errors: `403 operator endpoint disabled: no admin token configured (set XE_API_ADMIN_TOKEN)`, `401 invalid or missing admin token`, `400 at least one resource required (vcpus, memory_mb, disk_gb)`, `400 duration required`, `400 lease vcpus must be <= 4096, got <n>`, `400 lease memory_mb must be <= 67108864, got <n>`, `400 lease disk_gb must be <= 1048576, got <n>`, `400 lease duration must be >= 60 seconds`, `400 lease duration must be <= 31536000 seconds`.
 
 ---
 
@@ -965,7 +966,7 @@ VM info for a single lease. Path: `lease`. Errors: `400 missing lease hash`, `40
 
 ### POST /tunnel/{leaseHash}/tcp
 Open a raw bidirectional **TCP tunnel** into a lease's VM. The HTTP connection is **hijacked**: after a `200 OK` the node streams raw bytes both ways. Path: `leaseHash`. Header `X-Signature` required — a hex ed25519 signature of the lease hash by the lease's `access_pub_key`.
-> Errors: `400 missing/invalid lease hash`, `401 missing X-Signature header`, `403 lease has no access key` / `signature verification failed`, `404 lease not found`, `410 lease settled`, `502 tunnel error: <msg>`, `500 hijacking not supported`.
+> Errors: `400 missing/invalid lease hash`, `401 missing X-Signature header`, `403 lease has no access key` / `signature verification failed`, `404 lease not found`, `410 lease not active`, `502 tunnel error: <msg>`, `500 hijacking not supported`.
 
 ---
 
@@ -1104,7 +1105,7 @@ curl -X POST https://ldn.core.test.network/chat/send \
   -H 'Content-Type: application/json' \
   -d '{"from":"<address>","pub_key":"<64 hex>","to":"<address>","message":"hello","timestamp":1781800000000000000,"signature":"<hex>","pow_nonce":123}'
 ```
-Body fields: `from` (required, an **address**), `pub_key` (required, the sender's ed25519 **public key**), `to` (required, an **address**), `message`, `timestamp` (nanos), `signature` (required, over the envelope id), `pow_nonce` (required when the node's `chat_pow_difficulty` > 0 — solved over the envelope `id` at that difficulty, see the PoW section). The envelope `timestamp` must be within ±5 minutes of the node's clock, and each envelope `id` is accepted at most once (replay dedup). Response `200 {"ok":true}`. Errors: `400 missing 'to' field`, `400 chat send requires a signed envelope (from + signature)`, `400 invalid request body`, `400 invalid envelope: missing required fields`, `400 invalid envelope: insufficient proof of work`, `400 invalid envelope: envelope timestamp outside freshness window`, `400 duplicate envelope`.
+Body fields: `from` (required, an **address**), `pub_key` (required, the sender's ed25519 **public key**), `to` (required, an **address**), `message` (up to 8,192 bytes), `timestamp` (nanos), `signature` (required, over the envelope id), `pow_nonce` (required when the node's `chat_pow_difficulty` > 0 — solved over the envelope `id` at that difficulty, see the PoW section). The envelope `timestamp` must be within ±5 minutes of the node's clock, and each envelope `id` is accepted at most once (replay dedup). Response `200 {"ok":true}`. Errors: `400 missing 'to' field`, `400 chat send requires a signed envelope (from + signature)`, `400 message exceeds maximum length of 8192 bytes`, `400 invalid request body`, `400 invalid envelope: missing required fields`, `400 invalid envelope: insufficient proof of work`, `400 invalid envelope: envelope timestamp outside freshness window`, `400 duplicate envelope`.
 
 `pub_key` is **required**, for the same reason as on a directory
 registration: `from` is an address and chat ingress is stateless. The node checks
@@ -1131,7 +1132,7 @@ Fetch chat messages for an account. Reading an account's history requires an
 **ownership proof**.
 
 Query: `account` (**required**), `pub_key` (**required**), `challenge`
-(**required**), `sig` (**required**), `since` (optional, unix nanos, default 0).
+(**required**), `sig` (**required**), `since` (optional, unix nanos, default 0; invalid or non-numeric values are silently ignored and fall back to 0).
 Returns an array of envelopes. CLI: `xe chat read [--since <unix-ns>] [--follow]
 [--json]` does the challenge → sign → fetch round trip for the loaded wallet;
 `--follow` polls with a fresh challenge each time, `--json` prints one envelope
