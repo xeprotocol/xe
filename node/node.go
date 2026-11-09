@@ -68,6 +68,9 @@ type Node struct {
 	certCache              *certSet
 	certsOnce              sync.Once
 
+	marketReqMu       sync.Mutex
+	seenMarketReqs    map[string]time.Time
+	consumerMarketReq map[string][]time.Time
 	attRateMu        sync.Mutex
 	attRateMap       map[string]time.Time
 	consumerVMs      sync.Map
@@ -495,6 +498,8 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		gater:                  gater,
 		activationLog:          newActivationReporter(),
 		pendingOffers:          make(map[string]*xenet.ResourceOffer),
+		seenMarketReqs:         make(map[string]time.Time),
+		consumerMarketReq:      make(map[string][]time.Time),
 		acceptInFlight:         make(map[string]struct{}),
 		pullSem:                make(chan struct{}, maxInFlightVotePulls),
 		ctx:                    ctx,
@@ -1322,6 +1327,10 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 			}
 			req := msg.Request
 
+			if !n.allowMarketplaceRequest(req) {
+				continue
+			}
+
 			if err := core.ValidateLeaseDimensions(req.VCPUs, req.MemoryMB, req.DiskGB, req.Duration); err != nil {
 				log.Printf("Skipping request %s: %v", shortHash(req.RequestID), err)
 				continue
@@ -1422,6 +1431,127 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 			}
 			n.pendingOffersMu.Unlock()
 			log.Printf("Received offer from %s for request %s", shortAddr(msg.Offer.Provider), shortHash(msg.Offer.RequestID))
+		}
+	}
+}
+
+const (
+	marketplaceRequestTTL      = 10 * time.Minute
+	maxMarketRequestsPerMinute = 10
+	maxSeenMarketReqs          = 10_000
+	maxConsumerRateRecords     = 10_000
+)
+
+func (n *Node) allowMarketplaceRequest(req *xenet.ResourceRequest) bool {
+	if req == nil || req.RequestID == "" || req.Consumer == "" {
+		return false
+	}
+
+	now := core.Now()
+
+	// 1. Timestamp freshness check: reject requests older or newer than 10 minutes
+	if req.Timestamp != 0 {
+		reqTime := time.Unix(0, req.Timestamp)
+		if now.Sub(reqTime) > marketplaceRequestTTL || reqTime.Sub(now) > marketplaceRequestTTL {
+			log.Printf("Skipping request %s: timestamp out of freshness window (%v)", shortHash(req.RequestID), reqTime)
+			return false
+		}
+	}
+
+	n.marketReqMu.Lock()
+	defer n.marketReqMu.Unlock()
+
+	if n.seenMarketReqs == nil {
+		n.seenMarketReqs = make(map[string]time.Time)
+	}
+	if n.consumerMarketReq == nil {
+		n.consumerMarketReq = make(map[string][]time.Time)
+	}
+
+	// 2. Deduplication check: RequestID must not have been seen within TTL
+	if ts, seen := n.seenMarketReqs[req.RequestID]; seen && now.Sub(ts) < marketplaceRequestTTL {
+		log.Printf("Skipping request %s: duplicate request_id", shortHash(req.RequestID))
+		return false
+	}
+
+	// 3. Per-consumer rate limit check (sliding window 1 minute)
+	cutoff := now.Add(-time.Minute)
+	var active []time.Time
+	for _, t := range n.consumerMarketReq[req.Consumer] {
+		if t.After(cutoff) {
+			active = append(active, t)
+		}
+	}
+	if len(active) >= maxMarketRequestsPerMinute {
+		n.consumerMarketReq[req.Consumer] = active
+		log.Printf("Skipping request %s: consumer %s rate limited (%d req/min)",
+			shortHash(req.RequestID), shortAddr(req.Consumer), len(active))
+		return false
+	}
+
+	// 4. Memory management & capacity bounds
+	if len(n.seenMarketReqs) >= maxSeenMarketReqs {
+		n.pruneSeenMarketReqsLocked(now)
+		if len(n.seenMarketReqs) >= maxSeenMarketReqs {
+			n.evictOldestMarketReqsLocked(maxSeenMarketReqs / 10)
+		}
+	}
+	if len(n.consumerMarketReq) >= maxConsumerRateRecords {
+		n.pruneConsumerMarketReqsLocked(now)
+	}
+
+	// 5. Record request
+	n.seenMarketReqs[req.RequestID] = now
+	active = append(active, now)
+	n.consumerMarketReq[req.Consumer] = active
+
+	return true
+}
+
+func (n *Node) pruneSeenMarketReqsLocked(now time.Time) {
+	for id, ts := range n.seenMarketReqs {
+		if now.Sub(ts) >= marketplaceRequestTTL {
+			delete(n.seenMarketReqs, id)
+		}
+	}
+}
+
+func (n *Node) evictOldestMarketReqsLocked(count int) {
+	if count <= 0 || len(n.seenMarketReqs) == 0 {
+		return
+	}
+	type entry struct {
+		id string
+		ts time.Time
+	}
+	entries := make([]entry, 0, len(n.seenMarketReqs))
+	for id, ts := range n.seenMarketReqs {
+		entries = append(entries, entry{id: id, ts: ts})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].ts.Before(entries[j].ts)
+	})
+	if count > len(entries) {
+		count = len(entries)
+	}
+	for i := 0; i < count; i++ {
+		delete(n.seenMarketReqs, entries[i].id)
+	}
+}
+
+func (n *Node) pruneConsumerMarketReqsLocked(now time.Time) {
+	cutoff := now.Add(-time.Minute)
+	for consumer, timestamps := range n.consumerMarketReq {
+		var active []time.Time
+		for _, t := range timestamps {
+			if t.After(cutoff) {
+				active = append(active, t)
+			}
+		}
+		if len(active) == 0 {
+			delete(n.consumerMarketReq, consumer)
+		} else {
+			n.consumerMarketReq[consumer] = active
 		}
 	}
 }
