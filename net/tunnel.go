@@ -92,7 +92,15 @@ func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *Tunnel
 			writeTunnelError(s, err.Error())
 			return
 		}
-		defer func() { _ = backend.Close() }()
+
+		var closeOnce sync.Once
+		closeBoth := func() {
+			closeOnce.Do(func() {
+				_ = s.Close()
+				_ = backend.Close()
+			})
+		}
+		defer closeBoth()
 
 		if _, err := s.Write([]byte{0x00}); err != nil {
 			log.Printf("tunnel: write ok: %v", err)
@@ -109,6 +117,7 @@ func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *Tunnel
 
 		go func() {
 			defer wg.Done()
+			defer closeBoth()
 			_, _ = io.Copy(s, backend)
 			if rs, ok := s.(interface{ CloseWrite() error }); ok {
 				_ = rs.CloseWrite()
@@ -117,8 +126,8 @@ func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *Tunnel
 
 		go func() {
 			defer wg.Done()
+			defer closeBoth()
 			_, _ = io.Copy(backend, s)
-			_ = backend.Close()
 		}()
 
 		wg.Wait()
