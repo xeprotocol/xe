@@ -27,6 +27,8 @@ func (l *Ledger) SpendableBalances(account string) map[string]uint64 {
 		limit = len(chain.Blocks)
 	}
 
+	ls, _ := l.store.(LeaseStore)
+
 	prev := make(map[string]uint64)
 	for i := 0; i < len(chain.Blocks); i++ {
 		b := chain.Blocks[i]
@@ -46,6 +48,15 @@ func (l *Ledger) SpendableBalances(account string) map[string]uint64 {
 			}
 		}
 		prev[a] = b.Balance
+
+		if b.Type == BlockLeaseSettle && ls != nil {
+			if lease, err := ls.GetLease(b.Source); err == nil && lease != nil && lease.Stake > 0 {
+				if i < limit {
+					out["XUSD"] += lease.Stake
+				}
+				prev["XUSD"] += lease.Stake
+			}
+		}
 	}
 	return out
 }

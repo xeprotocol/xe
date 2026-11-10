@@ -654,7 +654,7 @@ func (l *Ledger) rebuildReputation() {
 			Provider:     lease.Provider,
 			Consumer:     lease.Consumer,
 			Timestamp:    settleTs,
-			DurationSecs: lease.Duration,
+			DurationSecs: lease.EffectiveDurationSecs(),
 		})
 	}
 
@@ -2241,7 +2241,7 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 		Provider:     lease.Provider,
 		Consumer:     lease.Consumer,
 		Timestamp:    b.Timestamp,
-		DurationSecs: lease.Duration,
+		DurationSecs: lease.EffectiveDurationSecs(),
 	})
 
 	return nil
