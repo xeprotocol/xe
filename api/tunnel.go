@@ -67,11 +67,21 @@ func (h *Handler) handleTunnelTCP(w http.ResponseWriter, r *http.Request) {
 
 	_, _ = clientConn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"))
 
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			_ = tunnel.Close()
+			_ = clientConn.Close()
+		})
+	}
+	defer closeBoth()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
+		defer closeBoth()
 		if buffered := buf.Reader.Buffered(); buffered > 0 {
 			_, _ = io.CopyN(tunnel, buf, int64(buffered))
 		}
@@ -80,10 +90,9 @@ func (h *Handler) handleTunnelTCP(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer wg.Done()
+		defer closeBoth()
 		_, _ = io.Copy(clientConn, tunnel)
 	}()
 
 	wg.Wait()
-	_ = tunnel.Close()
-	_ = clientConn.Close()
 }
