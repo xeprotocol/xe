@@ -142,6 +142,7 @@ type BlockUndo struct {
 
 	RestoreLease        *Lease
 	DeleteLeaseHash     string
+	RestoreKeyset       *Keyset
 	DeleteKeysetAccount string
 
 	DeleteAccountKeyAccount string

@@ -159,28 +159,31 @@ func (c *Chain) AddBlock(b *Block) error {
 	if len(blockJSON) > MaxBlockSize {
 		return fmt.Errorf("block size %d exceeds limit %d", len(blockJSON), MaxBlockSize)
 	}
+	stagedKV := c.kv.Clone()
 	for _, op := range b.Ops {
 		if err := ValidateOp(op); err != nil {
 			return err
 		}
-		if err := validateTransition(c.kv, c.tip, b, op); err != nil {
+		if err := validateTransition(stagedKV, c.tip, b, op); err != nil {
 			return err
 		}
+		stagedKV.ApplyOps([]Op{op})
 	}
 
 	oracleConfig, _ := c.kv.OracleConfig()
 	if oracleConfig != nil && opsMatchPrefix(b.Ops, oracleConfig.AllowedPrefix) {
-
+		seenEpochKeys := make(map[string]bool, len(b.Ops))
 		for _, op := range b.Ops {
-			if op.Action == ActionSet {
-				if err := validateEpochValue(op.Value, c.kv); err != nil {
-					return fmt.Errorf("epoch validation: %w", err)
-				}
+			if op.Action != ActionSet {
+				return fmt.Errorf("epoch op %q must be %q, got %q", op.Key, ActionSet, op.Action)
 			}
-
-			if _, exists := c.kv.Get(op.Key); exists {
+			if err := validateEpochValue(op.Value, c.kv); err != nil {
+				return fmt.Errorf("epoch validation: %w", err)
+			}
+			if _, exists := c.kv.Get(op.Key); exists || seenEpochKeys[op.Key] {
 				return fmt.Errorf("epoch key %q already exists (write-once)", op.Key)
 			}
+			seenEpochKeys[op.Key] = true
 		}
 		if err := verifyOracleMultisig(b, oracleConfig); err != nil {
 			return err
@@ -195,11 +198,13 @@ func (c *Chain) AddBlock(b *Block) error {
 			return err
 		}
 
-		if oracleConfig != nil {
-			for _, op := range b.Ops {
-				if strings.HasPrefix(op.Key, oracleConfig.AllowedPrefix) {
-					return fmt.Errorf("DAO block cannot write to oracle prefix %q (key: %s)", oracleConfig.AllowedPrefix, op.Key)
-				}
+		nextOracle, _ := stagedKV.OracleConfig()
+		for _, op := range b.Ops {
+			if oracleConfig != nil && strings.HasPrefix(op.Key, oracleConfig.AllowedPrefix) {
+				return fmt.Errorf("DAO block cannot write to oracle prefix %q (key: %s)", oracleConfig.AllowedPrefix, op.Key)
+			}
+			if nextOracle != nil && strings.HasPrefix(op.Key, nextOracle.AllowedPrefix) {
+				return fmt.Errorf("DAO block cannot write to oracle prefix %q (key: %s)", nextOracle.AllowedPrefix, op.Key)
 			}
 		}
 	}
@@ -231,24 +236,25 @@ func verifyMultisig(b *Block, keyset *DAOKeyset) error {
 
 	keysetMap := make(map[string]bool, len(keyset.Keys))
 	for _, k := range keyset.Keys {
-		keysetMap[k] = true
+		keysetMap[strings.ToLower(k)] = true
 	}
 
 	seen := make(map[string]bool, len(b.Signatures))
 	validCount := 0
 
 	for _, sig := range b.Signatures {
-		if seen[sig.PublicKey] {
-			return fmt.Errorf("duplicate signer: %s", shortKey(sig.PublicKey))
+		pk := strings.ToLower(sig.PublicKey)
+		if seen[pk] {
+			return fmt.Errorf("duplicate signer: %s", shortKey(pk))
 		}
-		seen[sig.PublicKey] = true
+		seen[pk] = true
 
-		if !keysetMap[sig.PublicKey] {
-			return fmt.Errorf("signer %s not in keyset", shortKey(sig.PublicKey))
+		if !keysetMap[pk] {
+			return fmt.Errorf("signer %s not in keyset", shortKey(pk))
 		}
 
 		if err := VerifySignature(b.Hash, sig); err != nil {
-			return fmt.Errorf("sig from %s: %w", shortKey(sig.PublicKey), err)
+			return fmt.Errorf("sig from %s: %w", shortKey(pk), err)
 		}
 		validCount++
 	}
@@ -365,24 +371,25 @@ func verifyOracleMultisig(b *Block, config *OracleConfig) error {
 
 	keysetMap := make(map[string]bool, len(config.Keys))
 	for _, k := range config.Keys {
-		keysetMap[k] = true
+		keysetMap[strings.ToLower(k)] = true
 	}
 
 	seen := make(map[string]bool, len(b.Signatures))
 	validCount := 0
 
 	for _, sig := range b.Signatures {
-		if seen[sig.PublicKey] {
-			return fmt.Errorf("duplicate signer: %s", shortKey(sig.PublicKey))
+		pk := strings.ToLower(sig.PublicKey)
+		if seen[pk] {
+			return fmt.Errorf("duplicate signer: %s", shortKey(pk))
 		}
-		seen[sig.PublicKey] = true
+		seen[pk] = true
 
-		if !keysetMap[sig.PublicKey] {
-			return fmt.Errorf("signer %s not in oracle keyset", shortKey(sig.PublicKey))
+		if !keysetMap[pk] {
+			return fmt.Errorf("signer %s not in oracle keyset", shortKey(pk))
 		}
 
 		if err := VerifySignature(b.Hash, sig); err != nil {
-			return fmt.Errorf("sig from %s: %w", shortKey(sig.PublicKey), err)
+			return fmt.Errorf("sig from %s: %w", shortKey(pk), err)
 		}
 		validCount++
 	}

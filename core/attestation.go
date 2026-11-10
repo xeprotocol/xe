@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -66,17 +67,18 @@ func ValidateAttestations(attestations []TimekeeperAttestation, leaseHash string
 
 	trusted := make(map[string]bool, len(config.Keys))
 	for _, k := range config.Keys {
-		trusted[k] = true
+		trusted[strings.ToLower(k)] = true
 	}
 
 	now := Now().UnixNano()
 	seen := make(map[string]bool)
 	var validTimestamps []int64
 	for _, a := range attestations {
-		if !trusted[a.PublicKey] {
+		pk := strings.ToLower(a.PublicKey)
+		if !trusted[pk] {
 			continue
 		}
-		if seen[a.PublicKey] {
+		if seen[pk] {
 			continue
 		}
 		if err := VerifyAttestation(&a, leaseHash); err != nil {
@@ -92,7 +94,7 @@ func ValidateAttestations(attestations []TimekeeperAttestation, leaseHash string
 				continue
 			}
 		}
-		seen[a.PublicKey] = true
+		seen[pk] = true
 		validTimestamps = append(validTimestamps, a.Timestamp)
 	}
 

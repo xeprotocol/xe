@@ -18,7 +18,8 @@ type cascadeBuild struct {
 	restoreLease map[string]*Lease
 	deleteLease  map[string]bool
 
-	deleteKeyset map[string]bool
+	restoreKeyset map[string]*Keyset
+	deleteKeyset  map[string]bool
 
 	delegation map[string]string
 
@@ -27,15 +28,16 @@ type cascadeBuild struct {
 
 func newCascadeBuild(winnerHash string) *cascadeBuild {
 	return &cascadeBuild{
-		winnerHash:   winnerHash,
-		chains:       make(map[string]*AccountChain),
-		addPending:   make(map[string]*PendingSend),
-		delPending:   make(map[string]bool),
-		restoreLease: make(map[string]*Lease),
-		deleteLease:  make(map[string]bool),
-		deleteKeyset: make(map[string]bool),
-		delegation:   make(map[string]string),
-		delegated:    make(map[string]bool),
+		winnerHash:    winnerHash,
+		chains:        make(map[string]*AccountChain),
+		addPending:    make(map[string]*PendingSend),
+		delPending:    make(map[string]bool),
+		restoreLease:  make(map[string]*Lease),
+		deleteLease:   make(map[string]bool),
+		restoreKeyset: make(map[string]*Keyset),
+		deleteKeyset:  make(map[string]bool),
+		delegation:    make(map[string]string),
+		delegated:     make(map[string]bool),
 	}
 }
 
@@ -63,8 +65,15 @@ func (cb *cascadeBuild) addUndo(undo *BlockUndo, apply func()) {
 		cb.deleteLease[undo.DeleteLeaseHash] = true
 		delete(cb.restoreLease, undo.DeleteLeaseHash)
 	}
+	if undo.RestoreKeyset != nil {
+		cp := *undo.RestoreKeyset
+		cp.Keys = append([]string(nil), undo.RestoreKeyset.Keys...)
+		cb.restoreKeyset[undo.Account] = &cp
+		delete(cb.deleteKeyset, undo.Account)
+	}
 	if undo.DeleteKeysetAccount != "" {
 		cb.deleteKeyset[undo.DeleteKeysetAccount] = true
+		delete(cb.restoreKeyset, undo.DeleteKeysetAccount)
 	}
 	if undo.RestoreDelegation {
 		cb.delegation[undo.Account] = undo.PrevRep
@@ -142,8 +151,15 @@ func (l *Ledger) getLeaseOverlay(leaseHash string) (lease *Lease, ok bool, err e
 
 func (l *Ledger) getKeysetOverlay(account string) *Keyset {
 	cb := l.activeCascadeFor()
-	if cb != nil && cb.deleteKeyset[account] {
-		return nil
+	if cb != nil {
+		if ks, ok := cb.restoreKeyset[account]; ok {
+			cp := *ks
+			cp.Keys = append([]string(nil), ks.Keys...)
+			return &cp
+		}
+		if cb.deleteKeyset[account] {
+			return nil
+		}
 	}
 	return l.GetKeyset(account)
 }

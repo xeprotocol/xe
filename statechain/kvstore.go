@@ -18,6 +18,14 @@ func NewKVStore() *KVStore {
 	return &KVStore{data: make(map[string]json.RawMessage)}
 }
 
+func (kv *KVStore) Clone() *KVStore {
+	cp := NewKVStore()
+	for k, v := range kv.data {
+		cp.data[k] = json.RawMessage(append([]byte(nil), v...))
+	}
+	return cp
+}
+
 func ValidateKey(key string) error {
 	if len(key) == 0 {
 		return fmt.Errorf("key is empty")
@@ -85,10 +93,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			if _, err := hex.DecodeString(k); err != nil {
 				return fmt.Errorf("dao_keyset key[%d] invalid hex: %w", i, err)
 			}
-			if seen[k] {
+			lower := strings.ToLower(k)
+			if seen[lower] {
 				return fmt.Errorf("dao_keyset key[%d] is a duplicate", i)
 			}
-			seen[k] = true
+			seen[lower] = true
 		}
 	case "sys.timekeepers":
 		var tk struct {
@@ -104,10 +113,19 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 		if tk.Threshold < 1 || tk.Threshold > len(tk.Keys) {
 			return fmt.Errorf("timekeepers threshold %d invalid for %d keys", tk.Threshold, len(tk.Keys))
 		}
+		seen := make(map[string]bool, len(tk.Keys))
 		for i, k := range tk.Keys {
 			if len(k) != 64 {
 				return fmt.Errorf("timekeepers key[%d] invalid length: got %d, want 64 hex chars", i, len(k))
 			}
+			if _, err := hex.DecodeString(k); err != nil {
+				return fmt.Errorf("timekeepers key[%d] invalid hex: %w", i, err)
+			}
+			lower := strings.ToLower(k)
+			if seen[lower] {
+				return fmt.Errorf("timekeepers key[%d] is a duplicate", i)
+			}
+			seen[lower] = true
 		}
 	case "sys.minter":
 
@@ -128,10 +146,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			if _, err := hex.DecodeString(k); err != nil {
 				return fmt.Errorf("minter key[%d] invalid hex: %w", i, err)
 			}
-			if seen[k] {
+			lower := strings.ToLower(k)
+			if seen[lower] {
 				return fmt.Errorf("minter key[%d] is a duplicate", i)
 			}
-			seen[k] = true
+			seen[lower] = true
 		}
 	case "sys.oracle":
 		var oc OracleConfig
@@ -155,10 +174,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			if _, err := hex.DecodeString(k); err != nil {
 				return fmt.Errorf("oracle key[%d] invalid hex: %w", i, err)
 			}
-			if seen[k] {
+			lower := strings.ToLower(k)
+			if seen[lower] {
 				return fmt.Errorf("oracle key[%d] is a duplicate", i)
 			}
-			seen[k] = true
+			seen[lower] = true
 		}
 	case "sys.phase":
 
@@ -201,10 +221,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 				if _, err := hex.DecodeString(a); err != nil {
 					return fmt.Errorf("representatives address[%d] invalid hex: %w", i, err)
 				}
-				if seen[a] {
+				lower := strings.ToLower(a)
+				if seen[lower] {
 					return fmt.Errorf("representatives address[%d] is a duplicate", i)
 				}
-				seen[a] = true
+				seen[lower] = true
 			}
 		default:
 

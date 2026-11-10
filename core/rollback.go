@@ -66,7 +66,7 @@ func (l *Ledger) planRollbackFrom(account, consumedSend string, planned map[stri
 			continue
 		}
 		switch b.Type {
-		case BlockSend, BlockReceive, BlockBurn, BlockMint:
+		case BlockSend, BlockReceive, BlockBurn, BlockMint, BlockMultisigUpdate:
 
 		default:
 			return fmt.Errorf("cascade: unsupported block type %q (%s) on %s — reversing its lease/keyset/reputation side-effects is not yet implemented", b.Type, shortHash(b.Hash), shortAddr(account))
@@ -198,6 +198,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 	var reducePendingID string
 	var reducePendingAmount uint64
 	var restoreLease *Lease
+	var restoreKeyset *Keyset
 	var assetDebit *AssetDelta
 	switch b.Type {
 	case BlockSend:
@@ -244,8 +245,18 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 	case BlockMultisigOpen:
 		deleteKeysetAccount = b.Account
 	case BlockMultisigUpdate:
-
-		return nil, nil, fmt.Errorf("undo: reversing a multisig_update is not supported (prior keyset unrecoverable): %s", shortHash(b.Hash))
+		for i := len(chain.Blocks) - 2; i >= 0; i-- {
+			cb := chain.Blocks[i]
+			if (cb.Type == BlockMultisigOpen || cb.Type == BlockMultisigUpdate) && cb.MSKeyset != nil {
+				cp := *cb.MSKeyset
+				cp.Keys = append([]string(nil), cb.MSKeyset.Keys...)
+				restoreKeyset = &cp
+				break
+			}
+		}
+		if restoreKeyset == nil {
+			return nil, nil, fmt.Errorf("undo: reversing a multisig_update failed: no prior keyset found in chain: %s", shortHash(b.Hash))
+		}
 	case BlockBurn, BlockMint:
 
 	}
@@ -313,13 +324,16 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		DeleteLeaseHash:         deleteLeaseHash,
 		ReducePendingID:         reducePendingID,
 		ReducePendingAmount:     reducePendingAmount,
+		RestoreKeyset:           restoreKeyset,
 		DeleteKeysetAccount:     deleteKeysetAccount,
 		DeleteAccountKeyAccount: deleteAccountKeyAccount,
 		AssetDebit:              assetDebit,
 	}
 
 	apply := func() {
-
+		if restoreKeyset != nil {
+			l.setKeyset(account, restoreKeyset)
+		}
 		if deleteKeysetAccount != "" {
 			l.keysetMu.Lock()
 			delete(l.keysets, deleteKeysetAccount)

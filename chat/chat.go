@@ -7,13 +7,17 @@ import (
 	"github.com/xeprotocol/xe/core"
 )
 
-const maxSeenIDs = 100_000
+const (
+	maxSeenIDs            = 100_000
+	DefaultMaxChatAccount = 2048
+)
 
 type ChatStore struct {
 	mu            sync.RWMutex
 	messages      map[string][]*Envelope
 	seen          map[string]int64
 	maxPerAccount int
+	maxAccounts   int
 	listeners     []chan *Envelope
 	listenerMu    sync.Mutex
 }
@@ -23,6 +27,7 @@ func NewChatStore(maxPerAccount int) *ChatStore {
 		messages:      make(map[string][]*Envelope),
 		seen:          make(map[string]int64),
 		maxPerAccount: maxPerAccount,
+		maxAccounts:   DefaultMaxChatAccount,
 		listeners:     make([]chan *Envelope, 0),
 	}
 }
@@ -70,7 +75,30 @@ func (s *ChatStore) pruneSeenLocked() {
 }
 
 func (s *ChatStore) storeFor(account string, env *Envelope) {
-	msgs := s.messages[account]
+	msgs, exists := s.messages[account]
+	limit := s.maxAccounts
+	if limit <= 0 {
+		limit = DefaultMaxChatAccount
+	}
+	if !exists && len(s.messages) >= limit {
+		var oldestAcc string
+		var oldestTs int64
+		for acc, list := range s.messages {
+			if len(list) == 0 {
+				oldestAcc = acc
+				oldestTs = -1
+				break
+			}
+			lastTs := list[len(list)-1].Timestamp
+			if oldestAcc == "" || lastTs < oldestTs {
+				oldestAcc = acc
+				oldestTs = lastTs
+			}
+		}
+		if oldestAcc != "" {
+			delete(s.messages, oldestAcc)
+		}
+	}
 	if len(msgs) >= s.maxPerAccount {
 
 		newMsgs := make([]*Envelope, s.maxPerAccount)
