@@ -93,7 +93,9 @@ func termsFromChain(blocks []*Block) *chainTerms {
 		case BlockBurn:
 			c.burned[b.Asset] += b.Amount
 		case BlockLease:
-			c.leaseCost[b.Hash] = b.Amount
+			c.leaseCost[b.Hash] += b.Amount
+		case BlockLeaseRenew:
+			c.leaseCost[b.Source] += b.Amount
 		case BlockLeaseAccept:
 			c.acceptStake[b.Source] = b.Amount
 		case BlockLeaseSettle:
@@ -211,7 +213,7 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 			add(&get(asset).Burned, v)
 		}
 		for h, v := range c.leaseCost {
-			costs[h] = v
+			costs[h] += v
 		}
 		for h, v := range c.acceptStake {
 			stakes[h] = v
@@ -279,7 +281,7 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 
 	for _, l := range leases {
 		if l.State == LeaseExpired {
-			add(&get(AssetXUSD.Symbol).EscrowBurned, l.Cost)
+			add(&get(AssetXUSD.Symbol).EscrowBurned, l.TotalCost())
 		}
 	}
 
