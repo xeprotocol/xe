@@ -844,12 +844,11 @@ func (l *Ledger) addBlock(b *Block, skipTimestamp bool) error {
 				return fmt.Errorf("conflict block: %w", err)
 			}
 
-			isNew, rerr := recordConflict(cs, b.Account, b.Previous, siblingHash, b.Hash)
+			isNew, record, rerr := recordConflict(cs, b.Account, b.Previous, siblingHash, b.Hash, l.snapshotWeights)
 			if rerr != nil {
 				return fmt.Errorf("recordConflict: %w", rerr)
 			}
 
-			record, _ := cs.GetConflict(b.Account, b.Previous)
 			bodyNewlyStaged := false
 			if record != nil && containsConflictHash(record.BlockHashes, b.Hash) {
 				if prev, _ := cs.GetStagedBlock(b.Hash); prev == nil {
@@ -860,29 +859,14 @@ func (l *Ledger) addBlock(b *Block, skipTimestamp bool) error {
 				}
 			}
 			if isNew {
-
-				record, err := cs.GetConflict(b.Account, b.Previous)
-				if err == nil && record != nil {
-
-					record.WeightSnapshot = l.snapshotWeights()
-					var total uint64
-					for _, w := range record.WeightSnapshot {
-						total += w
-					}
-					record.TotalWeight = total
-					if err := cs.SaveConflict(record); err != nil {
-						return fmt.Errorf("SaveConflict (weight snapshot): %w", err)
-					}
-					l.conflictMu.Lock()
-					cb := l.conflictCallback
-					l.conflictMu.Unlock()
-					if cb != nil {
-						rec := *record
-						go cb(rec)
-					}
+				l.conflictMu.Lock()
+				cb := l.conflictCallback
+				l.conflictMu.Unlock()
+				if cb != nil && record != nil {
+					rec := *record
+					go cb(rec)
 				}
 			} else if bodyNewlyStaged {
-
 				l.conflictMu.Lock()
 				cb := l.conflictCallback
 				l.conflictMu.Unlock()
@@ -2478,6 +2462,8 @@ func (l *Ledger) GetBlockOrStaged(hash string) *Block {
 }
 
 func (l *Ledger) GetConflict(account, previousHash string) *Conflict {
+	conflictRWMu.RLock()
+	defer conflictRWMu.RUnlock()
 	cs, ok := l.store.(ConflictStore)
 	if !ok {
 		return nil
@@ -2490,6 +2476,8 @@ func (l *Ledger) GetConflict(account, previousHash string) *Conflict {
 }
 
 func (l *Ledger) GetConflictsForAccount(account string) []*Conflict {
+	conflictRWMu.RLock()
+	defer conflictRWMu.RUnlock()
 	cs, ok := l.store.(ConflictStore)
 	if !ok {
 		return []*Conflict{}
@@ -2502,6 +2490,8 @@ func (l *Ledger) GetConflictsForAccount(account string) []*Conflict {
 }
 
 func (l *Ledger) GetAllConflicts() []*Conflict {
+	conflictRWMu.RLock()
+	defer conflictRWMu.RUnlock()
 	cs, ok := l.store.(ConflictStore)
 	if !ok {
 		return []*Conflict{}

@@ -603,9 +603,8 @@ func (qm *QuorumManager) evictPhantomsAndResolve(c *Conflict) bool {
 		if len(livePhantoms) > 0 {
 
 			if len(deadPhantoms) > 0 {
-				c.BlockHashes = livePhantoms
-				if err := qm.conflictMgr.SaveConflict(c); err != nil {
-					log.Printf("quorum: SaveConflict (dead-phantom trim, no real) for %s|%s: %v",
+				if err := trimConflictHashes(qm.conflictMgr, c.AccountAddress, c.PreviousHash, deadPhantoms); err != nil {
+					log.Printf("quorum: trimConflictHashes (dead-phantom trim, no real) for %s|%s: %v",
 						shortHash(c.AccountAddress), shortHash(c.PreviousHash), err)
 				}
 			}
@@ -615,7 +614,7 @@ func (qm *QuorumManager) evictPhantomsAndResolve(c *Conflict) bool {
 		log.Printf("quorum: all-phantom conflict for %s|%s — dropping after %v",
 			shortHash(c.AccountAddress), shortHash(c.PreviousHash),
 			Now().Sub(c.DetectedAt).Round(time.Second))
-		_ = qm.conflictMgr.DeleteConflict(c.AccountAddress, c.PreviousHash)
+		RemoveConflict(qm.conflictMgr, c.AccountAddress, c.PreviousHash)
 		return false
 	}
 
@@ -638,9 +637,8 @@ func (qm *QuorumManager) evictPhantomsAndResolve(c *Conflict) bool {
 		}
 
 		if len(deadPhantoms) > 0 {
-			c.BlockHashes = append(append([]string{}, realBlocks...), livePhantoms...)
-			if err := qm.conflictMgr.SaveConflict(c); err != nil {
-				log.Printf("quorum: SaveConflict (dead-phantom trim, single real) for %s|%s: %v",
+			if err := trimConflictHashes(qm.conflictMgr, c.AccountAddress, c.PreviousHash, deadPhantoms); err != nil {
+				log.Printf("quorum: trimConflictHashes (dead-phantom trim, single real) for %s|%s: %v",
 					shortHash(c.AccountAddress), shortHash(c.PreviousHash), err)
 			}
 			log.Printf("quorum: trimmed %d dead phantom(s) from conflict %s|%s (kept %d live) — "+
@@ -664,9 +662,8 @@ func (qm *QuorumManager) evictPhantomsAndResolve(c *Conflict) bool {
 	}
 
 	if len(deadPhantoms) > 0 {
-		c.BlockHashes = append(append([]string{}, realBlocks...), livePhantoms...)
-		if err := qm.conflictMgr.SaveConflict(c); err != nil {
-			log.Printf("quorum: SaveConflict (dead-phantom trim) for %s|%s: %v",
+		if err := trimConflictHashes(qm.conflictMgr, c.AccountAddress, c.PreviousHash, deadPhantoms); err != nil {
+			log.Printf("quorum: trimConflictHashes (dead-phantom trim) for %s|%s: %v",
 				shortHash(c.AccountAddress), shortHash(c.PreviousHash), err)
 		}
 		log.Printf("quorum: trimmed %d dead phantom(s) from conflict %s|%s (kept %d live)",
