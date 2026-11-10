@@ -13,15 +13,21 @@ export function commas(n) {
   return Number(n).toLocaleString('en-US');
 }
 
+function nsToMs(tsNs) {
+  if (typeof tsNs === 'bigint') return Number(tsNs / 1000000n);
+  if (typeof tsNs === 'string' && /^-?\d+$/.test(tsNs)) return Number(BigInt(tsNs) / 1000000n);
+  return Math.floor(Number(tsNs) / 1e6);
+}
+
 export function timeOfDay(tsNs) {
   if (!tsNs) return '–';
-  const d = new Date(Math.floor(tsNs / 1e6));
+  const d = new Date(nsToMs(tsNs));
   return d.toLocaleTimeString('en-GB', { hour12: false });
 }
 
 export function relativeTime(tsNs) {
   if (!tsNs) return '–';
-  const ms = Math.floor(tsNs / 1e6);
+  const ms = nsToMs(tsNs);
   const ago = Date.now() - ms;
   if (ago < 1000) return 'just now';
   if (ago < 60_000) return `${Math.floor(ago / 1000)}s ago`;
@@ -48,9 +54,19 @@ export function assetDecimals(asset) {
 
 export function formatAmount(micro, asset = 'XE') {
   if (micro == null) return '–';
+  const dec = assetDecimals(asset);
+  if (typeof micro === 'bigint' || (typeof micro === 'string' && /^\d+$/.test(micro))) {
+    const b = BigInt(micro);
+    const unit = 10n ** BigInt(dec);
+    const whole = b / unit;
+    const frac = b % unit;
+    const wholeStr = whole.toLocaleString('en-US');
+    if (frac === 0n) return wholeStr;
+    const fracStr = frac.toString().padStart(dec, '0').replace(/0+$/, '');
+    return `${wholeStr}.${fracStr}`;
+  }
   const n = Number(micro);
   if (!Number.isFinite(n) || n < 0) return '–';
-  const dec = assetDecimals(asset);
   const unit = 10 ** dec;
   const frac = n % unit;
   const whole = (n - frac) / unit;

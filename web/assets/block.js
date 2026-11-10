@@ -66,16 +66,22 @@ async function loadList() {
   makeSortableTable(document.querySelector('#list-section table'), tbody, rowsOf, { defaultKey: 'time', defaultDir: 'desc' });
 }
 
+function cmpBigInt(a, b) {
+  const ba = BigInt(a || 0);
+  const bb = BigInt(b || 0);
+  return ba < bb ? -1 : ba > bb ? 1 : 0;
+}
+
 function sortBlocks(blocks, key, dir) {
   const mul = dir === 'asc' ? 1 : -1;
   const cmp = (a, b) => {
     switch (key) {
-      case 'time': return mul * ((a.timestamp || 0) - (b.timestamp || 0));
+      case 'time': return mul * cmpBigInt(a.timestamp, b.timestamp);
       case 'type': return mul * String(a.type || '').localeCompare(String(b.type || ''));
       case 'account': return mul * String(a.account || '').localeCompare(String(b.account || ''));
       case 'asset': return mul * String(a.asset || '').localeCompare(String(b.asset || ''));
-      case 'amount': return mul * ((a.amount || 0) - (b.amount || 0));
-      case 'balance': return mul * ((a.balance || 0) - (b.balance || 0));
+      case 'amount': return mul * cmpBigInt(a.amount, b.amount);
+      case 'balance': return mul * cmpBigInt(a.balance, b.balance);
       case 'hash': return mul * String(a.hash || '').localeCompare(String(b.hash || ''));
       default: return 0;
     }
@@ -162,7 +168,10 @@ function render(block, hash) {
   }
 
   const raw = document.getElementById('raw');
-  raw.textContent = JSON.stringify(block, null, 2);
+  raw.textContent = JSON.stringify(block, null, 2).replace(
+    /("(?:timestamp|pow_nonce|balance|amount|cost|stake|start_time|expires_at|locked_r|locked_payout_cap|locked_twap_milli)":\s*)"(-?\d{16,})"/g,
+    '$1$2'
+  );
   document.getElementById('raw-section').hidden = false;
 }
 
@@ -179,23 +188,27 @@ function orderedKeys(block) {
   return out;
 }
 
+function isNumericValue(v) {
+  return typeof v === 'number' || (typeof v === 'string' && /^-?\d+$/.test(v));
+}
+
 function renderValue(key, value, block) {
   if (value == null) return text('–');
 
-  if (AMOUNT_KEYS.has(key) && typeof value === 'number') {
+  if (AMOUNT_KEYS.has(key) && isNumericValue(value)) {
     const asset = key === 'cost' ? 'XUSD' : (block && block.asset) || 'XE';
     return text(formatAmount(value, asset));
   }
 
-  if (MILLI_KEYS.has(key) && typeof value === 'number') {
+  if (MILLI_KEYS.has(key) && isNumericValue(value)) {
     return text(formatMilli(value));
   }
 
-  if (MILLI_USD_KEYS.has(key) && typeof value === 'number') {
+  if (MILLI_USD_KEYS.has(key) && isNumericValue(value)) {
     return text(formatMilliUSD(value));
   }
 
-  if (TIME_KEYS.has(key) && typeof value === 'number') {
+  if (TIME_KEYS.has(key) && isNumericValue(value)) {
     const span = document.createElement('span');
     span.textContent = `${timeOfDay(value)} · ${relativeTime(value)}`;
     span.title = String(value);
