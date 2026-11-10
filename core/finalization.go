@@ -335,11 +335,21 @@ func (vm *VoteManager) buildVote(account, prev, blockHash string, final bool) *V
 func (vm *VoteManager) convergeWeights(account, prev string) (map[string]*big.Int, *big.Int) {
 	votes, _ := vm.store.GetVotesByConflict(account, prev)
 	cw := make(map[string]*big.Int)
+	seenReps := make(map[string]bool, len(votes))
 	for _, v := range votes {
-		if cw[v.BlockHash] == nil {
-			cw[v.BlockHash] = new(big.Int)
+		if v == nil {
+			continue
 		}
-		cw[v.BlockHash].Add(cw[v.BlockHash], new(big.Int).SetUint64(v.Weight))
+		repAcc := v.RepAccount()
+		if repAcc == "" || seenReps[repAcc] {
+			continue
+		}
+		seenReps[repAcc] = true
+		bh := strings.ToLower(v.BlockHash)
+		if cw[bh] == nil {
+			cw[bh] = new(big.Int)
+		}
+		cw[bh].Add(cw[bh], new(big.Int).SetUint64(v.Weight))
 	}
 	return cw, vm.electionTotalWeight(account, prev)
 }
@@ -355,17 +365,19 @@ func (vm *VoteManager) gatherCandidates(account, prev string, seed ...string) []
 	set := make(map[string]bool)
 	for _, h := range seed {
 		if h != "" {
-			set[h] = true
+			set[strings.ToLower(h)] = true
 		}
 	}
 	if votes, _ := vm.store.GetVotesByConflict(account, prev); votes != nil {
 		for _, v := range votes {
-			set[v.BlockHash] = true
+			if v != nil && v.BlockHash != "" {
+				set[strings.ToLower(v.BlockHash)] = true
+			}
 		}
 	}
 	if c := vm.ledger.GetConflict(account, prev); c != nil {
 		for _, h := range c.BlockHashes {
-			set[h] = true
+			set[strings.ToLower(h)] = true
 		}
 	}
 	out := make([]string, 0, len(set))

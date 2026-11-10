@@ -175,14 +175,19 @@ func requestSync(h host.Host, pid peer.ID, chain *Chain) error {
 			}
 			return err
 		}
+		nonNilInPage := 0
 		for _, b := range resp.Blocks {
+			if b == nil {
+				continue
+			}
+			nonNilInPage++
 			if err := chain.AddBlock(b); err != nil {
 				logging.Warnf("statechain sync: block %d: %v", b.Index, err)
 			} else {
 				added++
 			}
 		}
-		if !resp.HasMore {
+		if !resp.HasMore || nonNilInPage == 0 {
 			break
 		}
 		if added >= syncMaxBlocks {
