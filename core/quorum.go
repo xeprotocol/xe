@@ -153,17 +153,12 @@ func (qm *QuorumManager) finalTally(account, previous string) (*quorumResult, er
 		if winner == "" || !prevFinalized || qm.promotable(account, previous, winner) {
 			return winner
 		}
-		best := ""
-		for h := range candidateSet {
-			if qm.promotable(account, previous, h) && (best == "" || h < best) {
-				best = h
-			}
+		if qm.shouldLogWithhold(account, previous) {
+			log.Printf("quorum: WITHHOLDING finalize for %s|%s: winner %s holds ≥67%% of final-vote weight but is "+
+				"unpromotable here (fails full validation); no other candidate is substituted",
+				shortHash(account), shortHash(previous), shortHash(winner))
 		}
-		if best != "" && best != winner {
-			log.Printf("quorum: winner %s for %s|%s is unpromotable (fails full validation) — substituting lowest-hash promotable candidate %s",
-				shortHash(winner), shortHash(account), shortHash(previous), shortHash(best))
-		}
-		return best
+		return ""
 	}
 
 	hashes := make([]string, 0, len(weightByBlock))
@@ -327,7 +322,7 @@ func (qm *QuorumManager) confirmConflict(result *quorumResult) error {
 
 						if errors.Is(err, ErrWinnerFullValidation) && !IsRetryableError(err) {
 							qm.failedPromotions[failedPromotionKey(result.ConflictAccount, result.ConflictPrev, result.WinnerHash)] = Now()
-							log.Printf("confirmConflict: winner %s for %s|%s failed full validation deterministically — quarantining for %s so the sweep substitutes a promotable candidate: %v",
+							log.Printf("confirmConflict: winner %s for %s|%s failed full validation deterministically: quarantining for %s, the position withholds until then: %v",
 								shortHash(result.WinnerHash), shortHash(result.ConflictAccount), shortHash(result.ConflictPrev), failedPromotionTTL, err)
 						}
 						return fmt.Errorf("confirmConflict: SwapBlock: %w", err)
