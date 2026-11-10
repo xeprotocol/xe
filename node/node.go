@@ -735,6 +735,16 @@ func (n *Node) handleIncoming(blocks <-chan *core.Block) {
 					n.consumerVMs.Store(b.Source, &updated)
 				}
 			}
+
+			if b.Type == core.BlockLeaseRenew && b.Source != "" && n.isProvider {
+				lease := n.GetLease(b.Source)
+				if lease != nil && lease.Provider == n.KeyPair.Address() {
+					if err := n.acceptPolicy.AllowRenewal(lease, b.Duration, b.Amount); err != nil {
+						logging.Warnf("Provider policy warning: lease %s renewal (dur=%ds, cost=%d) exceeds accept policy: %v",
+							shortHash(b.Source), b.Duration, b.Amount, err)
+					}
+				}
+			}
 		}
 	}
 }
@@ -1035,6 +1045,10 @@ func (n *Node) advertiseResources() {
 		MemoryMB:            n.providerMemoryMB,
 		DiskGB:              n.providerDiskGB,
 		MaxConcurrentLeases: n.acceptPolicy.MaxConcurrent,
+		MinDurationSec:      n.acceptPolicy.MinDurationSec,
+		MaxDurationSec:      n.acceptPolicy.MaxDurationSec,
+		MinCostXUSD:         n.acceptPolicy.MinCostXUSD,
+		MaxCostXUSD:         n.acceptPolicy.MaxCostXUSD,
 		Timestamp:           core.Now().UnixNano(),
 	}
 
@@ -1056,6 +1070,10 @@ type ProviderInfo struct {
 	MemoryMB            uint64 `json:"memory_mb"`
 	DiskGB              uint64 `json:"disk_gb"`
 	MaxConcurrentLeases uint64 `json:"max_concurrent_leases,omitempty"`
+	MinDurationSec      uint64 `json:"min_duration_sec,omitempty"`
+	MaxDurationSec      uint64 `json:"max_duration_sec,omitempty"`
+	MinCostXUSD         uint64 `json:"min_cost_xusd,omitempty"`
+	MaxCostXUSD         uint64 `json:"max_cost_xusd,omitempty"`
 	UsedVCPUs           uint64 `json:"used_vcpus"`
 	UsedMemoryMB        uint64 `json:"used_memory_mb"`
 	UsedDiskGB          uint64 `json:"used_disk_gb"`
@@ -1080,7 +1098,25 @@ func (n *Node) GetProviders() []*ProviderInfo {
 			MemoryMB:            ad.MemoryMB,
 			DiskGB:              ad.DiskGB,
 			MaxConcurrentLeases: ad.MaxConcurrentLeases,
+			MinDurationSec:      ad.MinDurationSec,
+			MaxDurationSec:      ad.MaxDurationSec,
+			MinCostXUSD:         ad.MinCostXUSD,
+			MaxCostXUSD:         ad.MaxCostXUSD,
 			Timestamp:           ad.Timestamp,
+		}
+		if ad.Provider == n.KeyPair.Address() && !n.acceptPolicy.IsZero() {
+			if info.MinDurationSec == 0 {
+				info.MinDurationSec = n.acceptPolicy.MinDurationSec
+			}
+			if info.MaxDurationSec == 0 {
+				info.MaxDurationSec = n.acceptPolicy.MaxDurationSec
+			}
+			if info.MinCostXUSD == 0 {
+				info.MinCostXUSD = n.acceptPolicy.MinCostXUSD
+			}
+			if info.MaxCostXUSD == 0 {
+				info.MaxCostXUSD = n.acceptPolicy.MaxCostXUSD
+			}
 		}
 		for _, l := range leases {
 			if l.Provider == ad.Provider {
@@ -2216,15 +2252,17 @@ func (n *Node) OpenTunnelForLease(ctx context.Context, leaseHash string) (io.Rea
 }
 
 func (n *Node) RequestAttestation(source, identifier string) (*core.TimekeeperAttestation, error) {
+	return n.RequestAttestationForRenewal(source, identifier, 0, 0)
+}
 
+func (n *Node) RequestAttestationForRenewal(source, identifier string, duration, cost uint64) (*core.TimekeeperAttestation, error) {
 	if len(identifier) != 64 {
 		return nil, fmt.Errorf("invalid attestation identifier length: %d", len(identifier))
 	}
 	if err := n.allowAttestation(source, identifier); err != nil {
 		return nil, err
 	}
-	if err := n.canAttest(identifier); err != nil {
-
+	if err := n.canAttestForRenewal(identifier, duration, cost); err != nil {
 		logging.Warnf("Attestation request from %s rejected: %v", source, err)
 		return nil, err
 	}

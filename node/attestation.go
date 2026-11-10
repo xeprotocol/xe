@@ -23,6 +23,8 @@ const (
 
 type AttestationRequest struct {
 	LeaseHash string `json:"lease_hash"`
+	Duration  uint64 `json:"duration,omitempty"`
+	Cost      uint64 `json:"cost,omitempty"`
 }
 
 type AttestationResponse struct {
@@ -30,9 +32,31 @@ type AttestationResponse struct {
 }
 
 func (n *Node) canAttest(identifier string) error {
+	return n.canAttestForRenewal(identifier, 0, 0)
+}
+
+func (n *Node) canAttestForRenewal(identifier string, duration, cost uint64) error {
 	if lease := n.GetLease(identifier); lease != nil {
 		switch lease.State {
-		case core.LeaseCreated, core.LeaseAccepted:
+		case core.LeaseCreated:
+			return nil
+		case core.LeaseAccepted:
+			if n.isProvider && lease.Provider == n.KeyPair.Address() && !n.acceptPolicy.IsZero() {
+				if duration > 0 || cost > 0 {
+					if err := n.acceptPolicy.AllowRenewal(lease, duration, cost); err != nil {
+						return fmt.Errorf("lease %s renewal rejected by provider policy: %w", shortHash(identifier), err)
+					}
+				} else {
+					if n.acceptPolicy.MaxDurationSec > 0 && lease.EffectiveDurationSecs() >= n.acceptPolicy.MaxDurationSec {
+						return fmt.Errorf("lease %s cumulative duration %ds >= policy max %ds",
+							shortHash(identifier), lease.EffectiveDurationSecs(), n.acceptPolicy.MaxDurationSec)
+					}
+					if n.acceptPolicy.MaxCostXUSD > 0 && lease.TotalCost() >= n.acceptPolicy.MaxCostXUSD {
+						return fmt.Errorf("lease %s cumulative cost %d >= policy max %d",
+							shortHash(identifier), lease.TotalCost(), n.acceptPolicy.MaxCostXUSD)
+					}
+				}
+			}
 			return nil
 		}
 		return fmt.Errorf("lease %s is %s: no attestation-gated transitions remain", shortHash(identifier), lease.State)
@@ -68,7 +92,7 @@ func (n *Node) handleAttestationRequest(from peer.ID, payload json.RawMessage) (
 		return nil, fmt.Errorf("lease_hash required")
 	}
 
-	att, err := n.RequestAttestation(from.String(), req.LeaseHash)
+	att, err := n.RequestAttestationForRenewal(from.String(), req.LeaseHash, req.Duration, req.Cost)
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +138,10 @@ func (n *Node) recordAttestation(source, identifier string) {
 }
 
 func (n *Node) gatherAttestations(leaseHash string, config *core.TimekeeperConfig) ([]core.TimekeeperAttestation, error) {
+	return n.gatherAttestationsForRenewal(leaseHash, config, 0, 0)
+}
+
+func (n *Node) gatherAttestationsForRenewal(leaseHash string, config *core.TimekeeperConfig, duration, cost uint64) ([]core.TimekeeperAttestation, error) {
 	if config == nil || config.Threshold == 0 {
 		return nil, fmt.Errorf("no timekeeper config")
 	}
@@ -134,6 +162,12 @@ func (n *Node) gatherAttestations(leaseHash string, config *core.TimekeeperConfi
 	myPub := n.KeyPair.PubKeyHex()
 	for _, k := range config.Keys {
 		if k == myPub {
+			if lease := n.GetLease(leaseHash); lease != nil && lease.State == core.LeaseAccepted && n.isProvider && lease.Provider == n.KeyPair.Address() {
+				if err := n.canAttestForRenewal(leaseHash, duration, cost); err != nil {
+					logging.Warnf("Self-attestation skipped for lease %s: %v", shortHash(leaseHash), err)
+					break
+				}
+			}
 			ts := core.Now().UnixNano()
 			att, err := core.SignAttestation(leaseHash, ts, n.KeyPair)
 			if err == nil {
@@ -155,6 +189,8 @@ func (n *Node) gatherAttestations(leaseHash string, config *core.TimekeeperConfi
 
 			resp, err := n.Msg.Request(reqCtx, pid, AttestationMsgType, &AttestationRequest{
 				LeaseHash: leaseHash,
+				Duration:  duration,
+				Cost:      cost,
 			})
 			if err != nil {
 				logging.Warnf("Attestation request to %s failed: %v", pid.ShortString(), err)

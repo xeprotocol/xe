@@ -26,12 +26,16 @@ func safeMul(a, b uint64) (uint64, bool) {
 	return lo, true
 }
 
-func safeAdd(a, b uint64) (uint64, bool) {
+func SafeAdd(a, b uint64) (uint64, bool) {
 	sum := a + b
 	if sum < a {
 		return 0, false
 	}
 	return sum, true
+}
+
+func safeAdd(a, b uint64) (uint64, bool) {
+	return SafeAdd(a, b)
 }
 
 func ceilDiv(a, b uint64) uint64 {
