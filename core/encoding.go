@@ -32,6 +32,7 @@ const (
 	leaseTailSize       = 104
 	leaseAcceptTailSize = 64
 	leaseSettleTailSize = 40
+	leaseRenewTailSize  = 72
 	burnTailSize        = 8
 	mintTailSize        = 8
 	representativeSize  = 32
@@ -402,6 +403,9 @@ func unmarshalBlock(data []byte) (*Block, error) {
 	case typeByteMint:
 		blockType = BlockMint
 		minLen = fixedHeaderSize + mintTailSize + representativeSize
+	case typeByteLeaseRenew:
+		blockType = BlockLeaseRenew
+		minLen = fixedHeaderSize + leaseRenewTailSize + representativeSize
 	default:
 		return nil, fmt.Errorf("UnmarshalBlock: unknown type byte 0x%02x", data[1])
 	}
@@ -487,6 +491,14 @@ func unmarshalBlock(data []byte) (*Block, error) {
 	case BlockMint:
 		b.Amount = binary.BigEndian.Uint64(data[90:98])
 		repOffset = 98
+	case BlockLeaseRenew:
+		b.Source = hex.EncodeToString(data[90:122])
+		b.Amount = binary.BigEndian.Uint64(data[122:130])
+		b.Duration = binary.BigEndian.Uint64(data[130:138])
+		b.LockedR = binary.BigEndian.Uint64(data[138:146])
+		b.LockedPayoutCap = binary.BigEndian.Uint64(data[146:154])
+		b.LockedTWAP = binary.BigEndian.Uint64(data[154:162])
+		repOffset = 162
 	default:
 		repOffset = 90
 	}
@@ -496,7 +508,7 @@ func unmarshalBlock(data []byte) (*Block, error) {
 		b.Representative = hex.EncodeToString(repBytes)
 	}
 
-	tailOffset := minLen
+	tailOffset := repOffset + representativeSize
 
 	if blockType == BlockGenesis && len(data) >= repOffset+32+genesisTimingSize {
 		t := data[repOffset+32 : repOffset+32+genesisTimingSize]
