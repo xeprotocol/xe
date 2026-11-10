@@ -218,6 +218,11 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if chatDifficulty == 0 && cfg.Difficulty != 0 {
 		chatDifficulty = chat.DefaultPoWDifficulty
 	}
+	if chatDifficulty == 0 {
+		log.Printf("WARNING: Chat PoW difficulty is 0 — chat proof-of-work validation disabled")
+	} else if cfg.Difficulty != 0 && chatDifficulty < chat.MinPoWDifficulty {
+		log.Printf("WARNING: Chat PoW difficulty 0x%016x is below minimum floor 0x%016x", chatDifficulty, chat.MinPoWDifficulty)
+	}
 
 	kp, err := loadOrCreateKeyPair(cfg.DataDir)
 	if err != nil {

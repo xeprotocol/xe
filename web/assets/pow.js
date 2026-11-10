@@ -80,17 +80,19 @@ async function fetchDifficulties() {
     const res = await fetch('/api/node');
     if (res.ok) {
       const data = await res.json();
-      pow = parseHexDifficulty(data.pow_difficulty, pow);
-      chat = parseHexDifficulty(data.chat_pow_difficulty, chat);
+      pow = parseHexDifficulty(data.pow_difficulty, pow, DEFAULT_POW_DIFFICULTY);
+      chat = parseHexDifficulty(data.chat_pow_difficulty, chat, DEFAULT_CHAT_POW_DIFFICULTY);
     }
   } catch {
   }
   return { pow, chat };
 }
 
-function parseHexDifficulty(s, fallback) {
+export function parseHexDifficulty(s, fallback, minFloor = fallback) {
   if (typeof s !== 'string' || !/^[0-9a-fA-F]{1,16}$/.test(s)) return fallback;
-  return BigInt('0x' + s);
+  const val = BigInt('0x' + s);
+  if (val <= 0n || (typeof minFloor === 'bigint' && val < minFloor)) return fallback;
+  return val;
 }
 
 function writeNonceLE(buf, nonce) {
