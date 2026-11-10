@@ -664,6 +664,29 @@ func cmdWalletBalance() {
 	}
 }
 
+func parseSendFlags(args []string) (asset, memo string, err error) {
+	asset = "XUSD"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--asset":
+			if i+1 >= len(args) {
+				return "", "", fmt.Errorf("--asset requires a value")
+			}
+			i++
+			asset = args[i]
+		case "--memo":
+			if i+1 >= len(args) {
+				return "", "", fmt.Errorf("--memo requires a value")
+			}
+			i++
+			memo = args[i]
+		default:
+			return "", "", fmt.Errorf("unknown flag %q", args[i])
+		}
+	}
+	return asset, memo, nil
+}
+
 func cmdSend(args []string) {
 	initNetworkID()
 	kp := loadWallet()
@@ -671,15 +694,9 @@ func cmdSend(args []string) {
 	c := apiClient()
 
 	dest := args[0]
-	asset := "XUSD"
-	memo := ""
-	for i, a := range args {
-		if a == "--asset" && i+1 < len(args) {
-			asset = args[i+1]
-		}
-		if a == "--memo" && i+1 < len(args) {
-			memo = args[i+1]
-		}
+	asset, memo, err := parseSendFlags(args[2:])
+	if err != nil {
+		fatal("%v", err)
 	}
 	assetCfg, ok := core.AssetByName(asset)
 	if !ok {
@@ -863,6 +880,24 @@ func cmdMint(args []string) {
 	fmt.Printf("  New XUSD balance: %s\n", core.FormatAmount(bals["XUSD"]+amount, core.AssetXUSD))
 }
 
+func parseBurnFlags(args []string) (skipConfirm bool, memo string, err error) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--yes", "-y":
+			skipConfirm = true
+		case "--memo":
+			if i+1 >= len(args) {
+				return false, "", fmt.Errorf("--memo requires a value")
+			}
+			i++
+			memo = args[i]
+		default:
+			return false, "", fmt.Errorf("unknown flag %q", args[i])
+		}
+	}
+	return skipConfirm, memo, nil
+}
+
 func cmdBurn(args []string) {
 	initNetworkID()
 	kp := loadWallet()
@@ -876,16 +911,9 @@ func cmdBurn(args []string) {
 		}
 		fatal("burn amount must be greater than zero")
 	}
-	skipConfirm := false
-	memo := ""
-	rest := args[1:]
-	for i, a := range rest {
-		if a == "--yes" || a == "-y" {
-			skipConfirm = true
-		}
-		if a == "--memo" && i+1 < len(rest) {
-			memo = rest[i+1]
-		}
+	skipConfirm, memo, err := parseBurnFlags(args[1:])
+	if err != nil {
+		fatal("%v", err)
 	}
 	if err := core.ValidateMemo(memo); err != nil {
 		fatal("invalid memo: %v", err)
