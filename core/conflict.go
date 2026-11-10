@@ -49,34 +49,75 @@ func detectConflictSibling(chain *AccountChain, b *Block) string {
 	return ""
 }
 
-func recordConflict(cs ConflictStore, account, previous, existingHash, newHash string) (isNew bool, err error) {
-	record, err := cs.GetConflict(account, previous)
+func recordConflict(cs ConflictStore, account, previous, existingHash, newHash string, snapshotWeights func() map[string]uint64) (isNew bool, record *Conflict, err error) {
+	conflictRWMu.Lock()
+	defer conflictRWMu.Unlock()
+
+	rec, err := cs.GetConflict(account, previous)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	if record == nil {
-
-		record = NewConflict(account, previous, existingHash, newHash)
-		if err := cs.SaveConflict(record); err != nil {
-			return false, err
+	if rec == nil {
+		rec = NewConflict(account, previous, existingHash, newHash)
+		if snapshotWeights != nil {
+			rec.WeightSnapshot = snapshotWeights()
+			var total uint64
+			for _, w := range rec.WeightSnapshot {
+				total += w
+			}
+			rec.TotalWeight = total
 		}
-		return true, nil
+		if err := cs.SaveConflict(rec); err != nil {
+			return false, nil, err
+		}
+		return true, rec, nil
 	}
 
-	if containsConflictHash(record.BlockHashes, newHash) {
-		return false, nil
+	if containsConflictHash(rec.BlockHashes, newHash) {
+		return false, rec, nil
 	}
 
 	const maxConflictHashes = 10
-	if len(record.BlockHashes) >= maxConflictHashes {
-		return false, nil
+	if len(rec.BlockHashes) >= maxConflictHashes {
+		return false, rec, nil
 	}
-	record.BlockHashes = append(record.BlockHashes, newHash)
-	if err := cs.SaveConflict(record); err != nil {
-		return false, err
+	rec.BlockHashes = append(rec.BlockHashes, newHash)
+	if err := cs.SaveConflict(rec); err != nil {
+		return false, nil, err
 	}
 
-	return false, nil
+	return false, rec, nil
+}
+
+func trimConflictHashes(cs ConflictStore, account, previous string, deadPhantoms []string) error {
+	conflictRWMu.Lock()
+	defer conflictRWMu.Unlock()
+
+	current, err := cs.GetConflict(account, previous)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return nil
+	}
+
+	deadSet := make(map[string]bool, len(deadPhantoms))
+	for _, h := range deadPhantoms {
+		deadSet[h] = true
+	}
+
+	var newHashes []string
+	for _, h := range current.BlockHashes {
+		if !deadSet[h] {
+			newHashes = append(newHashes, h)
+		}
+	}
+
+	if len(newHashes) != len(current.BlockHashes) {
+		current.BlockHashes = newHashes
+		return cs.SaveConflict(current)
+	}
+	return nil
 }
 
 func containsConflictHash(hashes []string, hash string) bool {
