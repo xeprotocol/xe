@@ -33,6 +33,10 @@ type ResourceAdvertisement struct {
 	MemoryMB            uint64 `json:"memory_mb"`
 	DiskGB              uint64 `json:"disk_gb"`
 	MaxConcurrentLeases uint64 `json:"max_concurrent_leases,omitempty"`
+	MinDurationSec      uint64 `json:"min_duration_sec,omitempty"`
+	MaxDurationSec      uint64 `json:"max_duration_sec,omitempty"`
+	MinCostXUSD         uint64 `json:"min_cost_xusd,omitempty"`
+	MaxCostXUSD         uint64 `json:"max_cost_xusd,omitempty"`
 	Timestamp           int64  `json:"timestamp"`
 	Signature           string `json:"signature"`
 }

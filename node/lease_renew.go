@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/xeprotocol/xe/core"
+	xenet "github.com/xeprotocol/xe/net"
 )
 
 func (n *Node) RenewLease(leaseHash string, additionalSecs uint64) (*core.Block, error) {
@@ -30,9 +31,25 @@ func (n *Node) RenewLease(leaseHash string, additionalSecs uint64) (*core.Block,
 		return nil, fmt.Errorf("renewal cost: %w", err)
 	}
 
+	if adVal, ok := n.providerAds.Load(lease.Provider); ok {
+		if ad, ok := adVal.(*xenet.ResourceAdvertisement); ok {
+			policy := LeaseAcceptPolicy{
+				MinDurationSec: ad.MinDurationSec,
+				MaxDurationSec: ad.MaxDurationSec,
+				MinCostXUSD:    ad.MinCostXUSD,
+				MaxCostXUSD:    ad.MaxCostXUSD,
+			}
+			if !policy.IsZero() {
+				if err := policy.AllowRenewal(lease, additionalSecs, cost); err != nil {
+					return nil, fmt.Errorf("renewal rejected by provider policy: %w", err)
+				}
+			}
+		}
+	}
+
 	var attestations []core.TimekeeperAttestation
 	if tkConfig := n.getTimekeeperConfig(); tkConfig != nil {
-		attestations, err = n.gatherAttestations(leaseHash, tkConfig)
+		attestations, err = n.gatherAttestationsForRenewal(leaseHash, tkConfig, additionalSecs, cost)
 		if err != nil {
 			return nil, fmt.Errorf("gather attestations for lease_renew %s: %w", shortHash(leaseHash), err)
 		}
