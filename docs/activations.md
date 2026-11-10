@@ -27,7 +27,7 @@ One state-chain key, `sys.activations`, written only by a DAO-multisig block:
 ```json
 {
   "features": {
-    "messaging": { "at_index": 41000, "not_before_ns": 1793558400000000000 }
+    "noop": { "at_index": 41000, "not_before_ns": 1793558400000000000 }
   }
 }
 ```
@@ -76,8 +76,7 @@ The 14-day lead is **not** a validity rule. It protects operators from surprise,
 not the chain from an adversary: the only party who can write this key is the
 DAO, so encoding the lead as consensus buys nothing against the only party able
 to break it, while permanently foreclosing an emergency activation. It is
-enforced by the procedure below and by the readiness gate, and a node logs a
-warning when a record lands with less than 14 days of lead.
+enforced by the procedure below and by the readiness gate.
 
 ---
 
@@ -90,15 +89,15 @@ warning when a record lands with less than 14 days of lead.
   "tip_index": 41230,
   "tip_timestamp": 1793558400000000000,
   "features": [
-    { "name": "messaging", "at_index": 41000, "not_before_ns": 1793558400000000000,
+    { "name": "noop", "at_index": 41000, "not_before_ns": 1793558400000000000,
       "active": true, "known_to_binary": true }
   ],
-  "known_features": ["messaging", "noop"],
-  "gated_block_types": { "message": "messaging" },
+  "known_features": ["noop"],
+  "gated_block_types": {},
   "unsupported_active": [],
   "unsupported_pending": [],
-  "min_protocol_version": "1.1.0",
-  "protocol_version": "1.1.0"
+  "min_protocol_version": "1.0.0",
+  "protocol_version": "1.0.0"
 }
 ```
 
@@ -117,8 +116,8 @@ text changes, with the active-but-unsupported warning repeating every five
 minutes so it cannot scroll away:
 
 ```
-activation: feature messaging scheduled (at statechain index 41000, not before 2026-11-01T00:00:00Z); this build does NOT implement it — UPGRADE REQUIRED
-CRITICAL: this node cannot enforce active network feature(s) [messaging] — it is validating DIFFERENTLY from upgraded peers. Upgrade now; ...
+activation: feature noop scheduled (at statechain index 41000, not before 2026-11-01T00:00:00Z); this build does NOT implement it — UPGRADE REQUIRED
+CRITICAL: this node cannot enforce active network feature(s) [noop] — it is validating DIFFERENTLY from upgraded peers. Upgrade now; ...
 ```
 
 ---
@@ -130,9 +129,9 @@ CRITICAL: this node cannot enforce active network feature(s) [messaging] — it 
 ```json
 {
   "total_weight": 41988300037286,
-  "feature_weight": { "messaging": 39100000000000 },
-  "feature_ready_milli": { "messaging": 931 },
-  "version_weight": [ { "version": "1.1.0", "weight": 39100000000000 } ],
+  "feature_weight": { "noop": 39100000000000 },
+  "feature_ready_milli": { "noop": 931 },
+  "version_weight": [ { "version": "1.0.0", "weight": 39100000000000 } ],
   "unknown_weight": 2888300037286,
   "resolved_reps": 4,
   "total_reps": 6
