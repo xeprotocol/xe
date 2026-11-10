@@ -1127,7 +1127,7 @@ func (n *Node) GetDelegation() *DelegationInfo {
 		EligibilityFailedOpen: n.Ledger.RepEligibilityFailedOpen(),
 	}
 	for _, w := range eligible {
-		info.TotalWeight += w
+		info.TotalWeight = addSat(info.TotalWeight, w)
 	}
 	for rep, w := range all {
 		if _, ok := eligible[rep]; ok {
@@ -1137,7 +1137,7 @@ func (n *Node) GetDelegation() *DelegationInfo {
 			info.IneligibleWeights = make(map[string]uint64)
 		}
 		info.IneligibleWeights[rep] = w
-		info.IneligibleWeight += w
+		info.IneligibleWeight = addSat(info.IneligibleWeight, w)
 	}
 	info.EligibilityRestricted = n.Ledger.RepEligibilityRestricted()
 	return info
