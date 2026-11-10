@@ -2216,22 +2216,63 @@ func (n *Node) OpenTunnelForLease(ctx context.Context, leaseHash string) (io.Rea
 }
 
 func (n *Node) RequestAttestation(source, identifier string) (*core.TimekeeperAttestation, error) {
+	return n.requestAttestation(source, "", "", identifier)
+}
 
-	if len(identifier) != 64 {
+func (n *Node) RequestAttestationFromPeer(from peer.ID, identifier string) (*core.TimekeeperAttestation, error) {
+	peerStr := from.String()
+	return n.requestAttestation(peerStr, peerStr, "", identifier)
+}
+
+func (n *Node) RequestAttestationWithProof(source, identifier, pubKey string, timestamp int64, signature string) (*core.TimekeeperAttestation, error) {
+	if !isLowerHex64(identifier) {
+		return nil, fmt.Errorf("invalid attestation identifier length or format: %d", len(identifier))
+	}
+	if !isLowerHex64(pubKey) {
+		return nil, fmt.Errorf("invalid caller pub_key")
+	}
+	now := core.Now().UnixNano()
+	skew := now - timestamp
+	if skew < 0 {
+		skew = -skew
+	}
+	if timestamp == 0 || skew > int64(core.MaxAttestationSkew) {
+		return nil, fmt.Errorf("caller proof timestamp outside freshness window")
+	}
+	payload := AttestationRequestProofPayload(identifier, timestamp)
+	if err := core.VerifyHexSignature(pubKey, signature, payload); err != nil {
+		return nil, fmt.Errorf("caller proof verification failed: %w", err)
+	}
+	callerAccount, err := core.DeriveAddress(pubKey)
+	if err != nil {
+		return nil, fmt.Errorf("caller proof pub_key: %w", err)
+	}
+	return n.requestAttestation(source, "", callerAccount, identifier)
+}
+
+func (n *Node) requestAttestation(source, callerPeer, callerAccount, identifier string) (*core.TimekeeperAttestation, error) {
+	if len(identifier) != 64 || !isLowerHex64(identifier) {
 		return nil, fmt.Errorf("invalid attestation identifier length: %d", len(identifier))
 	}
-	if err := n.allowAttestation(source, identifier); err != nil {
+	if err := n.isAuthorizedTimekeeper(); err != nil {
 		return nil, err
 	}
-	if err := n.canAttest(identifier); err != nil {
-
+	isBenchEnd, err := n.canAttestForCaller(callerPeer, callerAccount, identifier)
+	if err != nil {
 		logging.Warnf("Attestation request from %s rejected: %v", source, err)
 		return nil, err
 	}
-
-	n.recordAttestation(source, identifier)
+	release, err := n.reserveAttestation(source, identifier, isBenchEnd)
+	if err != nil {
+		return nil, err
+	}
 	ts := core.Now().UnixNano()
-	return core.SignAttestation(identifier, ts, n.KeyPair)
+	att, err := core.SignAttestation(identifier, ts, n.KeyPair)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return att, nil
 }
 
 func (n *Node) handleStateChain(blocks <-chan *statechain.Block) {

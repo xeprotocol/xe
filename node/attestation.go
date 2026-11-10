@@ -2,9 +2,12 @@ package node
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,40 +21,112 @@ const (
 	AttestationTimeout   = 10 * time.Second
 	AttestationGatherMax = 15 * time.Second
 
-	AttestationRateLimit = 15 * time.Second
+	AttestationRateLimit      = 15 * time.Second
+	MaxAttestationRateEntries = 10000
+	AttestationAuthDomain     = "xe/attestation-request/v1\x00"
 )
 
 type AttestationRequest struct {
 	LeaseHash string `json:"lease_hash"`
+	PubKey    string `json:"pub_key,omitempty"`
+	Timestamp int64  `json:"timestamp,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 type AttestationResponse struct {
 	Attestation *core.TimekeeperAttestation `json:"attestation"`
 }
 
+func AttestationRequestProofPayload(identifier string, timestamp int64) []byte {
+	h := sha256.New()
+	h.Write([]byte(AttestationAuthDomain))
+	netID := core.GetNetworkID()
+	var lenBuf [8]byte
+	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(netID)))
+	h.Write(lenBuf[:])
+	h.Write([]byte(netID))
+	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(identifier)))
+	h.Write(lenBuf[:])
+	h.Write([]byte(identifier))
+	binary.BigEndian.PutUint64(lenBuf[:], uint64(timestamp))
+	h.Write(lenBuf[:])
+	return h.Sum(nil)
+}
+
+func isLowerHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (n *Node) isAuthorizedTimekeeper() error {
+	tkConfig := n.getTimekeeperConfig()
+	if tkConfig == nil {
+		return nil
+	}
+	if n.KeyPair == nil {
+		return fmt.Errorf("node has no keypair configured")
+	}
+	myPub := strings.ToLower(n.KeyPair.PubKeyHex())
+	for _, k := range tkConfig.Keys {
+		if strings.ToLower(k) == myPub {
+			return nil
+		}
+	}
+	return fmt.Errorf("this node is not an authorized timekeeper")
+}
+
 func (n *Node) canAttest(identifier string) error {
+	_, err := n.canAttestForCaller("", "", identifier)
+	return err
+}
+
+func (n *Node) canAttestForCaller(callerPeer, callerAccount, identifier string) (bool, error) {
+	if !isLowerHex64(identifier) {
+		return false, fmt.Errorf("invalid attestation identifier: must be 64 lowercase hex chars")
+	}
 	if lease := n.GetLease(identifier); lease != nil {
 		switch lease.State {
 		case core.LeaseCreated, core.LeaseAccepted:
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("lease %s is %s: no attestation-gated transitions remain", shortHash(identifier), lease.State)
+		return false, fmt.Errorf("lease %s is %s: no attestation-gated transitions remain", shortHash(identifier), lease.State)
 	}
-	if n.Directory != nil && len(identifier) == 64 {
-		if _, ok := n.Directory.Lookup(identifier); ok {
-			return nil
+	if callerPeer == "" && callerAccount == "" {
+		return false, fmt.Errorf("unknown attestation identifier %s: not a live lease (provider attestation requires caller proof)", shortHash(identifier))
+	}
+	if n.Directory != nil {
+		if reg, ok := n.Directory.Lookup(identifier); ok {
+			if (callerPeer != "" && reg.NodePeer == callerPeer) || (callerAccount != "" && reg.Account == callerAccount) {
+				return false, nil
+			}
+			return false, fmt.Errorf("attestation identifier %s belongs to another account", shortHash(identifier))
 		}
 		const zeroMid = "0000000000000000"
 		if identifier[32:48] == zeroMid {
+			matchedOther := false
 			for _, reg := range n.Directory.List() {
 				a := reg.Account
 				if len(a) == 64 && a[:32] == identifier[:32] && a[48:] == identifier[48:] {
-					return nil
+					if (callerPeer != "" && reg.NodePeer == callerPeer) || (callerAccount != "" && reg.Account == callerAccount) {
+						return true, nil
+					}
+					matchedOther = true
 				}
+			}
+			if matchedOther {
+				return false, fmt.Errorf("attestation identifier %s belongs to another account", shortHash(identifier))
 			}
 		}
 	}
-	return fmt.Errorf("unknown attestation identifier %s: not a live lease or a registered provider", shortHash(identifier))
+	return false, fmt.Errorf("unknown attestation identifier %s: not a live lease or a registered provider", shortHash(identifier))
 }
 
 func (n *Node) registerAttestationHandler() {
@@ -68,7 +143,15 @@ func (n *Node) handleAttestationRequest(from peer.ID, payload json.RawMessage) (
 		return nil, fmt.Errorf("lease_hash required")
 	}
 
-	att, err := n.RequestAttestation(from.String(), req.LeaseHash)
+	var (
+		att *core.TimekeeperAttestation
+		err error
+	)
+	if req.PubKey != "" || req.Signature != "" {
+		att, err = n.RequestAttestationWithProof(from.String(), req.LeaseHash, req.PubKey, req.Timestamp, req.Signature)
+	} else {
+		att, err = n.RequestAttestationFromPeer(from, req.LeaseHash)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -83,8 +166,12 @@ func (n *Node) handleAttestationRequest(from peer.ID, payload json.RawMessage) (
 	return raw, nil
 }
 
-func (n *Node) allowAttestation(source, identifier string) error {
-	key := source + ":" + identifier
+func (n *Node) reserveAttestation(source, identifier string, isBenchEnd bool) (func(), error) {
+	idKey := source + ":" + identifier
+	srcKey := "src:" + source
+	if isBenchEnd {
+		srcKey = "src_end:" + source
+	}
 	now := time.Now()
 
 	n.attRateMu.Lock()
@@ -98,19 +185,85 @@ func (n *Node) allowAttestation(source, identifier string) error {
 			delete(n.attRateMap, k)
 		}
 	}
-	if last, ok := n.attRateMap[key]; ok && now.Sub(last) < AttestationRateLimit {
+	if last, ok := n.attRateMap[idKey]; ok && now.Sub(last) < AttestationRateLimit {
+		return nil, fmt.Errorf("rate limited: retry after %v", AttestationRateLimit-now.Sub(last))
+	}
+	if last, ok := n.attRateMap[srcKey]; ok && now.Sub(last) < AttestationRateLimit {
+		return nil, fmt.Errorf("rate limited: retry after %v", AttestationRateLimit-now.Sub(last))
+	}
+
+	for len(n.attRateMap)+2 > MaxAttestationRateEntries {
+		var oldestKey string
+		var oldestTime time.Time
+		first := true
+		for k, t := range n.attRateMap {
+			if first || t.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = t
+				first = false
+			}
+		}
+		if first {
+			break
+		}
+		delete(n.attRateMap, oldestKey)
+	}
+
+	n.attRateMap[idKey] = now
+	n.attRateMap[srcKey] = now
+
+	released := false
+	release := func() {
+		n.attRateMu.Lock()
+		defer n.attRateMu.Unlock()
+		if released {
+			return
+		}
+		released = true
+		if t, ok := n.attRateMap[idKey]; ok && t.Equal(now) {
+			delete(n.attRateMap, idKey)
+		}
+		if t, ok := n.attRateMap[srcKey]; ok && t.Equal(now) {
+			delete(n.attRateMap, srcKey)
+		}
+	}
+	return release, nil
+}
+
+func (n *Node) allowAttestation(source, identifier string) error {
+	idKey := source + ":" + identifier
+	srcKey := "src:" + source
+	now := time.Now()
+
+	n.attRateMu.Lock()
+	defer n.attRateMu.Unlock()
+	if n.attRateMap == nil {
+		n.attRateMap = make(map[string]time.Time)
+	}
+
+	for k, t := range n.attRateMap {
+		if now.Sub(t) >= AttestationRateLimit {
+			delete(n.attRateMap, k)
+		}
+	}
+	if last, ok := n.attRateMap[idKey]; ok && now.Sub(last) < AttestationRateLimit {
+		return fmt.Errorf("rate limited: retry after %v", AttestationRateLimit-now.Sub(last))
+	}
+	if last, ok := n.attRateMap[srcKey]; ok && now.Sub(last) < AttestationRateLimit {
 		return fmt.Errorf("rate limited: retry after %v", AttestationRateLimit-now.Sub(last))
 	}
 	return nil
 }
 
 func (n *Node) recordAttestation(source, identifier string) {
+	now := time.Now()
 	n.attRateMu.Lock()
 	defer n.attRateMu.Unlock()
 	if n.attRateMap == nil {
 		n.attRateMap = make(map[string]time.Time)
 	}
-	n.attRateMap[source+":"+identifier] = time.Now()
+	n.attRateMap[source+":"+identifier] = now
+	n.attRateMap["src:"+source] = now
 }
 
 func (n *Node) gatherAttestations(leaseHash string, config *core.TimekeeperConfig) ([]core.TimekeeperAttestation, error) {
@@ -211,6 +364,9 @@ func capAttestations(atts []core.TimekeeperAttestation, leaseHash string, config
 }
 
 func (n *Node) getTimekeeperConfig() *core.TimekeeperConfig {
+	if n == nil || n.StateChain == nil {
+		return nil
+	}
 	raw, ok := n.StateChain.GetKV("sys.timekeepers")
 	if !ok {
 		return nil
