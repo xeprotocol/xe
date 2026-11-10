@@ -995,18 +995,15 @@ func (n *Node) GetAllAccounts() []AccountSummary {
 	out := make([]AccountSummary, 0, len(frontiers))
 	for account, hash := range frontiers {
 		chain := n.Ledger.GetChain(account)
-		var balance uint64
-		if len(chain) > 0 {
-			balance = chain[len(chain)-1].Balance
-		}
+		balances := n.Ledger.GetAssetBalances(account)
 		var ts int64
 		if len(chain) > 0 {
 			ts = chain[len(chain)-1].Timestamp
 		}
 		out = append(out, AccountSummary{
 			Address:            account,
-			Balance:            balance,
-			Balances:           n.Ledger.GetAssetBalances(account),
+			Balance:            balances["XE"],
+			Balances:           balances,
 			BlockCount:         len(chain),
 			Frontier:           hash,
 			LastBlockTimestamp: ts,
@@ -1895,13 +1892,14 @@ func (n *Node) archiveExpiredLease(lease *core.Lease) {
 		return
 	}
 	log.Printf("Archived expired lease %s: burned %d µXUSD escrow (both parties offline)",
-		shortHash(lease.LeaseHash), lease.Cost+lease.Stake)
+		shortHash(lease.LeaseHash), lease.EffectiveCost()+lease.Stake)
 }
 
 func (n *Node) forceSettleLease(lease *core.Lease) {
 	myAddr := n.KeyPair.Address()
 
-	if lease.Cost == 0 {
+	totalCost := lease.EffectiveCost()
+	if totalCost == 0 {
 		log.Printf("lease_force_settle: stored lease.Cost is zero for %s", shortHash(lease.LeaseHash))
 		return
 	}
@@ -1931,11 +1929,11 @@ func (n *Node) forceSettleLease(lease *core.Lease) {
 		Type:         core.BlockLeaseForceSettle,
 		Account:      myAddr,
 		Previous:     prev,
-		Balance:      oldXUSD + lease.Cost,
+		Balance:      oldXUSD + totalCost,
 		Timestamp:    core.Now().UnixNano(),
 		Asset:        "XUSD",
 		Source:       lease.LeaseHash,
-		Amount:       lease.Cost,
+		Amount:       totalCost,
 		Attestations: attestations,
 	}
 	if err := core.SignBlock(b, n.KeyPair); err != nil {
@@ -1948,11 +1946,13 @@ func (n *Node) forceSettleLease(lease *core.Lease) {
 		log.Printf("Failed to add lease_force_settle for %s: %v", shortHash(lease.LeaseHash), err)
 		return
 	}
-	if err := n.Gossip.Publish(n.ctx, b); err != nil {
-		log.Printf("Failed to publish lease_force_settle: %v", err)
-		return
+	if n.Gossip != nil {
+		if err := n.Gossip.Publish(n.ctx, b); err != nil {
+			log.Printf("Failed to publish lease_force_settle: %v", err)
+			return
+		}
 	}
-	log.Printf("Force-settled stale lease %s (refunded %d XUSD; provider stake burned)", shortHash(lease.LeaseHash), lease.Cost)
+	log.Printf("Force-settled stale lease %s (refunded %d XUSD; provider stake burned)", shortHash(lease.LeaseHash), totalCost)
 }
 
 func (n *Node) leaseSettleAmount(lease *core.Lease) uint64 {
@@ -2182,8 +2182,15 @@ func (n *Node) ValidateTunnelLease(leaseHash string, peerID peer.ID) error {
 	if lease.State != core.LeaseAccepted {
 		return fmt.Errorf("lease not active")
 	}
+	if lease.StartTime > 0 && core.Now().UnixNano() >= lease.EffectiveExpiry() {
+		return fmt.Errorf("lease expired")
+	}
 	if lease.Provider != n.KeyPair.Address() {
 		return fmt.Errorf("not the provider for this lease")
+	}
+	consumerPeer := n.PeerForAccount(lease.Consumer)
+	if peerID == "" || consumerPeer == "" || consumerPeer != peerID {
+		return fmt.Errorf("unauthorized tunnel peer")
 	}
 	return nil
 }
@@ -2207,6 +2214,9 @@ func (n *Node) OpenTunnelForLease(ctx context.Context, leaseHash string) (io.Rea
 
 	if lease.State != core.LeaseAccepted {
 		return nil, fmt.Errorf("lease not active")
+	}
+	if lease.StartTime > 0 && core.Now().UnixNano() >= lease.EffectiveExpiry() {
+		return nil, fmt.Errorf("lease expired")
 	}
 	providerPeer := n.PeerForAccount(lease.Provider)
 	if providerPeer == "" {
