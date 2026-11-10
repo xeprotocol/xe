@@ -65,13 +65,14 @@ func ApplyReputationDelta(agg *ReputationAggregate, account string, ev Reputatio
 			agg.LeasesAcceptedAsConsumer++
 		}
 	case EventLeaseSettled:
+		hours := ev.DurationSecs / 3600
 		if isProvider {
 			agg.LeasesSettledAsProvider++
-			agg.LeaseHoursSettledAsProvider += ev.DurationSecs
+			agg.LeaseHoursSettledAsProvider += hours
 		}
 		if isConsumer {
 			agg.LeasesSettledAsConsumer++
-			agg.LeaseHoursSettledAsConsumer += ev.DurationSecs
+			agg.LeaseHoursSettledAsConsumer += hours
 		}
 	case EventLeaseCancelled:
 		if isConsumer {
@@ -124,13 +125,14 @@ func RevertReputationDelta(agg *ReputationAggregate, account string, ev Reputati
 			dec(&agg.LeasesAcceptedAsConsumer, 1)
 		}
 	case EventLeaseSettled:
+		hours := ev.DurationSecs / 3600
 		if isProvider {
 			dec(&agg.LeasesSettledAsProvider, 1)
-			dec(&agg.LeaseHoursSettledAsProvider, ev.DurationSecs)
+			dec(&agg.LeaseHoursSettledAsProvider, hours)
 		}
 		if isConsumer {
 			dec(&agg.LeasesSettledAsConsumer, 1)
-			dec(&agg.LeaseHoursSettledAsConsumer, ev.DurationSecs)
+			dec(&agg.LeaseHoursSettledAsConsumer, hours)
 		}
 	case EventLeaseCancelled:
 		if isConsumer {
