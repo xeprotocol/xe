@@ -1898,11 +1898,64 @@ func (n *Node) archiveExpiredLease(lease *core.Lease) {
 		shortHash(lease.LeaseHash), lease.Cost+lease.Stake)
 }
 
-func (n *Node) forceSettleLease(lease *core.Lease) {
-	myAddr := n.KeyPair.Address()
-
+// BuildForceSettleBlock creates and signs a lease_force_settle block for the given lease.
+// It computes the refund from the full active pending escrow (base cost + all renewal top-ups),
+// preventing renewal escrow from being permanently trapped (#155).
+func (n *Node) BuildForceSettleBlock(lease *core.Lease, attestations []core.TimekeeperAttestation) (*core.Block, error) {
+	if lease == nil {
+		return nil, fmt.Errorf("lease is nil")
+	}
 	if lease.Cost == 0 {
-		log.Printf("lease_force_settle: stored lease.Cost is zero for %s", shortHash(lease.LeaseHash))
+		return nil, fmt.Errorf("lease.Cost is zero for %s", shortHash(lease.LeaseHash))
+	}
+
+	myAddr := n.KeyPair.Address()
+	chain := n.Ledger.GetChain(myAddr)
+	if len(chain) == 0 {
+		return nil, fmt.Errorf("account %s not open", shortHash(myAddr))
+	}
+	prev := chain[len(chain)-1].Hash
+	oldXUSD := n.Ledger.GetAssetBalances(myAddr)["XUSD"]
+
+	refundAmount := lease.Cost
+	for _, r := range lease.Renewals {
+		refundAmount += r.Cost
+	}
+	if n.store != nil {
+		if ps, err := n.store.GetPendingSend(lease.LeaseHash); err == nil && ps != nil && ps.Amount > 0 {
+			refundAmount = ps.Amount
+		}
+	} else if n.Ledger != nil && n.Ledger.Store() != nil {
+		if ps, err := n.Ledger.Store().GetPendingSend(lease.LeaseHash); err == nil && ps != nil && ps.Amount > 0 {
+			refundAmount = ps.Amount
+		}
+	}
+
+	if oldXUSD+refundAmount < oldXUSD {
+		return nil, fmt.Errorf("balance overflow for %s: %d + %d", shortHash(lease.LeaseHash), oldXUSD, refundAmount)
+	}
+
+	b := &core.Block{
+		Type:         core.BlockLeaseForceSettle,
+		Account:      myAddr,
+		Previous:     prev,
+		Balance:      oldXUSD + refundAmount,
+		Timestamp:    core.Now().UnixNano(),
+		Asset:        "XUSD",
+		Source:       lease.LeaseHash,
+		Amount:       refundAmount,
+		Attestations: attestations,
+	}
+	if err := core.SignBlock(b, n.KeyPair); err != nil {
+		return nil, fmt.Errorf("sign lease_force_settle: %w", err)
+	}
+	n.solvePoW(b)
+	return b, nil
+}
+
+func (n *Node) forceSettleLease(lease *core.Lease) {
+	if lease == nil || lease.Cost == 0 {
+		log.Printf("lease_force_settle: invalid or zero-cost lease")
 		return
 	}
 
@@ -1920,39 +1973,23 @@ func (n *Node) forceSettleLease(lease *core.Lease) {
 	n.blockCreateMu.Lock()
 	defer n.blockCreateMu.Unlock()
 
-	chain := n.Ledger.GetChain(myAddr)
-	if len(chain) == 0 {
+	b, err := n.BuildForceSettleBlock(lease, attestations)
+	if err != nil {
+		log.Printf("Failed to build lease_force_settle for %s: %v", shortHash(lease.LeaseHash), err)
 		return
 	}
-	prev := chain[len(chain)-1].Hash
-	oldXUSD := n.Ledger.GetAssetBalances(myAddr)["XUSD"]
-
-	b := &core.Block{
-		Type:         core.BlockLeaseForceSettle,
-		Account:      myAddr,
-		Previous:     prev,
-		Balance:      oldXUSD + lease.Cost,
-		Timestamp:    core.Now().UnixNano(),
-		Asset:        "XUSD",
-		Source:       lease.LeaseHash,
-		Amount:       lease.Cost,
-		Attestations: attestations,
-	}
-	if err := core.SignBlock(b, n.KeyPair); err != nil {
-		log.Printf("Failed to sign lease_force_settle: %v", err)
-		return
-	}
-	n.solvePoW(b)
 
 	if err := n.Ledger.AddBlock(b); err != nil {
 		log.Printf("Failed to add lease_force_settle for %s: %v", shortHash(lease.LeaseHash), err)
 		return
 	}
-	if err := n.Gossip.Publish(n.ctx, b); err != nil {
-		log.Printf("Failed to publish lease_force_settle: %v", err)
-		return
+	if n.Gossip != nil {
+		if err := n.Gossip.Publish(n.ctx, b); err != nil {
+			log.Printf("Failed to publish lease_force_settle: %v", err)
+			return
+		}
 	}
-	log.Printf("Force-settled stale lease %s (refunded %d XUSD; provider stake burned)", shortHash(lease.LeaseHash), lease.Cost)
+	log.Printf("Force-settled stale lease %s (refunded %d XUSD; provider stake burned)", shortHash(lease.LeaseHash), b.Amount)
 }
 
 func (n *Node) leaseSettleAmount(lease *core.Lease) uint64 {
