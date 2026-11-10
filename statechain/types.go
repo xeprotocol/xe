@@ -1,6 +1,9 @@
 package statechain
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Block struct {
 	Index      uint64           `json:"index"`
@@ -100,4 +103,7 @@ const (
 	MaxKeyLength = 128
 	MaxValueSize = 65536
 	MaxBlockSize = 262144
+
+	// MaxBlockFutureSkew is the maximum allowed timestamp drift into the future for statechain blocks.
+	MaxBlockFutureSkew = 10 * time.Minute
 )

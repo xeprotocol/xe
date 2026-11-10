@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/xeprotocol/xe/core"
 )
 
 var ErrGap = errors.New("statechain gap")
@@ -149,6 +151,11 @@ func (c *Chain) AddBlock(b *Block) error {
 		return fmt.Errorf("timestamp %d is before previous %d", b.Timestamp, c.tip.Timestamp)
 	}
 
+	nowNanos := core.Now().UnixNano()
+	if b.Timestamp > nowNanos+int64(MaxBlockFutureSkew) {
+		return fmt.Errorf("timestamp %d is too far in future (skew exceeds %v)", b.Timestamp, MaxBlockFutureSkew)
+	}
+
 	if len(b.Ops) == 0 {
 		return fmt.Errorf("block has no ops")
 	}
@@ -170,6 +177,16 @@ func (c *Chain) AddBlock(b *Block) error {
 
 	oracleConfig, _ := c.kv.OracleConfig()
 	if oracleConfig != nil && opsMatchPrefix(b.Ops, oracleConfig.AllowedPrefix) {
+		// Prevent oracle-signed blocks from early-activating features
+		if activations := c.activationsLocked(); activations != nil {
+			for _, name := range activations.Names() {
+				wasActive := activations.ActiveAt(name, c.tip.Index, c.tip.Timestamp)
+				nowActive := activations.ActiveAt(name, b.Index, b.Timestamp)
+				if !wasActive && nowActive {
+					return fmt.Errorf("oracle block cannot activate feature %q (requires DAO threshold)", name)
+				}
+			}
+		}
 
 		for _, op := range b.Ops {
 			if op.Action == ActionSet {
