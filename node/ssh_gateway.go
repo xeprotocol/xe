@@ -177,34 +177,50 @@ func (gw *SSHGateway) handleConnection(conn net.Conn) {
 }
 
 func (gw *SSHGateway) handleDirectTCPIP(channel ssh.Channel, lease *core.Lease) {
-	defer func() { _ = channel.Close() }()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		select {
-		case <-gw.done:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
 	providerPeer := gw.backend.PeerForAccount(lease.Provider)
 	if providerPeer == "" {
+		_ = channel.Close()
 		return
 	}
 
 	tunnel, err := gw.backend.OpenTunnel(ctx, providerPeer, lease.LeaseHash)
 	if err != nil {
+		_ = channel.Close()
 		return
 	}
-	defer func() { _ = tunnel.Close() }()
+
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			_ = tunnel.Close()
+			_ = channel.Close()
+		})
+	}
+	defer closeBoth()
+
+	go func() {
+		select {
+		case <-gw.done:
+			closeBoth()
+		case <-ctx.Done():
+		}
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); _, _ = io.Copy(channel, tunnel) }()
-	go func() { defer wg.Done(); _, _ = io.Copy(tunnel, channel) }()
+	go func() {
+		defer wg.Done()
+		defer closeBoth()
+		_, _ = io.Copy(channel, tunnel)
+	}()
+	go func() {
+		defer wg.Done()
+		defer closeBoth()
+		_, _ = io.Copy(tunnel, channel)
+	}()
 	wg.Wait()
 }
 
