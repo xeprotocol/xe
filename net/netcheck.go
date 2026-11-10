@@ -130,7 +130,7 @@ type NetworkMismatch struct {
 }
 
 func NewNetworkGater() *NetworkGater {
-	return &NetworkGater{
+	g := &NetworkGater{
 		banDur:     defaultBanDur,
 		trusted:    make(map[peer.ID]struct{}),
 		bans:       newBanStore(maxBannedPeers),
@@ -138,8 +138,12 @@ func NewNetworkGater() *NetworkGater {
 		handshakes: newPeerRateLimiter(netcheckPerPeerRPS, netcheckPerPeerBurst,
 			netcheckGlobalRPS, netcheckGlobalBurst, netcheckLimiterPeers),
 
-		caps: newPeerCapTable(),
+		caps: newPeerCapTable(maxPeerCapEntries),
 	}
+	g.caps.setRetainPolicy(func(p peer.ID) bool {
+		return g.isTrusted(p)
+	})
+	return g
 }
 
 func (g *NetworkGater) SetMaxInboundConns(n int) {
@@ -289,6 +293,7 @@ func (g *NetworkGater) banFor(p peer.ID, d time.Duration) {
 		return
 	}
 	g.bans.ban(p, time.Now().Add(d))
+	g.caps.remove(p)
 }
 
 func (g *NetworkGater) InterceptPeerDial(p peer.ID) bool {
@@ -323,6 +328,18 @@ func (g *NetworkGater) InterceptUpgraded(_ network.Conn) (bool, control.Disconne
 }
 
 func SetupNetworkCheck(h host.Host, gater *NetworkGater) {
+	if gater != nil {
+		gater.SetPeerRetainPolicy(func(p peer.ID) bool {
+			if gater.isTrusted(p) {
+				return true
+			}
+			if h != nil && h.Network() != nil {
+				return h.Network().Connectedness(p) == network.Connected
+			}
+			return false
+		})
+	}
+
 	h.SetStreamHandler(NetcheckProtocolID, func(s network.Stream) {
 		defer func() { _ = s.Close() }()
 

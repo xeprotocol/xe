@@ -85,6 +85,22 @@ func (d *Directory) List() []*Registration {
 	return out
 }
 
+func (d *Directory) HasNodePeer(nodePeer string) bool {
+	if d == nil || nodePeer == "" {
+		return false
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	now := time.Now().UnixNano()
+	for _, reg := range d.registrations {
+		if reg.NodePeer == nodePeer && now-reg.Timestamp <= int64(d.ttl) {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *Directory) Prune() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()

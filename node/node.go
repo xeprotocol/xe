@@ -501,6 +501,16 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		cancel:                 cancel,
 	}
 
+	if n.gater != nil {
+		baseRetain := n.gater.PeerRetainPolicy()
+		n.gater.SetPeerRetainPolicy(func(p peer.ID) bool {
+			if baseRetain != nil && baseRetain(p) {
+				return true
+			}
+			return n.IsDelegatedRepPeer(p.String())
+		})
+	}
+
 	n.syncActivationPolicy()
 
 	sc.SetOnBlock(func(*statechain.Block) { go n.syncActivationPolicy() })
@@ -2442,6 +2452,26 @@ func (n *Node) LookupDirectory(account string) *directory.Registration {
 		return nil
 	}
 	return reg
+}
+
+func (n *Node) IsDelegatedRepPeer(nodePeer string) bool {
+	if n == nil || nodePeer == "" || n.Directory == nil {
+		return false
+	}
+	for _, reg := range n.Directory.List() {
+		if reg != nil && reg.NodePeer == nodePeer {
+			if n.Ledger == nil {
+				return true
+			}
+			if w := n.Ledger.GetVoteWeight(reg.Account); w != nil && w.Sign() > 0 {
+				return true
+			}
+			if all := n.Ledger.GetAllVoteWeights(); all[reg.Account] > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (n *Node) validateChatEnvelope(env *chat.Envelope) error {
