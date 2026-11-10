@@ -259,7 +259,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		case BlockLeaseAccept:
 			repRevert = &ReputationEvent{Kind: EventLeaseAccepted, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer}
 		case BlockLeaseSettle:
-			repRevert = &ReputationEvent{Kind: EventLeaseSettled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer, DurationSecs: restoreLease.Duration}
+			repRevert = &ReputationEvent{Kind: EventLeaseSettled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer, DurationSecs: restoreLease.EffectiveDurationSecs()}
 		case BlockLeaseForceSettle:
 			repRevert = &ReputationEvent{Kind: EventLeaseUnfulfilled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer}
 		case BlockLeaseCancel:
