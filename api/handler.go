@@ -69,6 +69,7 @@ type nodeBackend interface {
 	GetChatContacts(account string) []string
 	SubscribeChat() (chan *chat.Envelope, func())
 	RequestAttestation(source, identifier string) (*core.TimekeeperAttestation, error)
+	RequestAttestationWithProof(source, identifier, pubKey string, timestamp int64, signature string) (*core.TimekeeperAttestation, error)
 	RegisterAccount(reg *directory.Registration) error
 	ListDirectory() []*directory.Registration
 	LookupDirectory(account string) *directory.Registration
@@ -917,6 +918,9 @@ func (h *Handler) handleAttestationRequest(w http.ResponseWriter, r *http.Reques
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	var req struct {
 		LeaseHash string `json:"lease_hash"`
+		PubKey    string `json:"pub_key"`
+		Timestamp int64  `json:"timestamp"`
+		Signature string `json:"signature"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -927,7 +931,15 @@ func (h *Handler) handleAttestationRequest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	att, err := h.node.RequestAttestation(clientIP(r), req.LeaseHash)
+	var (
+		att *core.TimekeeperAttestation
+		err error
+	)
+	if req.PubKey != "" || req.Signature != "" {
+		att, err = h.node.RequestAttestationWithProof(clientIP(r), req.LeaseHash, req.PubKey, req.Timestamp, req.Signature)
+	} else {
+		att, err = h.node.RequestAttestation(clientIP(r), req.LeaseHash)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
