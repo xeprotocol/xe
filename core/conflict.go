@@ -50,33 +50,87 @@ func detectConflictSibling(chain *AccountChain, b *Block) string {
 }
 
 func recordConflict(cs ConflictStore, account, previous, existingHash, newHash string) (isNew bool, err error) {
+	_, isNew, err = recordConflictWithSnapshot(cs, account, previous, existingHash, newHash, nil)
+	return isNew, err
+}
+
+func recordConflictWithSnapshot(cs ConflictStore, account, previous, existingHash, newHash string, snapshotFn func() map[string]uint64) (saved *Conflict, isNew bool, err error) {
+	conflictRWMu.Lock()
+	defer conflictRWMu.Unlock()
+
 	record, err := cs.GetConflict(account, previous)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if record == nil {
-
 		record = NewConflict(account, previous, existingHash, newHash)
-		if err := cs.SaveConflict(record); err != nil {
-			return false, err
+		if snapshotFn != nil {
+			record.WeightSnapshot = snapshotFn()
+			var total uint64
+			for _, w := range record.WeightSnapshot {
+				total += w
+			}
+			record.TotalWeight = total
 		}
-		return true, nil
+		if err := cs.SaveConflict(record); err != nil {
+			return nil, false, err
+		}
+		cp := *record
+		cp.BlockHashes = append([]string(nil), record.BlockHashes...)
+		return &cp, true, nil
 	}
 
 	if containsConflictHash(record.BlockHashes, newHash) {
-		return false, nil
+		cp := *record
+		cp.BlockHashes = append([]string(nil), record.BlockHashes...)
+		return &cp, false, nil
 	}
 
 	const maxConflictHashes = 10
 	if len(record.BlockHashes) >= maxConflictHashes {
-		return false, nil
+		cp := *record
+		cp.BlockHashes = append([]string(nil), record.BlockHashes...)
+		return &cp, false, nil
 	}
 	record.BlockHashes = append(record.BlockHashes, newHash)
 	if err := cs.SaveConflict(record); err != nil {
-		return false, err
+		return nil, false, err
 	}
 
-	return false, nil
+	cp := *record
+	cp.BlockHashes = append([]string(nil), record.BlockHashes...)
+	return &cp, false, nil
+}
+
+func trimConflictHashes(cs ConflictStore, account, previous string, drop map[string]bool) (*Conflict, error) {
+	conflictRWMu.Lock()
+	defer conflictRWMu.Unlock()
+
+	latest, err := cs.GetConflict(account, previous)
+	if err != nil || latest == nil {
+		return nil, err
+	}
+	filtered := make([]string, 0, len(latest.BlockHashes))
+	changed := false
+	for _, h := range latest.BlockHashes {
+		if drop[h] {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, h)
+	}
+	if !changed {
+		return latest, nil
+	}
+	if len(filtered) == 0 {
+		_ = cs.DeleteConflict(account, previous)
+		return nil, nil
+	}
+	latest.BlockHashes = filtered
+	if err := cs.SaveConflict(latest); err != nil {
+		return nil, err
+	}
+	return latest, nil
 }
 
 func containsConflictHash(hashes []string, hash string) bool {

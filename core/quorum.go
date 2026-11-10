@@ -569,6 +569,14 @@ func (qm *QuorumManager) sweepStaleConflicts() {
 }
 
 func (qm *QuorumManager) evictPhantomsAndResolve(c *Conflict) bool {
+	conflictRWMu.RLock()
+	latest, err := qm.conflictMgr.GetConflict(c.AccountAddress, c.PreviousHash)
+	conflictRWMu.RUnlock()
+	if err != nil || latest == nil {
+		return false
+	}
+	c = latest
+
 	var realBlocks []string
 	var phantoms []string
 	for _, h := range c.BlockHashes {
@@ -599,12 +607,16 @@ func (qm *QuorumManager) evictPhantomsAndResolve(c *Conflict) bool {
 		livePhantoms = nil
 	}
 
+	deadSet := make(map[string]bool, len(deadPhantoms))
+	for _, h := range deadPhantoms {
+		deadSet[h] = true
+	}
+
 	if len(realBlocks) == 0 {
 		if len(livePhantoms) > 0 {
 
 			if len(deadPhantoms) > 0 {
-				c.BlockHashes = livePhantoms
-				if err := qm.conflictMgr.SaveConflict(c); err != nil {
+				if _, err := trimConflictHashes(qm.conflictMgr, c.AccountAddress, c.PreviousHash, deadSet); err != nil {
 					log.Printf("quorum: SaveConflict (dead-phantom trim, no real) for %s|%s: %v",
 						shortHash(c.AccountAddress), shortHash(c.PreviousHash), err)
 				}
@@ -615,7 +627,7 @@ func (qm *QuorumManager) evictPhantomsAndResolve(c *Conflict) bool {
 		log.Printf("quorum: all-phantom conflict for %s|%s — dropping after %v",
 			shortHash(c.AccountAddress), shortHash(c.PreviousHash),
 			Now().Sub(c.DetectedAt).Round(time.Second))
-		_ = qm.conflictMgr.DeleteConflict(c.AccountAddress, c.PreviousHash)
+		_, _ = trimConflictHashes(qm.conflictMgr, c.AccountAddress, c.PreviousHash, deadSet)
 		return false
 	}
 
@@ -638,8 +650,7 @@ func (qm *QuorumManager) evictPhantomsAndResolve(c *Conflict) bool {
 		}
 
 		if len(deadPhantoms) > 0 {
-			c.BlockHashes = append(append([]string{}, realBlocks...), livePhantoms...)
-			if err := qm.conflictMgr.SaveConflict(c); err != nil {
+			if _, err := trimConflictHashes(qm.conflictMgr, c.AccountAddress, c.PreviousHash, deadSet); err != nil {
 				log.Printf("quorum: SaveConflict (dead-phantom trim, single real) for %s|%s: %v",
 					shortHash(c.AccountAddress), shortHash(c.PreviousHash), err)
 			}
@@ -664,8 +675,7 @@ func (qm *QuorumManager) evictPhantomsAndResolve(c *Conflict) bool {
 	}
 
 	if len(deadPhantoms) > 0 {
-		c.BlockHashes = append(append([]string{}, realBlocks...), livePhantoms...)
-		if err := qm.conflictMgr.SaveConflict(c); err != nil {
+		if _, err := trimConflictHashes(qm.conflictMgr, c.AccountAddress, c.PreviousHash, deadSet); err != nil {
 			log.Printf("quorum: SaveConflict (dead-phantom trim) for %s|%s: %v",
 				shortHash(c.AccountAddress), shortHash(c.PreviousHash), err)
 		}
