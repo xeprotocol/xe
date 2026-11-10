@@ -1503,7 +1503,7 @@ func (l *Ledger) rebuildKeysets() {
 	}
 }
 
-func (l *Ledger) validateAndAddLease(b *Block) error {
+func (l *Ledger) validateLeaseBlockFields(b *Block) error {
 	if b.Asset != "XUSD" {
 		return fmt.Errorf("lease block must have asset=XUSD")
 	}
@@ -1550,6 +1550,13 @@ func (l *Ledger) validateAndAddLease(b *Block) error {
 	}
 	if b.Amount != expectedCost {
 		return fmt.Errorf("lease cost mismatch: expected %d (multiplier %d), got %d", expectedCost, cert.PriceMultiplierMilli, b.Amount)
+	}
+	return nil
+}
+
+func (l *Ledger) validateAndAddLease(b *Block) error {
+	if err := l.validateLeaseBlockFields(b); err != nil {
+		return err
 	}
 
 	chain, err := l.getAccountChainOverlay(b.Account)
@@ -2777,6 +2784,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged receive: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
 	case BlockLease:
+		if err := l.validateLeaseBlockFields(b); err != nil {
+			return fmt.Errorf("staged lease: %w", err)
+		}
 		if b.Amount > parentBalance {
 			return fmt.Errorf("staged lease: insufficient balance: have %d, need %d", parentBalance, b.Amount)
 		}
@@ -2784,6 +2794,29 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
 		}
 	case BlockLeaseAccept:
+		if b.Asset != "XUSD" {
+			return fmt.Errorf("staged lease_accept: lease_accept block must have asset=XUSD")
+		}
+		if b.Source == "" {
+			return fmt.Errorf("staged lease_accept: lease_accept must reference a source lease block")
+		}
+		leaseBlock, err := l.store.GetBlock(b.Source)
+		if err != nil {
+			return fmt.Errorf("staged lease_accept: GetBlock: %w", err)
+		}
+		if leaseBlock == nil {
+			return fmt.Errorf("staged lease_accept: source lease block not found: %s", shortHash(b.Source))
+		}
+		if leaseBlock.Type != BlockLease {
+			return fmt.Errorf("staged lease_accept: source block is not a lease block")
+		}
+		if leaseBlock.Destination != b.Account {
+			return fmt.Errorf("staged lease_accept: provider account mismatch")
+		}
+		expectedStake := LeaseStake(leaseBlock.Amount)
+		if b.Amount != expectedStake {
+			return fmt.Errorf("staged lease_accept: stake mismatch: expected %d, got %d", expectedStake, b.Amount)
+		}
 		if b.Amount > parentBalance {
 			return fmt.Errorf("staged lease_accept: insufficient balance: have %d, need %d", parentBalance, b.Amount)
 		}
