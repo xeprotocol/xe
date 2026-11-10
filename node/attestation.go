@@ -41,15 +41,6 @@ func (n *Node) canAttest(identifier string) error {
 		if _, ok := n.Directory.Lookup(identifier); ok {
 			return nil
 		}
-		const zeroMid = "0000000000000000"
-		if identifier[32:48] == zeroMid {
-			for _, reg := range n.Directory.List() {
-				a := reg.Account
-				if len(a) == 64 && a[:32] == identifier[:32] && a[48:] == identifier[48:] {
-					return nil
-				}
-			}
-		}
 	}
 	return fmt.Errorf("unknown attestation identifier %s: not a live lease or a registered provider", shortHash(identifier))
 }
@@ -211,6 +202,9 @@ func capAttestations(atts []core.TimekeeperAttestation, leaseHash string, config
 }
 
 func (n *Node) getTimekeeperConfig() *core.TimekeeperConfig {
+	if n == nil || n.StateChain == nil {
+		return nil
+	}
 	raw, ok := n.StateChain.GetKV("sys.timekeepers")
 	if !ok {
 		return nil
