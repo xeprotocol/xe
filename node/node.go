@@ -68,28 +68,29 @@ type Node struct {
 	certCache              *certSet
 	certsOnce              sync.Once
 
-	attRateMu        sync.Mutex
-	attRateMap       map[string]time.Time
-	consumerVMs      sync.Map
-	pendingOffersMu  sync.Mutex
-	pendingOffers    map[string]*xenet.ResourceOffer
-	providerAds      sync.Map
-	blockCreateMu    sync.Mutex
-	reservedRes      vm.Resources
-	reservedResMu    sync.Mutex
-	syncTracker      *xenet.SyncTracker
-	syncWait         func()
-	gater            *xenet.NetworkGater
-	activationLog    *activationReporter
-	tunnelRegistry   *xenet.TunnelRegistry
-	acceptInFlight   map[string]struct{}
-	acceptInFlightMu sync.Mutex
-	acceptAttestHook func(leaseHash string) ([]core.TimekeeperAttestation, error)
-	acceptSched      acceptSchedule
-	pullSem          chan struct{}
-	ctx              context.Context
-	cancel           context.CancelFunc
-	wg               sync.WaitGroup
+	attRateMu         sync.Mutex
+	attRateMap        map[string]time.Time
+	consumerVMs       sync.Map
+	pendingOffersMu   sync.Mutex
+	pendingOffers     map[string]*xenet.ResourceOffer
+	providerAds       sync.Map
+	blockCreateMu     sync.Mutex
+	reservedRes       vm.Resources
+	reservedResMu     sync.Mutex
+	syncTracker       *xenet.SyncTracker
+	syncWait          func()
+	gater             *xenet.NetworkGater
+	activationLog     *activationReporter
+	tunnelRegistry    *xenet.TunnelRegistry
+	acceptInFlight    map[string]struct{}
+	acceptInFlightMu  sync.Mutex
+	acceptAttestHook  func(leaseHash string) ([]core.TimekeeperAttestation, error)
+	archiveAttestHook func(leaseHash string, config *core.TimekeeperConfig) ([]core.TimekeeperAttestation, error)
+	acceptSched       acceptSchedule
+	pullSem           chan struct{}
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
 }
 
 const maxInFlightVotePulls = 32
@@ -1870,9 +1871,34 @@ func (n *Node) tryArchiveExpiredLeases() {
 		return
 	}
 	now := core.Now().UnixNano()
+	tkConfig := n.getTimekeeperConfig()
 	for _, lease := range leases {
 		if !shouldArchiveExpiredLease(lease, now) {
 			continue
+		}
+		if tkConfig != nil {
+			var attestations []core.TimekeeperAttestation
+			var err error
+			if n.archiveAttestHook != nil {
+				attestations, err = n.archiveAttestHook(lease.LeaseHash, tkConfig)
+			} else {
+				attestations, err = n.gatherAttestations(lease.LeaseHash, tkConfig)
+			}
+			if err != nil {
+				log.Printf("Failed to gather attestations for archiveExpiredLease %s: %v", shortHash(lease.LeaseHash), err)
+				continue
+			}
+			archiveTime, err := core.ValidateAttestations(attestations, lease.LeaseHash, tkConfig, false)
+			if err != nil {
+				log.Printf("Attestation validation failed for archiveExpiredLease %s: %v", shortHash(lease.LeaseHash), err)
+				continue
+			}
+			expiry := lease.EffectiveExpiry()
+			eligibleAt := expiry + core.LeaseEscrowExpiry + core.LeaseArchiveGap
+			if archiveTime < eligibleAt {
+				log.Printf("Lease %s not yet archivable by attestations: need timestamp >= %d, got %d", shortHash(lease.LeaseHash), eligibleAt, archiveTime)
+				continue
+			}
 		}
 		n.archiveExpiredLease(lease)
 	}
@@ -1883,11 +1909,20 @@ func (n *Node) archiveExpiredLease(lease *core.Lease) {
 	if !ok {
 		return
 	}
+
+	n.blockCreateMu.Lock()
+	defer n.blockCreateMu.Unlock()
+
+	curLease, err := ls.GetLease(lease.LeaseHash)
+	if err != nil || curLease == nil || curLease.Settled || curLease.State != core.LeaseAccepted {
+		return
+	}
+
 	if err := n.store.DeletePendingSend(lease.LeaseHash); err != nil {
 		log.Printf("archive: DeletePendingSend %s: %v", shortHash(lease.LeaseHash), err)
 		return
 	}
-	updated := *lease
+	updated := *curLease
 	updated.State = core.LeaseExpired
 	updated.Settled = true
 	if err := ls.PutLease(&updated); err != nil {
@@ -1895,7 +1930,7 @@ func (n *Node) archiveExpiredLease(lease *core.Lease) {
 		return
 	}
 	log.Printf("Archived expired lease %s: burned %d µXUSD escrow (both parties offline)",
-		shortHash(lease.LeaseHash), lease.Cost+lease.Stake)
+		shortHash(lease.LeaseHash), updated.TotalCost()+updated.Stake)
 }
 
 func (n *Node) forceSettleLease(lease *core.Lease) {
