@@ -788,6 +788,8 @@ Reference implementations: `core.MarshalBlockAux` (Go),
 | `locked_r`,`locked_payout_cap`,`locked_twap_milli` | uint64 | locked emission params on lease_accept |
 | `lease_min_duration_secs`,`lease_settle_grace_ns`,`lease_force_settle_gap_ns`,`lease_escrow_expiry_ns`,`lease_archive_gap_ns`,`max_attestation_skew_ns` | uint64/int64 | **genesis block only** |
 
+> **64-bit integer precision note (`uint64` / `int64` > `2^53 - 1`):** Fields such as `timestamp` (unix nanoseconds, ~`1.78e18`) and `pow_nonce` (`0..2^64 - 1`) exceed IEEE-754 `Number.MAX_SAFE_INTEGER` (`9007199254740991`). Standard `JSON.parse()` in JavaScript/TypeScript clients silently rounds the low bits, which corrupts `timestamp` in the canonical block bytes (causing block hash verification to fail) and `pow_nonce` (causing PoW verification to fail). JS/OpenAPI clients must parse 64-bit integer fields losslessly as `BigInt` or decimal strings before `JSON.parse` (see `parseJsonLossless` in `web/assets/api.js` and `fetchBlockJsonLossless` in `web/assets/xe-block.js`). All `POST /blocks/*` endpoints accept both JSON integer literals and quoted decimal strings for `uint64`/`int64` fields.
+
 ---
 
 ## PoW

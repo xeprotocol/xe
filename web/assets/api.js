@@ -1,6 +1,14 @@
 const BASE = '/api';
 const PAGE_LIMIT = 1000;
 
+export function parseJsonLossless(text) {
+  const safe = text.replace(
+    /("(?:timestamp|pow_nonce|balance|amount|cost|stake|start_time|expires_at|locked_r|locked_payout_cap|locked_twap_milli)"\s*:\s*)(-?\d{16,})/g,
+    '$1"$2"'
+  );
+  return JSON.parse(safe);
+}
+
 export async function api(path) {
   const res = await fetch(BASE + path);
   if (!res.ok) {
@@ -11,7 +19,8 @@ export async function api(path) {
     } catch {}
     throw new Error(detail);
   }
-  return res.json();
+  const text = await res.text();
+  return parseJsonLossless(text);
 }
 
 export async function fetchAllPages(path) {

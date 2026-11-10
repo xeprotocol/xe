@@ -1,6 +1,10 @@
 package core
 
-import "time"
+import (
+	"encoding/json"
+	"strconv"
+	"time"
+)
 
 type Conflict struct {
 	AccountAddress string            `json:"account_address"`
@@ -109,10 +113,124 @@ type Block struct {
 	LockedTWAP      uint64 `json:"locked_twap_milli,omitempty"`
 }
 
+type flexUint64 uint64
+
+func (u *flexUint64) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return nil
+	}
+	if len(b) >= 2 && b[0] == '"' && b[len(b)-1] == '"' {
+		b = b[1 : len(b)-1]
+	}
+	v, err := strconv.ParseUint(string(b), 10, 64)
+	if err != nil {
+		return err
+	}
+	*u = flexUint64(v)
+	return nil
+}
+
+type flexInt64 int64
+
+func (i *flexInt64) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return nil
+	}
+	if len(b) >= 2 && b[0] == '"' && b[len(b)-1] == '"' {
+		b = b[1 : len(b)-1]
+	}
+	v, err := strconv.ParseInt(string(b), 10, 64)
+	if err != nil {
+		return err
+	}
+	*i = flexInt64(v)
+	return nil
+}
+
+func (b *Block) UnmarshalJSON(data []byte) error {
+	type Alias Block
+	aux := &struct {
+		Balance               flexUint64 `json:"balance"`
+		Timestamp             flexInt64  `json:"timestamp"`
+		Amount                flexUint64 `json:"amount,omitempty"`
+		VCPUs                 flexUint64 `json:"vcpus,omitempty"`
+		MemoryMB              flexUint64 `json:"memory_mb,omitempty"`
+		DiskGB                flexUint64 `json:"disk_gb,omitempty"`
+		Duration              flexUint64 `json:"duration,omitempty"`
+		LeaseMinDurationSecs  flexUint64 `json:"lease_min_duration_secs,omitempty"`
+		LeaseSettleGraceNs    flexInt64  `json:"lease_settle_grace_ns,omitempty"`
+		LeaseForceSettleGapNs flexInt64  `json:"lease_force_settle_gap_ns,omitempty"`
+		LeaseEscrowExpiryNs   flexInt64  `json:"lease_escrow_expiry_ns,omitempty"`
+		LeaseArchiveGapNs     flexInt64  `json:"lease_archive_gap_ns,omitempty"`
+		MaxAttestationSkewNs  flexInt64  `json:"max_attestation_skew_ns,omitempty"`
+		PoWNonce              flexUint64 `json:"pow_nonce,omitempty"`
+		LockedR               flexUint64 `json:"locked_r,omitempty"`
+		LockedPayoutCap       flexUint64 `json:"locked_payout_cap,omitempty"`
+		LockedTWAP            flexUint64 `json:"locked_twap_milli,omitempty"`
+		*Alias
+	}{
+		Balance:               flexUint64(b.Balance),
+		Timestamp:             flexInt64(b.Timestamp),
+		Amount:                flexUint64(b.Amount),
+		VCPUs:                 flexUint64(b.VCPUs),
+		MemoryMB:              flexUint64(b.MemoryMB),
+		DiskGB:                flexUint64(b.DiskGB),
+		Duration:              flexUint64(b.Duration),
+		LeaseMinDurationSecs:  flexUint64(b.LeaseMinDurationSecs),
+		LeaseSettleGraceNs:    flexInt64(b.LeaseSettleGraceNs),
+		LeaseForceSettleGapNs: flexInt64(b.LeaseForceSettleGapNs),
+		LeaseEscrowExpiryNs:   flexInt64(b.LeaseEscrowExpiryNs),
+		LeaseArchiveGapNs:     flexInt64(b.LeaseArchiveGapNs),
+		MaxAttestationSkewNs:  flexInt64(b.MaxAttestationSkewNs),
+		PoWNonce:              flexUint64(b.PoWNonce),
+		LockedR:               flexUint64(b.LockedR),
+		LockedPayoutCap:       flexUint64(b.LockedPayoutCap),
+		LockedTWAP:            flexUint64(b.LockedTWAP),
+		Alias:                 (*Alias)(b),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	b.Balance = uint64(aux.Balance)
+	b.Timestamp = int64(aux.Timestamp)
+	b.Amount = uint64(aux.Amount)
+	b.VCPUs = uint64(aux.VCPUs)
+	b.MemoryMB = uint64(aux.MemoryMB)
+	b.DiskGB = uint64(aux.DiskGB)
+	b.Duration = uint64(aux.Duration)
+	b.LeaseMinDurationSecs = uint64(aux.LeaseMinDurationSecs)
+	b.LeaseSettleGraceNs = int64(aux.LeaseSettleGraceNs)
+	b.LeaseForceSettleGapNs = int64(aux.LeaseForceSettleGapNs)
+	b.LeaseEscrowExpiryNs = int64(aux.LeaseEscrowExpiryNs)
+	b.LeaseArchiveGapNs = int64(aux.LeaseArchiveGapNs)
+	b.MaxAttestationSkewNs = int64(aux.MaxAttestationSkewNs)
+	b.PoWNonce = uint64(aux.PoWNonce)
+	b.LockedR = uint64(aux.LockedR)
+	b.LockedPayoutCap = uint64(aux.LockedPayoutCap)
+	b.LockedTWAP = uint64(aux.LockedTWAP)
+	return nil
+}
+
 type TimekeeperAttestation struct {
 	PublicKey string `json:"public_key"`
 	Timestamp int64  `json:"timestamp"`
 	Signature string `json:"signature"`
+}
+
+func (a *TimekeeperAttestation) UnmarshalJSON(data []byte) error {
+	type Alias TimekeeperAttestation
+	aux := &struct {
+		Timestamp flexInt64 `json:"timestamp"`
+		*Alias
+	}{
+		Timestamp: flexInt64(a.Timestamp),
+		Alias:     (*Alias)(a),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	a.Timestamp = int64(aux.Timestamp)
+	return nil
 }
 
 type TimekeeperConfig struct {
