@@ -19,10 +19,12 @@ type SyncRequest struct {
 }
 
 type SyncResponse struct {
-	Blocks   []*core.Block `json:"blocks"`
-	HasMore  bool          `json:"has_more"`
-	Cursor   string        `json:"cursor"`
-	Rejected []string      `json:"rejected,omitempty"`
+	Blocks    []*core.Block `json:"blocks"`
+	HasMore   bool          `json:"has_more"`
+	Truncated bool          `json:"truncated,omitempty"`
+	Cursor    string        `json:"cursor"`
+	Rejected  []string      `json:"rejected,omitempty"`
+	Error     string        `json:"error,omitempty"`
 }
 
 type ResourceAdvertisement struct {
