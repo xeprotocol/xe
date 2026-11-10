@@ -57,7 +57,9 @@ func (h *Handler) handleChatMessages(w http.ResponseWriter, r *http.Request) {
 			since = n
 		}
 	}
-	writeJSON(w, http.StatusOK, h.node.GetChatMessages(account, since))
+	offset, limit := parsePagination(r)
+	msgs := paginateSlice(h.node.GetChatMessages(account, since), offset, limit)
+	writeJSON(w, http.StatusOK, msgs)
 }
 
 func (h *Handler) handleChatContacts(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -117,7 +118,9 @@ func chatSend(c *client.Client, kp *core.KeyPair, to, message string) (string, e
 	if err != nil {
 		return "", err
 	}
-	env, err := chat.NewEnvelope(kp.Address(), to, message, kp, difficulty)
+	ctx, cancel := context.WithTimeout(context.Background(), chat.DefaultPoWTimeout)
+	defer cancel()
+	env, err := chat.NewEnvelopeWithContext(ctx, kp.Address(), to, message, kp, difficulty)
 	if err != nil {
 		return "", err
 	}
