@@ -532,13 +532,14 @@ func (h *Handler) handleGetPending(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing address")
 		return
 	}
-	pending := h.node.GetPending(address)
+	offset, limit := parsePagination(r)
+	page := paginateSlice(h.node.GetPending(address), offset, limit)
 	resp := struct {
 		Address string         `json:"address"`
 		Pending []pendingEntry `json:"pending"`
 	}{
 		Address: address,
-		Pending: h.enrichPending(pending),
+		Pending: h.enrichPending(page),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -663,7 +664,7 @@ func (h *Handler) cachedRecentBlocks() []*core.Block {
 }
 
 func (h *Handler) handleGetRecentBlocks(w http.ResponseWriter, r *http.Request) {
-	_, limit := parsePagination(r)
+	offset, limit := parsePagination(r)
 	blocks := h.cachedRecentBlocks()
 	if v := r.URL.Query().Get("since"); v != "" {
 		since, err := strconv.ParseInt(v, 10, 64)
@@ -679,10 +680,7 @@ func (h *Handler) handleGetRecentBlocks(w http.ResponseWriter, r *http.Request) 
 		}
 		blocks = recent
 	}
-	if len(blocks) > limit {
-		blocks = blocks[:limit]
-	}
-	writeJSON(w, http.StatusOK, blocks)
+	writeJSON(w, http.StatusOK, paginateSlice(blocks, offset, limit))
 }
 
 func (h *Handler) handleGetFrontiers(w http.ResponseWriter, r *http.Request) {
