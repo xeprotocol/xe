@@ -1,6 +1,7 @@
 package api
 
 import (
+	"container/list"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -278,6 +279,7 @@ func corsMiddleware(next http.Handler, allowedOrigin string) http.Handler {
 type ipRateLimiter struct {
 	mu      sync.Mutex
 	entries map[string]*rateLimiterEntry
+	lru     *list.List
 	rate    rate.Limit
 	burst   int
 }
@@ -285,6 +287,7 @@ type ipRateLimiter struct {
 type rateLimiterEntry struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
+	element  *list.Element
 }
 
 const (
@@ -324,6 +327,7 @@ func (rls *rateLimiters) pick(r *http.Request) *ipRateLimiter {
 func newIPRateLimiter(r rate.Limit, burst int) *ipRateLimiter {
 	rl := &ipRateLimiter{
 		entries: make(map[string]*rateLimiterEntry),
+		lru:     list.New(),
 		rate:    r,
 		burst:   burst,
 	}
@@ -336,12 +340,25 @@ func (rl *ipRateLimiter) getLimiter(ip string) *rate.Limiter {
 	defer rl.mu.Unlock()
 	e, ok := rl.entries[ip]
 	if !ok {
-
 		if len(rl.entries) >= maxRateLimiterIPs {
-			return rate.NewLimiter(0, 0)
+			if oldest := rl.lru.Back(); oldest != nil {
+				oldestIP := oldest.Value.(string)
+				rl.lru.Remove(oldest)
+				delete(rl.entries, oldestIP)
+			} else {
+				for k := range rl.entries {
+					delete(rl.entries, k)
+					break
+				}
+			}
 		}
-		e = &rateLimiterEntry{limiter: rate.NewLimiter(rl.rate, rl.burst)}
+		e = &rateLimiterEntry{
+			limiter: rate.NewLimiter(rl.rate, rl.burst),
+		}
+		e.element = rl.lru.PushFront(ip)
 		rl.entries[ip] = e
+	} else {
+		rl.lru.MoveToFront(e.element)
 	}
 	e.lastSeen = time.Now()
 	return e.limiter
@@ -352,9 +369,16 @@ func (rl *ipRateLimiter) sweepLoop() {
 	for range ticker.C {
 		rl.mu.Lock()
 		cutoff := time.Now().Add(-rateLimiterTTL)
-		for ip, e := range rl.entries {
-			if e.lastSeen.Before(cutoff) {
+		for elem := rl.lru.Back(); elem != nil; {
+			prev := elem.Prev()
+			ip, _ := elem.Value.(string)
+			e := rl.entries[ip]
+			if e != nil && e.lastSeen.Before(cutoff) {
+				rl.lru.Remove(elem)
 				delete(rl.entries, ip)
+				elem = prev
+			} else {
+				break
 			}
 		}
 		rl.mu.Unlock()
