@@ -69,6 +69,7 @@ func (rl *syncRateLimiter) allow(pid peer.ID) bool {
 
 type syncTracker struct {
 	mu             sync.Mutex
+	activeConns    map[peer.ID]int
 	lastFrontiers  map[peer.ID]map[string]string
 	dirty          int32
 	lastFullResync time.Time
@@ -82,12 +83,22 @@ const fullResyncInterval = 60 * time.Second
 
 func newSyncTracker() *syncTracker {
 	return &syncTracker{
+		activeConns:    make(map[peer.ID]int),
 		lastFrontiers:  make(map[peer.ID]map[string]string),
 		dirty:          1,
 		lastFullResync: time.Time{},
 		rejections:     make(map[peer.ID]map[string]int),
 		syncIncapable:  make(map[peer.ID]time.Time),
 	}
+}
+
+func (st *syncTracker) addPeer(pid peer.ID) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.activeConns == nil {
+		st.activeConns = make(map[peer.ID]int)
+	}
+	st.activeConns[pid]++
 }
 
 func (st *syncTracker) MarkDirty() {
@@ -128,6 +139,10 @@ func (st *syncTracker) recordSync(pid peer.ID, frontiers map[string]string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
+	if st.activeConns != nil && st.activeConns[pid] <= 0 {
+		return
+	}
+
 	cp := make(map[string]string, len(frontiers))
 	for k, v := range frontiers {
 		cp[k] = v
@@ -145,9 +160,19 @@ func (st *syncTracker) clearDirty() {
 func (st *syncTracker) removePeer(pid peer.ID) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	delete(st.lastFrontiers, pid)
-	delete(st.rejections, pid)
-	delete(st.syncIncapable, pid)
+	if st.activeConns != nil {
+		st.activeConns[pid]--
+		if st.activeConns[pid] <= 0 {
+			delete(st.activeConns, pid)
+			delete(st.lastFrontiers, pid)
+			delete(st.rejections, pid)
+			delete(st.syncIncapable, pid)
+		}
+	} else {
+		delete(st.lastFrontiers, pid)
+		delete(st.rejections, pid)
+		delete(st.syncIncapable, pid)
+	}
 }
 
 func (st *syncTracker) markSyncIncapable(pid peer.ID) {
@@ -156,6 +181,9 @@ func (st *syncTracker) markSyncIncapable(pid peer.ID) {
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if st.activeConns != nil && st.activeConns[pid] <= 0 {
+		return
+	}
 	if st.syncIncapable == nil {
 		st.syncIncapable = make(map[peer.ID]time.Time)
 	}
@@ -201,9 +229,19 @@ func (st *syncTracker) filterFrontiers(pid peer.ID, frontiers map[string]string)
 	return out
 }
 
+const maxRejectedAccounts = 1000
+
 func (st *syncTracker) recordRejections(pid peer.ID, rejected []string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+
+	if st.activeConns != nil && st.activeConns[pid] <= 0 {
+		return
+	}
+	if len(rejected) > maxRejectedAccounts {
+		rejected = rejected[:maxRejectedAccounts]
+	}
+
 	if st.rejections == nil {
 		st.rejections = make(map[peer.ID]map[string]int)
 	}
@@ -316,10 +354,15 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 		handleSyncStream(s, ledger, tracker)
 	})
 
+	for _, c := range h.Network().Conns() {
+		tracker.addPeer(c.RemotePeer())
+	}
+
 	h.Network().Notify(&network.NotifyBundle{
 		ConnectedF: func(n network.Network, conn network.Conn) {
+			pid := conn.RemotePeer()
+			tracker.addPeer(pid)
 			gate.spawn(func() {
-				pid := conn.RemotePeer()
 				if !outboundRL.allow(pid) {
 					return
 				}
@@ -333,7 +376,9 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 					}
 				} else {
 					metrics.RecordSyncRound(true)
-					tracker.recordSync(pid, ledger.Frontiers())
+					if h.Network().Connectedness(pid) == network.Connected {
+						tracker.recordSync(pid, ledger.Frontiers())
+					}
 				}
 			})
 		},
@@ -373,7 +418,9 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 						}
 					} else {
 						metrics.RecordSyncRound(true)
-						tracker.recordSync(p, ledger.Frontiers())
+						if h.Network().Connectedness(p) == network.Connected {
+							tracker.recordSync(p, ledger.Frontiers())
+						}
 					}
 				})
 			}
