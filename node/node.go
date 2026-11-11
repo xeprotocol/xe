@@ -75,6 +75,8 @@ type Node struct {
 	pendingOffers    map[string]*xenet.ResourceOffer
 	providerAds      sync.Map
 	blockCreateMu    sync.Mutex
+	frontiersMu      sync.Mutex
+	cachedFrontiers  *frontiersSnapshot
 	reservedRes      vm.Resources
 	reservedResMu    sync.Mutex
 	syncTracker      *xenet.SyncTracker
@@ -965,10 +967,48 @@ type FrontierInfo struct {
 	Representative string `json:"representative,omitempty"`
 }
 
-func (n *Node) GetFrontiersDetailed() []FrontierInfo {
+type frontiersSnapshot struct {
+	at        time.Time
+	accounts  []string
+	frontiers map[string]string
+}
+
+func (n *Node) getSortedFrontiers() ([]string, map[string]string) {
+	n.frontiersMu.Lock()
+	defer n.frontiersMu.Unlock()
+	if n.cachedFrontiers != nil && time.Since(n.cachedFrontiers.at) < time.Second {
+		return n.cachedFrontiers.accounts, n.cachedFrontiers.frontiers
+	}
 	frontiers := n.Ledger.Frontiers()
-	out := make([]FrontierInfo, 0, len(frontiers))
-	for account, hash := range frontiers {
+	accounts := make([]string, 0, len(frontiers))
+	for a := range frontiers {
+		accounts = append(accounts, a)
+	}
+	sort.Strings(accounts)
+	n.cachedFrontiers = &frontiersSnapshot{
+		at:        time.Now(),
+		accounts:  accounts,
+		frontiers: frontiers,
+	}
+	return accounts, frontiers
+}
+
+func (n *Node) GetFrontiersDetailedPaged(offset, limit int) []FrontierInfo {
+	accounts, frontiers := n.getSortedFrontiers()
+	if offset >= len(accounts) {
+		return []FrontierInfo{}
+	}
+	end := len(accounts)
+	if limit > 0 {
+		end = offset + limit
+		if end > len(accounts) {
+			end = len(accounts)
+		}
+	}
+	page := accounts[offset:end]
+	out := make([]FrontierInfo, 0, len(page))
+	for _, account := range page {
+		hash := frontiers[account]
 		info := FrontierInfo{Account: account, Frontier: hash}
 		if b := n.Ledger.GetBlock(hash); b != nil {
 			info.BlockType = string(b.Type)
@@ -979,6 +1019,10 @@ func (n *Node) GetFrontiersDetailed() []FrontierInfo {
 		out = append(out, info)
 	}
 	return out
+}
+
+func (n *Node) GetFrontiersDetailed() []FrontierInfo {
+	return n.GetFrontiersDetailedPaged(0, 0)
 }
 
 type AccountSummary struct {
