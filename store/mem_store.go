@@ -361,6 +361,7 @@ func (m *MemStore) applyCommitLocked(c *core.BlockCommit) error {
 	if c.CancelLeaseHash != "" {
 		if l, ok := m.leases[c.CancelLeaseHash]; ok {
 			l.State = core.LeaseCancelled
+			l.Renewals = nil
 		}
 	}
 
