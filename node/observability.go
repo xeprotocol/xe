@@ -119,8 +119,10 @@ func (n *Node) StartObservability(cfg ObsConfig) *Observer {
 		}
 	})
 
-	metrics.BuildInfo.WithLabelValues(n.version, core.GetNetworkID(), cfg.Role).Set(1)
-	metrics.InitReadyChecks(ReadyCheckNames)
+	metrics.WithPublishLock(func() {
+		metrics.BuildInfo.WithLabelValues(n.version, core.GetNetworkID(), cfg.Role).Set(1)
+		metrics.InitReadyChecks(ReadyCheckNames)
+	})
 	metrics.RegisterCounterFunc("xe_dropped_blocks_total",
 		"Blocks shed from the gossip receive path because the receive channel was full.",
 		func() float64 { return float64(xenet.DroppedBlocks()) })
@@ -130,7 +132,7 @@ func (n *Node) StartObservability(cfg ObsConfig) *Observer {
 		func() float64 { return float64(n.Ledger.FinalityAdvances()) })
 
 	o.sample()
-	metrics.SetPreScrape(o.publishDerived)
+	metrics.SetPreScrape(o.publishDerivedLocked)
 
 	n.wg.Add(1)
 	go func() {
@@ -164,12 +166,14 @@ func NewFixedObserver(cfg ObsConfig, snap *Snapshot, peers int, lastSync time.Ti
 		peersFn:    func() int { return peers },
 		lastSyncFn: func() time.Time { return lastSync },
 	}
-	metrics.InitReadyChecks(ReadyCheckNames)
+	metrics.WithPublishLock(func() {
+		metrics.InitReadyChecks(ReadyCheckNames)
+	})
 	if snap != nil {
 		o.snap.Store(snap)
 		o.publish(snap)
 	}
-	metrics.SetPreScrape(o.publishDerived)
+	metrics.SetPreScrape(o.publishDerivedLocked)
 	return &Observer{o: o}
 }
 
@@ -281,41 +285,46 @@ func boolGauge(b bool) float64 {
 }
 
 func (o *observer) publish(s *Snapshot) {
-	metrics.Accounts.Set(float64(s.Accounts))
-	metrics.Blocks.Set(float64(s.Blocks))
-	metrics.PendingSends.Set(float64(s.PendingSends))
-	metrics.ConflictsOpen.Set(float64(s.ConflictsOpen))
-	metrics.UnfinalizedPositions.Set(float64(s.UnfinalizedPositions))
-	metrics.FinalHeightSum.Set(float64(s.FinalHeightSum))
-	metrics.DelegatedWeight.Set(float64(s.DelegatedWeight))
-	metrics.DelegatedWeightRatio.Set(s.DelegatedWeightRatio)
-	metrics.Representatives.Set(float64(s.Representatives))
-	metrics.ActiveRepresentatives.Set(float64(s.ActiveRepresentatives))
-	metrics.ActiveWeight.Set(float64(s.ActiveWeight))
-	metrics.QuorumMargin.Set(s.QuorumMargin)
-	metrics.DelegationUnderflows.Set(float64(s.DelegationUnderflows))
-	metrics.IneligibleWeight.Set(float64(s.IneligibleWeight))
-	metrics.RepEligibilityRestricted.Set(boolGauge(s.EligibilityRestricted))
-	metrics.RepEligibilityFailedOpen.Set(boolGauge(s.EligibilityFailedOpen))
-	metrics.FrontierFingerprint.Set(fingerprintValue(s.FrontierFingerprint))
-	metrics.StoreSize.Set(float64(s.StoreSizeBytes))
-	metrics.PeerCount.Set(float64(o.peerCount()))
-	for asset, v := range s.Supply {
-		metrics.Supply.WithLabelValues(asset).Set(float64(v))
-		metrics.SupplyConserved.WithLabelValues(asset).Set(boolGauge(s.SupplyConserved[asset]))
-		metrics.SupplyDiscrepancy.WithLabelValues(asset).Set(float64(s.SupplyDiscrepancy[asset]))
-	}
-	if s.CertificateValid {
-		metrics.CertificateValid.Set(1)
-	} else {
-		metrics.CertificateValid.Set(0)
-	}
+	peers := o.peerCount()
+	metrics.WithPublishLock(func() {
+		metrics.Accounts.Set(float64(s.Accounts))
+		metrics.Blocks.Set(float64(s.Blocks))
+		metrics.PendingSends.Set(float64(s.PendingSends))
+		metrics.ConflictsOpen.Set(float64(s.ConflictsOpen))
+		metrics.UnfinalizedPositions.Set(float64(s.UnfinalizedPositions))
+		metrics.FinalHeightSum.Set(float64(s.FinalHeightSum))
+		metrics.DelegatedWeight.Set(float64(s.DelegatedWeight))
+		metrics.DelegatedWeightRatio.Set(s.DelegatedWeightRatio)
+		metrics.Representatives.Set(float64(s.Representatives))
+		metrics.ActiveRepresentatives.Set(float64(s.ActiveRepresentatives))
+		metrics.ActiveWeight.Set(float64(s.ActiveWeight))
+		metrics.QuorumMargin.Set(s.QuorumMargin)
+		metrics.DelegationUnderflows.Set(float64(s.DelegationUnderflows))
+		metrics.IneligibleWeight.Set(float64(s.IneligibleWeight))
+		metrics.RepEligibilityRestricted.Set(boolGauge(s.EligibilityRestricted))
+		metrics.RepEligibilityFailedOpen.Set(boolGauge(s.EligibilityFailedOpen))
+		metrics.FrontierFingerprint.Set(fingerprintValue(s.FrontierFingerprint))
+		metrics.StoreSize.Set(float64(s.StoreSizeBytes))
+		for asset, v := range s.Supply {
+			metrics.Supply.WithLabelValues(asset).Set(float64(v))
+			metrics.SupplyConserved.WithLabelValues(asset).Set(boolGauge(s.SupplyConserved[asset]))
+			metrics.SupplyDiscrepancy.WithLabelValues(asset).Set(float64(s.SupplyDiscrepancy[asset]))
+		}
+		if s.CertificateValid {
+			metrics.CertificateValid.Set(1)
+		} else {
+			metrics.CertificateValid.Set(0)
+		}
 
-	o.publishDerived()
+		o.publishDerivedWithPeersLocked(s, peers)
+	})
 }
 
-func (o *observer) publishDerived() {
-	s := o.snap.Load()
+func (o *observer) publishDerivedLocked() {
+	o.publishDerivedWithPeersLocked(o.snap.Load(), o.peerCount())
+}
+
+func (o *observer) publishDerivedWithPeersLocked(s *Snapshot, peers int) {
 	if s == nil {
 		metrics.Healthy.Set(0)
 		metrics.Ready.Set(0)
@@ -328,14 +337,23 @@ func (o *observer) publishDerived() {
 	}
 	metrics.FinalityStall.Set(stall)
 	metrics.SampleAge.Set(now.Sub(s.At).Seconds())
-	metrics.PeerCount.Set(float64(o.peerCount()))
+	metrics.PeerCount.Set(float64(peers))
 
-	if o.health().OK {
+	h := o.healthAt(now, s)
+	if h.OK {
 		metrics.Healthy.Set(1)
 	} else {
 		metrics.Healthy.Set(0)
 	}
-	r := o.ready()
+	r := evaluateReady(readyInputs{
+		cfg:       o.cfg,
+		now:       now,
+		uptime:    now.Sub(o.startedAt),
+		live:      h.OK,
+		snap:      s,
+		peerCount: peers,
+		lastSync:  o.lastSync(),
+	})
 	if r.Ready {
 		metrics.Ready.Set(1)
 	} else {
@@ -440,12 +458,15 @@ type readyInputs struct {
 }
 
 func (o *observer) health() *HealthReport {
-	now := core.Now()
+	return o.healthAt(core.Now(), o.snap.Load())
+}
+
+func (o *observer) healthAt(now time.Time, snap *Snapshot) *HealthReport {
 	in := healthInputs{
 		cfg:       o.cfg,
 		now:       now,
 		uptime:    now.Sub(o.startedAt),
-		snap:      o.snap.Load(),
+		snap:      snap,
 		networkID: core.GetNetworkID(),
 	}
 	if o.node != nil {
@@ -459,12 +480,13 @@ func (o *observer) health() *HealthReport {
 
 func (o *observer) ready() *ReadyReport {
 	now := core.Now()
+	snap := o.snap.Load()
 	return evaluateReady(readyInputs{
 		cfg:       o.cfg,
 		now:       now,
 		uptime:    now.Sub(o.startedAt),
-		live:      o.health().OK,
-		snap:      o.snap.Load(),
+		live:      o.healthAt(now, snap).OK,
+		snap:      snap,
 		peerCount: o.peerCount(),
 		lastSync:  o.lastSync(),
 	})
