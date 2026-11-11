@@ -451,6 +451,12 @@ func (qm *QuorumManager) dropConflictIfOrphaned(c *Conflict) bool {
 	}
 	log.Printf("quorum: dropping orphaned conflict %s|%s — its chain position was rolled back (a candidate is rejected and the parent is no longer on the canonical chain)",
 		shortHash(c.AccountAddress), shortHash(c.PreviousHash))
+	for _, h := range c.BlockHashes {
+		if err := qm.conflictMgr.DeleteStagedBlock(h); err != nil {
+			log.Printf("quorum: DeleteStagedBlock (orphan drop %s) for %s|%s: %v",
+				shortHash(h), shortHash(c.AccountAddress), shortHash(c.PreviousHash), err)
+		}
+	}
 	if err := qm.store.DeleteVotesForConflict(c.AccountAddress, c.PreviousHash); err != nil {
 		log.Printf("quorum: DeleteVotesForConflict (orphan drop) for %s|%s: %v",
 			shortHash(c.AccountAddress), shortHash(c.PreviousHash), err)
