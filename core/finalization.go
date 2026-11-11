@@ -13,13 +13,23 @@ type blockDep struct {
 	hash    string
 }
 
+func (l *Ledger) BlockDependenciesHasUnknownType(b *Block) bool {
+	deps := l.blockDependencies(b)
+	for _, d := range deps {
+		if strings.HasPrefix(d.hash, "unknown-type:") {
+			return true
+		}
+	}
+	return false
+}
+
 func (l *Ledger) blockDependencies(b *Block) []blockDep {
 	var deps []blockDep
 	if b.Previous != "" && b.Previous != "0" {
 		deps = append(deps, blockDep{account: b.Account, hash: b.Previous})
 	}
 	switch b.Type {
-	case BlockReceive, BlockLeaseAccept, BlockLeaseSettle, BlockLeaseCancel, BlockLeaseForceSettle, BlockLeaseRenew:
+	case BlockReceive, BlockLeaseAccept, BlockLeaseSettle, BlockLeaseCancel, BlockLeaseForceSettle, BlockLeaseRenew, BlockLeaseCap:
 
 		if b.Source != "" && b.Source != "0" {
 			deps = append(deps, blockDep{account: l.accountOfBlock(b.Source), hash: b.Source})

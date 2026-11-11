@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type Conflict struct {
 	AccountAddress string            `json:"account_address"`
@@ -39,7 +42,10 @@ const (
 	BlockLeaseRenew       BlockType = "lease_renew"
 	BlockMultisigOpen     BlockType = "multisig_open"
 	BlockMultisigUpdate   BlockType = "multisig_update"
+	BlockLeaseCap         BlockType = "lease_cap"
 )
+
+const FeatureLeaseCaps = "lease_caps"
 
 var validAssets = map[string]bool{
 	"XE":   true,
@@ -107,6 +113,10 @@ type Block struct {
 	LockedR         uint64 `json:"locked_r,omitempty"`
 	LockedPayoutCap uint64 `json:"locked_payout_cap,omitempty"`
 	LockedTWAP      uint64 `json:"locked_twap_milli,omitempty"`
+
+	LeaseCapSet      bool   `json:"lease_cap_set,omitempty"`
+	LeaseCapDuration uint64 `json:"lease_cap_duration,omitempty"`
+	LeaseCapCost     uint64 `json:"lease_cap_cost,omitempty"`
 }
 
 type TimekeeperAttestation struct {
@@ -215,6 +225,10 @@ type Lease struct {
 	LockedTWAP      uint64 `json:"locked_twap_milli,omitempty"`
 
 	Renewals []LeaseSegment `json:"renewals,omitempty"`
+
+	CapSet      bool   `json:"cap_set,omitempty"`
+	CapDuration uint64 `json:"cap_duration,omitempty"`
+	CapCost     uint64 `json:"cap_cost,omitempty"`
 }
 
 type LeaseSegment struct {
@@ -258,3 +272,41 @@ type CertificateInfo struct {
 }
 
 var Now = func() time.Time { return time.Now() }
+
+
+func (l *Lease) EscrowedCost() (uint64, bool) {
+	total := l.Cost
+	for i := range l.Renewals {
+		sum, ok := safeAdd(total, l.Renewals[i].Cost)
+		if !ok {
+			return 0, false
+		}
+		total = sum
+	}
+	return total, true
+}
+
+func (l *Lease) WithinRenewalCaps(addDuration, addCost uint64) error {
+	if !l.CapSet {
+		return fmt.Errorf("lease_renew: provider cap is not committed")
+	}
+	if l.CapDuration > 0 {
+		next, ok := safeAdd(l.EffectiveDurationSecs(), addDuration)
+		if !ok || next > l.CapDuration {
+			return fmt.Errorf("lease_renew: cumulative duration %d + %d exceeds provider cap %d",
+				l.EffectiveDurationSecs(), addDuration, l.CapDuration)
+		}
+	}
+	if l.CapCost > 0 {
+		cur, ok := l.EscrowedCost()
+		if !ok {
+			return fmt.Errorf("lease_renew: escrowed cost overflow")
+		}
+		next, ok := safeAdd(cur, addCost)
+		if !ok || next > l.CapCost {
+			return fmt.Errorf("lease_renew: cumulative cost %d + %d exceeds provider cap %d",
+				cur, addCost, l.CapCost)
+		}
+	}
+	return nil
+}

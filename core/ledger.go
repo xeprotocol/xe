@@ -1698,6 +1698,28 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 		return fmt.Errorf("lease_accept: certificate expired")
 	}
 
+	if l.FeatureActive(FeatureLeaseCaps) {
+		if !b.LeaseCapSet {
+			return fmt.Errorf("lease_accept: lease_cap_set must be true when feature is active")
+		}
+		if b.LeaseCapDuration > 0 {
+			if leaseBlock.Duration > b.LeaseCapDuration || b.LeaseCapDuration > LeaseMaxDuration {
+				return fmt.Errorf("lease_accept: invalid LeaseCapDuration %d (must be between initial duration %d and max %d)",
+					b.LeaseCapDuration, leaseBlock.Duration, LeaseMaxDuration)
+			}
+		}
+		if b.LeaseCapCost > 0 {
+			if leaseBlock.Amount > b.LeaseCapCost {
+				return fmt.Errorf("lease_accept: invalid LeaseCapCost %d (must be >= initial cost %d)",
+					b.LeaseCapCost, leaseBlock.Amount)
+			}
+		}
+	} else {
+		if b.LeaseCapSet || b.LeaseCapDuration != 0 || b.LeaseCapCost != 0 {
+			return fmt.Errorf("lease_accept: lease cap fields not allowed before feature %q is active", FeatureLeaseCaps)
+		}
+	}
+
 	commit, prevBalance, err := l.prepareBlockWrite(b)
 	if err != nil {
 		return err
@@ -1731,6 +1753,9 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 		LockedR:         lockedR,
 		LockedPayoutCap: lockedCap,
 		LockedTWAP:      lockedTWAP,
+		CapSet:          b.LeaseCapSet,
+		CapDuration:     b.LeaseCapDuration,
+		CapCost:         b.LeaseCapCost,
 	}
 
 	if err := l.commitBlockWrite(commit, prevBalance); err != nil {
@@ -2867,6 +2892,20 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		if b.Balance != expectedBal {
 			return fmt.Errorf("staged mint: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
+	case BlockLeaseRenew:
+		if b.Amount > parentBalance {
+			return fmt.Errorf("staged lease_renew: insufficient balance: have %d, need %d", parentBalance, b.Amount)
+		}
+		if b.Balance != parentBalance-b.Amount {
+			return fmt.Errorf("staged lease_renew: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
+		}
+	case BlockLeaseCap:
+		if b.Amount != 0 {
+			return fmt.Errorf("staged lease_cap: amount must be 0")
+		}
+		if b.Balance != parentBalance {
+			return fmt.Errorf("staged lease_cap: balance mismatch: expected %d, got %d", parentBalance, b.Balance)
+		}
 	default:
 		return fmt.Errorf("staged block: unknown type: %s", b.Type)
 	}
@@ -3090,4 +3129,82 @@ func (l *Ledger) FinalizedChildHash(account, prev string) string {
 		}
 	}
 	return ""
+}
+
+
+func (l *Ledger) validateAndAddLeaseCap(b *Block, skipSkew bool) error {
+	if b.Asset != "XUSD" {
+		return fmt.Errorf("lease_cap block must have asset=XUSD")
+	}
+	if b.Source == "" {
+		return fmt.Errorf("lease_cap must reference a source lease hash")
+	}
+	if b.Amount != 0 {
+		return fmt.Errorf("lease_cap amount must be 0")
+	}
+	lease, ok, err := l.getLeaseOverlay(b.Source)
+	if !ok {
+		return fmt.Errorf("store does not support leases")
+	}
+	if err != nil {
+		return fmt.Errorf("GetLease: %w", err)
+	}
+	if lease == nil {
+		return fmt.Errorf("lease not found: %s", shortHash(b.Source))
+	}
+	if lease.Provider != b.Account {
+		return fmt.Errorf("lease_cap: only provider %s can cap lease, caller is %s", shortHash(lease.Provider), shortHash(b.Account))
+	}
+	if lease.State != LeaseAccepted {
+		return fmt.Errorf("lease_cap: lease must be in accepted state, got %s", lease.State)
+	}
+	if lease.CapSet {
+		return fmt.Errorf("lease_cap: cap already set for lease %s", shortHash(b.Source))
+	}
+
+	if b.LeaseCapDuration > 0 {
+		effDur := lease.EffectiveDurationSecs()
+		if effDur > b.LeaseCapDuration || b.LeaseCapDuration > LeaseMaxDuration {
+			return fmt.Errorf("lease_cap: invalid LeaseCapDuration %d (must be between effective duration %d and max %d)",
+				b.LeaseCapDuration, effDur, LeaseMaxDuration)
+		}
+	}
+	if b.LeaseCapCost > 0 {
+		curCost, ok := lease.EscrowedCost()
+		if !ok || curCost > b.LeaseCapCost {
+			return fmt.Errorf("lease_cap: invalid LeaseCapCost %d (must be >= escrowed cost %d)",
+				b.LeaseCapCost, curCost)
+		}
+	}
+
+	chain, err := l.getAccountChainOverlay(b.Account)
+	if err != nil {
+		return fmt.Errorf("GetAccountChain: %w", err)
+	}
+	if chain == nil {
+		return fmt.Errorf("lease_cap from unopened account")
+	}
+	if b.Previous != chain.Frontier() {
+		return fmt.Errorf("previous mismatch: got %s, want %s", shortHash(b.Previous), shortHash(chain.Frontier()))
+	}
+	oldBal := l.getAssetBalanceOverlay(b.Account, "XUSD")
+	if b.Balance != oldBal {
+		return fmt.Errorf("balance mismatch: lease_cap must not change balance: expected %d, got %d", oldBal, b.Balance)
+	}
+
+	commit, prevBalance, err := l.prepareBlockWrite(b)
+	if err != nil {
+		return err
+	}
+
+	updatedLease := *lease
+	updatedLease.CapSet = true
+	updatedLease.CapDuration = b.LeaseCapDuration
+	updatedLease.CapCost = b.LeaseCapCost
+
+	commit.ExpectLeaseHash = b.Source
+	commit.ExpectLeaseState = LeaseAccepted
+	commit.PutLease = &updatedLease
+
+	return l.commitBlockWrite(commit, prevBalance)
 }
