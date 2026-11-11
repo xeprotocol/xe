@@ -29,6 +29,7 @@ import (
 	"github.com/xeprotocol/xe/logging"
 	"github.com/xeprotocol/xe/metrics"
 	xenet "github.com/xeprotocol/xe/net"
+	"github.com/xeprotocol/xe/perf"
 	"github.com/xeprotocol/xe/statechain"
 	"github.com/xeprotocol/xe/store"
 	"github.com/xeprotocol/xe/vm"
@@ -90,6 +91,30 @@ type Node struct {
 	ctx              context.Context
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
+	spawnMu          sync.Mutex
+	stopping         bool
+}
+
+func (n *Node) enter() bool {
+	n.spawnMu.Lock()
+	if n.stopping {
+		n.spawnMu.Unlock()
+		return false
+	}
+	n.wg.Add(1)
+	n.spawnMu.Unlock()
+	return true
+}
+
+func (n *Node) spawn(fn func()) bool {
+	if !n.enter() {
+		return false
+	}
+	go func() {
+		defer n.wg.Done()
+		fn()
+	}()
+	return true
 }
 
 const maxInFlightVotePulls = 32
@@ -272,24 +297,31 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	voteMgr := core.NewVoteManager(vs, kp, ledger)
 	quorumMgr := core.NewQuorumManager(qs, cs, vs, ledger)
 	voteMgr.SetQuorumManager(quorumMgr)
-	quorumMgr.StartStaleConflictSweep(ctx.Done())
 	quorumMgr.RevoteFn = func(account, previous string) { voteMgr.CastVote(account, previous) }
-	quorumMgr.OnFinalized = voteMgr.SweepFrontiers
-	ledger.SetConflictCallback(voteMgr.OnConflict)
-	ledger.SetBlockAddedCallback(voteMgr.OnBlockAdded)
-
-	go func() {
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				voteMgr.SweepFrontiers()
-			}
+	n := &Node{
+		Ledger:    ledger,
+		KeyPair:   kp,
+		VoteMgr:   voteMgr,
+		QuorumMgr: quorumMgr,
+		store:     s,
+		pullSem:   make(chan struct{}, maxInFlightVotePulls),
+		ctx:       ctx,
+		cancel:    cancel,
+	}
+	ledger.SetConflictCallback(func(c core.Conflict) {
+		if !n.enter() {
+			return
 		}
-	}()
+		defer n.wg.Done()
+		voteMgr.OnConflict(c)
+	})
+	ledger.SetBlockAddedCallback(func(b *core.Block) {
+		if !n.enter() {
+			return
+		}
+		defer n.wg.Done()
+		voteMgr.OnBlockAdded(b)
+	})
 
 	voteMgr.VoteEmitter = func(v *core.Vote) {
 		if err := voteGossip.Publish(ctx, v); err != nil {
@@ -463,47 +495,37 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		return out
 	}
 
-	n := &Node{
-		Ledger:                 ledger,
-		Host:                   h,
-		Gossip:                 gossip,
-		VoteGossip:             voteGossip,
-		MarketGossip:           marketGossip,
-		StateChain:             sc,
-		StateChainGossip:       scGossip,
-		DirGossip:              dirGossip,
-		CertGossip:             certGossip,
-		Msg:                    msg,
-		Directory:              dir,
-		DHT:                    dhtInst,
-		ChatStore:              chatStore,
-		KeyPair:                kp,
-		VoteMgr:                voteMgr,
-		QuorumMgr:              quorumMgr,
-		store:                  s,
-		difficulty:             cfg.Difficulty,
-		chatDifficulty:         chatDifficulty,
-		version:                cfg.Version,
-		isProvider:             cfg.Provide,
-		providerVCPUs:          cfg.VCPUs,
-		providerMemoryMB:       cfg.MemoryMB,
-		providerDiskGB:         cfg.DiskGB,
-		providerPriceMultMilli: cfg.PriceMultiplierMilli,
-		acceptPolicy:           cfg.AcceptPolicy,
-		syncTracker:            syncTracker,
-		syncWait:               syncWait,
-		gater:                  gater,
-		activationLog:          newActivationReporter(),
-		pendingOffers:          make(map[string]*xenet.ResourceOffer),
-		acceptInFlight:         make(map[string]struct{}),
-		pullSem:                make(chan struct{}, maxInFlightVotePulls),
-		ctx:                    ctx,
-		cancel:                 cancel,
-	}
+	n.Host = h
+	n.Gossip = gossip
+	n.VoteGossip = voteGossip
+	n.MarketGossip = marketGossip
+	n.StateChain = sc
+	n.StateChainGossip = scGossip
+	n.DirGossip = dirGossip
+	n.CertGossip = certGossip
+	n.Msg = msg
+	n.Directory = dir
+	n.DHT = dhtInst
+	n.ChatStore = chatStore
+	n.difficulty = cfg.Difficulty
+	n.chatDifficulty = chatDifficulty
+	n.version = cfg.Version
+	n.isProvider = cfg.Provide
+	n.providerVCPUs = cfg.VCPUs
+	n.providerMemoryMB = cfg.MemoryMB
+	n.providerDiskGB = cfg.DiskGB
+	n.providerPriceMultMilli = cfg.PriceMultiplierMilli
+	n.acceptPolicy = cfg.AcceptPolicy
+	n.syncTracker = syncTracker
+	n.syncWait = syncWait
+	n.gater = gater
+	n.activationLog = newActivationReporter()
+	n.pendingOffers = make(map[string]*xenet.ResourceOffer)
+	n.acceptInFlight = make(map[string]struct{})
 
 	n.syncActivationPolicy()
 
-	sc.SetOnBlock(func(*statechain.Block) { go n.syncActivationPolicy() })
+	sc.SetOnBlock(func(*statechain.Block) { n.spawn(n.syncActivationPolicy) })
 
 	n.registerAttestationHandler()
 
@@ -548,58 +570,65 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		}
 		xenet.SetupTunnelHandler(h, n, n.tunnelRegistry)
 
-		n.wg.Add(1)
-		go func() {
-			defer n.wg.Done()
+		n.spawn(func() {
 			if !n.waitForAttestationPeers() {
 				return
 			}
 			n.maintainCertificate(n.generatePerformanceCertificate, certRetryInitialDelay, certRetryMaxDelay)
-		}()
+		})
 
-		n.wg.Add(1)
-		go func() {
-			defer n.wg.Done()
-			n.certRebroadcastLoop()
-		}()
+		n.spawn(n.certRebroadcastLoop)
 	}
 
 	n.selfRegister()
 
-	n.wg.Add(9)
-	go func() { defer n.wg.Done(); n.handleIncoming(gossip.Subscribe(ctx)) }()
-	go func() { defer n.wg.Done(); n.handleIncomingVotes(voteGossip.Subscribe(ctx)) }()
-	go func() { defer n.wg.Done(); n.handleMarketplace(marketGossip.Subscribe(ctx)) }()
-	go func() { defer n.wg.Done(); n.settleLoop() }()
-	go func() { defer n.wg.Done(); n.handleStateChain(scGossip.Subscribe(ctx)) }()
-	go func() { defer n.wg.Done(); n.handleDirectoryGossip(dirGossip.Subscribe(ctx)) }()
-	go func() { defer n.wg.Done(); n.directoryPruneLoop() }()
-	go func() { defer n.wg.Done(); n.directoryReRegisterLoop() }()
-	go func() { defer n.wg.Done(); n.handleCertificateGossip(certGossip.Subscribe(ctx)) }()
-
 	n.loadPersistedCertificates()
-	xenet.SetupCertSync(ctx, n.Host, n.Msg, n.collectCertificates, n.ingestCertificate)
+	xenet.SetupCertSync(ctx, n.Host, n.Msg, n.collectCertificates, func(cert *perf.Certificate) bool {
+		if !n.enter() {
+			return false
+		}
+		defer n.wg.Done()
+		return n.ingestCertificate(cert)
+	})
 
 	xenet.SetupBlockSync(n.Msg, n.Ledger.GetBlockOrStaged)
 	n.QuorumMgr.PhantomPullFn = n.pullPhantomBlocks
 
 	xenet.SetupVoteSync(n.Msg, n.VoteMgr.VotesForPosition)
 	n.QuorumMgr.VotePullFn = n.pullConflictVotes
+	n.QuorumMgr.OnFinalized = func() { n.spawn(n.VoteMgr.SweepFrontiers) }
 
 	n.VoteMgr.VotePullFn = n.pullFrontierVotes
 
+	n.spawn(func() { n.handleIncoming(gossip.Subscribe(ctx)) })
+	n.spawn(func() { n.handleIncomingVotes(voteGossip.Subscribe(ctx)) })
+	n.spawn(func() { n.handleMarketplace(marketGossip.Subscribe(ctx)) })
+	n.spawn(n.settleLoop)
+	n.spawn(func() { n.handleStateChain(scGossip.Subscribe(ctx)) })
+	n.spawn(func() { n.handleDirectoryGossip(dirGossip.Subscribe(ctx)) })
+	n.spawn(n.directoryPruneLoop)
+	n.spawn(n.directoryReRegisterLoop)
+	n.spawn(func() { n.handleCertificateGossip(certGossip.Subscribe(ctx)) })
+	n.spawn(func() { n.QuorumMgr.RunStaleConflictSweep(n.ctx.Done()) })
+	n.spawn(func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-n.ctx.Done():
+				return
+			case <-ticker.C:
+				n.VoteMgr.SweepFrontiers()
+			}
+		}
+	})
+
 	if len(cfg.DialAddrs) > 0 {
 		n.bootstrapWithRetry(cfg.DialAddrs)
-		n.wg.Add(1)
-		go func() {
-			defer n.wg.Done()
-			n.joinDiagnosticLoop()
-		}()
+		n.spawn(n.joinDiagnosticLoop)
 	}
 
-	n.wg.Add(1)
-	go func() {
-		defer n.wg.Done()
+	n.spawn(func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -616,12 +645,10 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 				return
 			}
 		}
-	}()
+	})
 
 	if n.isProvider {
-		n.wg.Add(2)
-		go func() {
-			defer n.wg.Done()
+		n.spawn(func() {
 			ticker := time.NewTicker(5 * time.Minute)
 			defer ticker.Stop()
 			for {
@@ -632,11 +659,8 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 					return
 				}
 			}
-		}()
-		go func() {
-			defer n.wg.Done()
-			n.leaseWatchLoop()
-		}()
+		})
+		n.spawn(n.leaseWatchLoop)
 	}
 
 	return n, nil
@@ -669,9 +693,7 @@ func (n *Node) bootstrapWithRetry(addrs []string) {
 		cancel()
 	}
 
-	n.wg.Add(1)
-	go func() {
-		defer n.wg.Done()
+	n.spawn(func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -699,7 +721,7 @@ func (n *Node) bootstrapWithRetry(addrs []string) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 func (n *Node) handleIncoming(blocks <-chan *core.Block) {
@@ -719,11 +741,8 @@ func (n *Node) handleIncoming(blocks <-chan *core.Block) {
 			n.syncTracker.MarkDirty()
 
 			if b.Type == core.BlockLease && b.Destination == n.KeyPair.Address() && n.isProvider {
-				n.wg.Add(1)
-				go func() {
-					defer n.wg.Done()
-					n.autoAcceptLease(b)
-				}()
+				lb := b
+				n.spawn(func() { n.autoAcceptLease(lb) })
 			}
 
 			if b.Type == core.BlockLeaseSettle && b.Source != "" {
@@ -884,35 +903,71 @@ func (n *Node) GetBlock(hash string) *core.Block {
 	return n.Ledger.GetBlock(hash)
 }
 
+func (n *Node) acquirePullSlot() (func(), bool) {
+	if n.ctx != nil {
+		select {
+		case <-n.ctx.Done():
+			return nil, false
+		default:
+		}
+	}
+	if n.pullSem == nil {
+		return func() {}, true
+	}
+	select {
+	case n.pullSem <- struct{}{}:
+		return func() { <-n.pullSem }, true
+	default:
+		return nil, false
+	}
+}
+
 func (n *Node) pullPhantomBlocks(account, previous string, hashes []string) {
 	if len(hashes) == 0 {
 		return
 	}
+	release, ok := n.acquirePullSlot()
+	if !ok {
+		return
+	}
 	want := append([]string(nil), hashes...)
-	n.wg.Add(1)
-	go func() {
-		defer n.wg.Done()
+	if !n.spawn(func() {
+		defer release()
+		if n.Host == nil {
+			return
+		}
 		peers := n.Host.Network().Peers()
 		if len(peers) == 0 {
 			return
 		}
-		xenet.PullBlocks(n.ctx, n.Msg, peers, want, func(b *core.Block) error {
+		pulled := xenet.PullBlocks(n.ctx, n.Msg, peers, want, func(b *core.Block) error {
 			if err := n.Ledger.AddBlock(b); err != nil {
 				return err
 			}
 			n.syncTracker.MarkDirty()
 			return nil
 		})
-	}()
+		if pulled > 0 && n.QuorumMgr != nil {
+			n.QuorumMgr.Retally(account, previous)
+		}
+	}) {
+		release()
+	}
 }
 
 func (n *Node) pullConflictVotes(account, previous string) {
 	if account == "" {
 		return
 	}
-	n.wg.Add(1)
-	go func() {
-		defer n.wg.Done()
+	release, ok := n.acquirePullSlot()
+	if !ok {
+		return
+	}
+	if !n.spawn(func() {
+		defer release()
+		if n.Host == nil {
+			return
+		}
 		peers := n.Host.Network().Peers()
 		if len(peers) == 0 {
 			return
@@ -920,31 +975,36 @@ func (n *Node) pullConflictVotes(account, previous string) {
 		if xenet.PullVotes(n.ctx, n.Msg, peers, account, previous, n.VoteMgr.ReceiveVote) > 0 {
 			n.syncTracker.MarkDirty()
 		}
-	}()
+	}) {
+		release()
+	}
 }
 
 func (n *Node) pullFrontierVotes(account, previous string) bool {
-	select {
-	case <-n.ctx.Done():
-		return false
-	default:
-	}
-	select {
-	case n.pullSem <- struct{}{}:
-	default:
+	if account == "" {
 		return false
 	}
-	n.wg.Add(1)
-	go func() {
-		defer n.wg.Done()
-		defer func() { <-n.pullSem }()
+	release, ok := n.acquirePullSlot()
+	if !ok {
+		return false
+	}
+	if !n.spawn(func() {
+		defer release()
+		if n.Host == nil {
+			return
+		}
 		peers := n.Host.Network().Peers()
 		if len(peers) == 0 {
 			return
 		}
 		xenet.PullVotes(n.ctx, n.Msg, peers, account, previous, n.VoteMgr.ReceiveVote)
-		n.QuorumMgr.Retally(account, previous)
-	}()
+		if n.QuorumMgr != nil {
+			n.QuorumMgr.Retally(account, previous)
+		}
+	}) {
+		release()
+		return false
+	}
 	return true
 }
 
@@ -1299,13 +1359,27 @@ func (n *Node) Multiaddr() string {
 }
 
 func (n *Node) Stop() {
-	n.cancel()
+	n.spawnMu.Lock()
+	n.stopping = true
+	n.spawnMu.Unlock()
+
+	if n.cancel != nil {
+		n.cancel()
+	}
 	n.wg.Wait()
 
-	n.VoteMgr.Close()
-	_ = n.Host.Close()
-	n.syncWait()
-	_ = n.store.Close()
+	if n.VoteMgr != nil {
+		n.VoteMgr.Close()
+	}
+	if n.Host != nil {
+		_ = n.Host.Close()
+	}
+	if n.syncWait != nil {
+		n.syncWait()
+	}
+	if n.store != nil {
+		_ = n.store.Close()
+	}
 }
 
 func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
@@ -1668,6 +1742,12 @@ func (n *Node) leaseWatchLoop() {
 }
 
 func (n *Node) leaseWatchTick(now time.Time, wg *sync.WaitGroup) {
+	if wg == &n.wg {
+		if !n.enter() {
+			return
+		}
+		defer n.wg.Done()
+	}
 	myAddr := n.KeyPair.Address()
 	pending := n.Ledger.GetPendingForAccount(myAddr)
 	live := make(map[string]bool, len(pending))
@@ -1689,11 +1769,16 @@ func (n *Node) leaseWatchTick(now time.Time, wg *sync.WaitGroup) {
 			continue
 		}
 		log.Printf("Lease watch: found unaccepted lease %s, auto-accepting", shortHash(leaseBlock.Hash))
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			n.autoAcceptLease(leaseBlock)
-		}()
+		lb := leaseBlock
+		if wg == &n.wg {
+			n.spawn(func() { n.autoAcceptLease(lb) })
+		} else {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				n.autoAcceptLease(lb)
+			}()
+		}
 	}
 	n.acceptSched.prune(live)
 }

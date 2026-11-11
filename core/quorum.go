@@ -411,29 +411,37 @@ func (qm *QuorumManager) cleanupResolvedConflict(result *quorumResult) {
 }
 
 func (qm *QuorumManager) StartStaleConflictSweep(stop <-chan struct{}) {
-	go func() {
-
-		qm.pruneOrphanedConflicts()
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				qm.sweepStaleConflicts()
-			}
-		}
-	}()
+	go qm.RunStaleConflictSweep(stop)
 }
 
-func (qm *QuorumManager) pruneOrphanedConflicts() {
+func (qm *QuorumManager) RunStaleConflictSweep(stop <-chan struct{}) {
+	qm.pruneOrphanedConflicts(stop)
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			qm.sweepStaleConflicts(stop)
+		}
+	}
+}
+
+func (qm *QuorumManager) pruneOrphanedConflicts(stop <-chan struct{}) {
 	conflicts, err := qm.conflictMgr.GetAllConflicts()
 	if err != nil {
 		return
 	}
 	dropped := 0
 	for _, c := range conflicts {
+		if stop != nil {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+		}
 		if qm.dropConflictIfOrphaned(c) {
 			dropped++
 		}
@@ -520,12 +528,19 @@ func (qm *QuorumManager) conflictOrphanedByRollback(c *Conflict) bool {
 	return false
 }
 
-func (qm *QuorumManager) sweepStaleConflicts() {
+func (qm *QuorumManager) sweepStaleConflicts(stop <-chan struct{}) {
 	conflicts, err := qm.conflictMgr.GetAllConflicts()
 	if err != nil {
 		return
 	}
 	for _, c := range conflicts {
+		if stop != nil {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+		}
 
 		if qm.dropConflictIfResolved(c) {
 			continue
