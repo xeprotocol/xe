@@ -297,7 +297,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		}
 	}
 
-	syncTracker, syncWait := xenet.SetupSync(ctx, h, ledger)
+	syncTracker, syncWait := xenet.SetupSync(ctx, h, ledger, gater)
 
 	dhtInst, err := xenet.SetupDHT(ctx, h)
 	if err != nil {

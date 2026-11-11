@@ -16,6 +16,7 @@ type VoteMsg struct {
 type SyncRequest struct {
 	Frontiers map[string]string `json:"frontiers"`
 	PageSize  int               `json:"page_size"`
+	PoWNonce  uint64            `json:"pow_nonce,omitempty"`
 }
 
 type SyncResponse struct {
