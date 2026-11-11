@@ -1,6 +1,7 @@
 package api
 
 import (
+	"container/list"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -276,15 +277,23 @@ func corsMiddleware(next http.Handler, allowedOrigin string) http.Handler {
 }
 
 type ipRateLimiter struct {
-	mu      sync.Mutex
-	entries map[string]*rateLimiterEntry
-	rate    rate.Limit
-	burst   int
+	mu         sync.Mutex
+	entries    map[string]*rateLimiterEntry
+	lruList    *list.List
+	rate       rate.Limit
+	burst      int
+	maxEntries int
+	fallback   *rate.Limiter
 }
 
 type rateLimiterEntry struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
+	element  *list.Element
+}
+
+type lruItem struct {
+	key string
 }
 
 const (
@@ -321,42 +330,104 @@ func (rls *rateLimiters) pick(r *http.Request) *ipRateLimiter {
 	return rls.write
 }
 
+func rateLimitKey(ipStr string) string {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ipStr
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4.String()
+	}
+	mask := net.CIDRMask(64, 128)
+	return ip.Mask(mask).String()
+}
+
 func newIPRateLimiter(r rate.Limit, burst int) *ipRateLimiter {
+	return newIPRateLimiterWithCapacity(r, burst, maxRateLimiterIPs)
+}
+
+func newIPRateLimiterWithCapacity(r rate.Limit, burst, max int) *ipRateLimiter {
+	if max <= 0 {
+		max = maxRateLimiterIPs
+	}
 	rl := &ipRateLimiter{
-		entries: make(map[string]*rateLimiterEntry),
-		rate:    r,
-		burst:   burst,
+		entries:    make(map[string]*rateLimiterEntry),
+		lruList:    list.New(),
+		rate:       r,
+		burst:      burst,
+		maxEntries: max,
+		fallback:   rate.NewLimiter(r, burst),
 	}
 	go rl.sweepLoop()
 	return rl
 }
 
-func (rl *ipRateLimiter) getLimiter(ip string) *rate.Limiter {
+func (rl *ipRateLimiter) getLimiter(rawIP string) *rate.Limiter {
+	key := rateLimitKey(rawIP)
+
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	e, ok := rl.entries[ip]
-	if !ok {
 
-		if len(rl.entries) >= maxRateLimiterIPs {
-			return rate.NewLimiter(0, 0)
-		}
-		e = &rateLimiterEntry{limiter: rate.NewLimiter(rl.rate, rl.burst)}
-		rl.entries[ip] = e
+	now := time.Now()
+	if e, ok := rl.entries[key]; ok {
+		e.lastSeen = now
+		rl.lruList.MoveToFront(e.element)
+		return e.limiter
 	}
-	e.lastSeen = time.Now()
-	return e.limiter
+
+	if len(rl.entries) >= rl.maxEntries {
+		rl.sweepExpiredLocked(now)
+	}
+
+	for len(rl.entries) >= rl.maxEntries && rl.lruList.Len() > 0 {
+		oldest := rl.lruList.Back()
+		if oldest == nil {
+			break
+		}
+		item := oldest.Value.(*lruItem)
+		delete(rl.entries, item.key)
+		rl.lruList.Remove(oldest)
+	}
+
+	if len(rl.entries) >= rl.maxEntries {
+		return rl.fallback
+	}
+
+	item := &lruItem{key: key}
+	elem := rl.lruList.PushFront(item)
+	entry := &rateLimiterEntry{
+		limiter:  rate.NewLimiter(rl.rate, rl.burst),
+		lastSeen: now,
+		element:  elem,
+	}
+	rl.entries[key] = entry
+	return entry.limiter
+}
+
+func (rl *ipRateLimiter) sweepExpiredLocked(now time.Time) {
+	cutoff := now.Add(-rateLimiterTTL)
+	for elem := rl.lruList.Back(); elem != nil; {
+		prev := elem.Prev()
+		item := elem.Value.(*lruItem)
+		if e, ok := rl.entries[item.key]; ok {
+			if e.lastSeen.Before(cutoff) {
+				delete(rl.entries, item.key)
+				rl.lruList.Remove(elem)
+			} else {
+				break
+			}
+		} else {
+			rl.lruList.Remove(elem)
+		}
+		elem = prev
+	}
 }
 
 func (rl *ipRateLimiter) sweepLoop() {
 	ticker := time.NewTicker(rateLimiterTTL)
 	for range ticker.C {
 		rl.mu.Lock()
-		cutoff := time.Now().Add(-rateLimiterTTL)
-		for ip, e := range rl.entries {
-			if e.lastSeen.Before(cutoff) {
-				delete(rl.entries, ip)
-			}
-		}
+		rl.sweepExpiredLocked(time.Now())
 		rl.mu.Unlock()
 	}
 }
