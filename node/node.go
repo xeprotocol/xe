@@ -218,6 +218,10 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	if chatDifficulty == 0 && cfg.Difficulty != 0 {
 		chatDifficulty = chat.DefaultPoWDifficulty
 	}
+	if chatDifficulty > chat.MaxPoWDifficulty {
+		cancel()
+		return nil, fmt.Errorf("configured chat difficulty 0x%016x exceeds maximum allowable 0x%016x", chatDifficulty, chat.MaxPoWDifficulty)
+	}
 
 	kp, err := loadOrCreateKeyPair(cfg.DataDir)
 	if err != nil {
