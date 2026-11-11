@@ -2924,10 +2924,12 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 			continue
 		}
 		switch b.Type {
-		case BlockSend, BlockReceive, BlockBurn, BlockMint:
+		case BlockSend, BlockReceive, BlockBurn, BlockMint,
+			BlockLease, BlockLeaseAccept, BlockLeaseSettle, BlockLeaseForceSettle, BlockLeaseCancel, BlockLeaseRenew,
+			BlockMultisigOpen:
 
 		default:
-			return fmt.Errorf("SwapBlock: cannot unwind descendant %q (%s) of the replaced block — reversing its side-effects is not yet implemented", b.Type, shortHash(b.Hash))
+			return fmt.Errorf("SwapBlock: %w: cannot unwind descendant %q (%s) of the replaced block — reversing its side-effects is not yet implemented", ErrWinnerFullValidation, b.Type, shortHash(b.Hash))
 		}
 		planned[b.Hash] = true
 		if b.Type == BlockSend {
@@ -2990,7 +2992,7 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 		}
 		undo, apply, berr := l.buildBlockUndo(st.account, st.b, snap)
 		if berr != nil {
-			return fmt.Errorf("SwapBlock: build undo for %s: %w", shortHash(st.b.Hash), berr)
+			return fmt.Errorf("SwapBlock: %w: build undo for %s: %w", ErrWinnerFullValidation, shortHash(st.b.Hash), berr)
 		}
 		cascade.addUndo(undo, apply)
 
@@ -2998,7 +3000,7 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 	}
 
 	if err := l.activateCascade(cascade); err != nil {
-		return fmt.Errorf("SwapBlock: %w", err)
+		return fmt.Errorf("SwapBlock: %w: activate cascade: %w", ErrWinnerFullValidation, err)
 	}
 
 	if err := l.dispatchValidateAndAdd(newBlock, true); err != nil {

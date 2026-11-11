@@ -66,7 +66,9 @@ func (l *Ledger) planRollbackFrom(account, consumedSend string, planned map[stri
 			continue
 		}
 		switch b.Type {
-		case BlockSend, BlockReceive, BlockBurn, BlockMint:
+		case BlockSend, BlockReceive, BlockBurn, BlockMint,
+			BlockLease, BlockLeaseAccept, BlockLeaseSettle, BlockLeaseForceSettle, BlockLeaseCancel, BlockLeaseRenew,
+			BlockMultisigOpen:
 
 		default:
 			return fmt.Errorf("cascade: unsupported block type %q (%s) on %s — reversing its lease/keyset/reputation side-effects is not yet implemented", b.Type, shortHash(b.Hash), shortAddr(account))
