@@ -3,7 +3,10 @@ package net
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"runtime/debug"
 	"strings"
 	"sync"
 	sync2 "sync/atomic"
@@ -24,6 +27,11 @@ const (
 
 	maxTotalBlocks = 10000
 
+	// maxSyncPages is above ceil(maxTotalBlocks/defaultPageSize) (== 157).
+	// A honest server using the client page size cannot trip it.
+	maxSyncPages             = 256
+	maxConsecutiveEmptyPages = 3
+
 	syncCooldown = 5 * time.Second
 
 	periodicSyncInterval = 10 * time.Second
@@ -40,6 +48,10 @@ const (
 
 	syncReprobeInterval = 10 * time.Minute
 )
+
+// errSyncCircuitOpen aborts a pull that is making no progress or will not end.
+// Callers must treat it as failure. A nil return records frontiers and suppresses resync.
+var errSyncCircuitOpen = errors.New("sync circuit open")
 
 type syncRateLimiter struct {
 	mu   sync.Mutex
@@ -309,6 +321,11 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 
 	h.SetStreamHandler(syncProtocol, func(s network.Stream) {
 		defer func() { _ = s.Close() }()
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("sync: stream handler panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		_ = s.SetDeadline(time.Now().Add(60 * time.Second))
 		if !inboundRL.allow(s.Conn().RemotePeer()) {
 			return
@@ -402,6 +419,11 @@ func (g *spawnGate) spawn(f func()) bool {
 	g.mu.Unlock()
 	go func() {
 		defer g.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("sync: worker panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		f()
 	}()
 	return true
@@ -426,6 +448,11 @@ func runPeriodicResync(ctx context.Context, tick <-chan time.Time, round func())
 }
 
 func handleSyncStream(s network.Stream, ledger *core.Ledger, tracker *syncTracker) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Errorf("sync: handleSyncStream panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	var req SyncRequest
 	dec := json.NewDecoder(io.LimitReader(s, maxSyncRequestBytes))
 	if err := dec.Decode(&req); err != nil {
@@ -526,78 +553,49 @@ func streamPages(enc pageEncoder, ch <-chan SyncResponse) (int, error) {
 	return total, encErr
 }
 
-func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *blockQuarantine, tracker *syncTracker) error {
+// syncLedger is the ledger surface the sync client uses.
+// *core.Ledger implements it.
+type syncLedger interface {
+	Frontiers() map[string]string
+	AddSyncedBlock(b *core.Block) error
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	s, err := h.NewStream(ctx, pid, syncProtocol)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = s.Close() }()
-	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
-
-	frontiers := ledger.Frontiers()
-	if tracker != nil {
-		frontiers = tracker.filterFrontiers(pid, frontiers)
-	}
-	req := SyncRequest{
-		Frontiers: frontiers,
-		PageSize:  defaultPageSize,
-	}
-	if err := json.NewEncoder(s).Encode(&req); err != nil {
-		return err
-	}
-
-	if err := s.CloseWrite(); err != nil {
-		return err
-	}
-
-	lr := &io.LimitedReader{R: s, N: maxSyncResponseBytes}
-	dec := json.NewDecoder(lr)
-	var allBlocks []*core.Block
-	var rejectedAccounts []string
-	gotTerminal := false
-
-	for {
-		lr.N = maxSyncResponseBytes
-		var resp SyncResponse
-		if err := dec.Decode(&resp); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
+// dropNilBlocks removes nil elements produced by JSON null.
+// One warning per page, so a peer cannot turn a null array into a log flood.
+func dropNilBlocks(blocks []*core.Block, peerLabel string) []*core.Block {
+	dropped := 0
+	kept := blocks[:0]
+	for _, b := range blocks {
+		if b == nil {
+			dropped++
+			continue
 		}
-		allBlocks = append(allBlocks, resp.Blocks...)
-		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)", pid.ShortString(), len(resp.Blocks), len(allBlocks), resp.HasMore)
-		if !resp.HasMore {
-			rejectedAccounts = resp.Rejected
-			gotTerminal = true
-		}
-		if len(allBlocks) >= maxTotalBlocks {
-			logging.Warnf("sync: hit maxTotalBlocks cap (%d), stopping", maxTotalBlocks)
-			break
-		}
-		if !resp.HasMore {
-			break
-		}
+		kept = append(kept, b)
 	}
-	if tracker != nil && gotTerminal {
-		tracker.recordRejections(pid, rejectedAccounts)
+	if dropped > 0 {
+		logging.Warnf("sync: peer %s provided %d nil block element(s) in SyncResponse; discarding", peerLabel, dropped)
 	}
+	return kept
+}
 
-	filtered := allBlocks[:0]
+// applySyncedBlocks writes blocks that are not already quarantined.
+//
+// Invariant: every element of blocks is non-nil, and quarantine is non-nil.
+// requestSync establishes that by running dropNilBlocks before this call.
+// A nil element is a programming error and panics on purpose.
+func applySyncedBlocks(blocks []*core.Block, ledger syncLedger, quarantine *blockQuarantine, peerLabel string) int {
+	kept := blocks[:0]
 	skipped := 0
-	for _, b := range allBlocks {
+	for _, b := range blocks {
 		if quarantine.contains(b.Hash) {
 			skipped++
-		} else {
-			filtered = append(filtered, b)
+			continue
 		}
+		kept = append(kept, b)
 	}
 
 	added := 0
-	pending := filtered
+	pending := kept
 
 	const maxRetries = 10
 	rejected := 0
@@ -626,7 +624,6 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 		pending = retryable
 	}
 	if len(pending) > 0 {
-
 		reasons := map[string]int{}
 		for _, b := range pending {
 			err := ledger.AddSyncedBlock(b)
@@ -642,10 +639,118 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 		}
 		logging.Warnf("sync: %d block(s) could not be added after retries; reasons: %v", len(pending), reasons)
 	}
-	if added > 0 {
-		logging.Debugf("sync: synced %d block(s) from %s", added, pid.ShortString())
+	if added > 0 || skipped > 0 {
+		logging.Debugf("sync: synced %d block(s) from %s (skipped %d quarantined)", added, peerLabel, skipped)
 	}
-	return nil
+	return added
+}
+
+// syncPull is one client pull after nil elements have been removed.
+// pages counts every decoded JSON value, including empty ones.
+type syncPull struct {
+	blocks   []*core.Block
+	rejected []string
+	terminal bool
+	pages    int
+}
+
+// ingestSyncPages reads a sync response stream.
+//
+// refill runs before every decode. The net client uses it to restore the
+// per-message byte cap (maxSyncResponseBytes). That cap is per JSON value;
+// maxSyncPages and maxTotalBlocks bound the session.
+//
+// An empty page is a decoded page whose block list is empty after dropNilBlocks.
+// The third consecutive empty page, and any page after maxSyncPages, returns
+// errSyncCircuitOpen. Blocks already accepted stay in the result so the caller
+// can commit them before surfacing the error.
+func ingestSyncPages(dec *json.Decoder, refill func(), peerLabel string) (syncPull, error) {
+	var out syncPull
+	emptyStreak := 0
+	for {
+		if out.pages >= maxSyncPages {
+			reason := fmt.Sprintf("page cap %d", maxSyncPages)
+			logging.Warnf("sync: peer %s tripped circuit breaker (%s); closing stream", peerLabel, reason)
+			return out, fmt.Errorf("%w: peer %s: %s", errSyncCircuitOpen, peerLabel, reason)
+		}
+		if refill != nil {
+			refill()
+		}
+		var resp SyncResponse
+		if err := dec.Decode(&resp); err != nil {
+			if err == io.EOF {
+				return out, nil
+			}
+			return out, err
+		}
+		out.pages++
+		kept := dropNilBlocks(resp.Blocks, peerLabel)
+		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)",
+			peerLabel, len(kept), len(out.blocks)+len(kept), resp.HasMore)
+		if len(kept) == 0 {
+			emptyStreak++
+			if emptyStreak >= maxConsecutiveEmptyPages {
+				reason := fmt.Sprintf("%d consecutive empty pages", emptyStreak)
+				logging.Warnf("sync: peer %s tripped circuit breaker (%s); closing stream", peerLabel, reason)
+				return out, fmt.Errorf("%w: peer %s: %s", errSyncCircuitOpen, peerLabel, reason)
+			}
+		} else {
+			emptyStreak = 0
+			out.blocks = append(out.blocks, kept...)
+		}
+		if !resp.HasMore {
+			out.rejected = resp.Rejected
+			out.terminal = true
+			return out, nil
+		}
+		if len(out.blocks) >= maxTotalBlocks {
+			logging.Warnf("sync: hit maxTotalBlocks cap (%d), stopping", maxTotalBlocks)
+			return out, nil
+		}
+	}
+}
+
+func requestSync(h host.Host, pid peer.ID, ledger syncLedger, quarantine *blockQuarantine, tracker *syncTracker) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Errorf("sync: requestSync panic: %v\n%s", r, debug.Stack())
+			err = fmt.Errorf("sync: requestSync panic: %v", r)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	s, err := h.NewStream(ctx, pid, syncProtocol)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+	_ = s.SetDeadline(time.Now().Add(60 * time.Second))
+
+	frontiers := ledger.Frontiers()
+	if tracker != nil {
+		frontiers = tracker.filterFrontiers(pid, frontiers)
+	}
+	req := SyncRequest{
+		Frontiers: frontiers,
+		PageSize:  defaultPageSize,
+	}
+	if err := json.NewEncoder(s).Encode(&req); err != nil {
+		return err
+	}
+
+	if err := s.CloseWrite(); err != nil {
+		return err
+	}
+
+	lr := &io.LimitedReader{R: s, N: 0}
+	dec := json.NewDecoder(lr)
+	pulled, err := ingestSyncPages(dec, func() { lr.N = maxSyncResponseBytes }, pid.ShortString())
+	if tracker != nil && pulled.terminal {
+		tracker.recordRejections(pid, pulled.rejected)
+	}
+	applySyncedBlocks(pulled.blocks, ledger, quarantine, pid.ShortString())
+	return err
 }
 
 func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.Ledger, pageSize int) <-chan SyncResponse {
@@ -659,6 +764,11 @@ func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.
 	ch := make(chan SyncResponse)
 	go func() {
 		defer close(ch)
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("sync: findMissingBlocksPaginated panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 
 		ourFrontiers := ledger.Frontiers()
 		var pending []*core.Block

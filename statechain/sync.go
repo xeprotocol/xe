@@ -3,6 +3,8 @@ package statechain
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -17,13 +19,34 @@ import (
 const (
 	SyncProtocol = "/xe/statechain-sync/1.0.0"
 
-	syncPageSize        = 64
-	syncMaxBlocks       = 10000
-	syncCooldown        = 30 * time.Second
-	syncStreamDeadline  = 60 * time.Second
-	syncMaxRequestSize  = 1024
-	syncMaxResponseSize = 10 << 20
+	syncPageSize             = 64
+	syncMaxBlocks            = 10000
+	maxSyncPages             = 256
+	maxConsecutiveEmptyPages = 3
+	syncCooldown             = 30 * time.Second
+	syncStreamDeadline       = 60 * time.Second
+	syncMaxRequestSize       = 1024
+	syncMaxResponseSize      = 10 << 20
 )
+
+var errSyncCircuitOpen = errors.New("statechain sync circuit open")
+
+// dropNilBlocks removes JSON null elements. One warning per page.
+func dropNilBlocks(blocks []*Block, peerLabel string) []*Block {
+	dropped := 0
+	kept := blocks[:0]
+	for _, b := range blocks {
+		if b == nil {
+			dropped++
+			continue
+		}
+		kept = append(kept, b)
+	}
+	if dropped > 0 {
+		logging.Warnf("statechain sync: peer %s provided %d nil block(s); discarding", peerLabel, dropped)
+	}
+	return kept
+}
 
 type syncRateLimiter struct {
 	mu   sync.Mutex
@@ -65,6 +88,11 @@ func SetupSync(h host.Host, chain *Chain) {
 
 	h.SetStreamHandler(SyncProtocol, func(s network.Stream) {
 		defer func() { _ = s.Close() }()
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("statechain sync: stream handler panic: %v", r)
+			}
+		}()
 		_ = s.SetDeadline(time.Now().Add(syncStreamDeadline))
 		if !inboundRL.allow(s.Conn().RemotePeer()) {
 			return
@@ -75,6 +103,11 @@ func SetupSync(h host.Host, chain *Chain) {
 	h.Network().Notify(&network.NotifyBundle{
 		ConnectedF: func(n network.Network, conn network.Conn) {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logging.Errorf("statechain sync: connected handler panic: %v", r)
+					}
+				}()
 				pid := conn.RemotePeer()
 				if !outboundRL.allow(pid) {
 					return
@@ -129,6 +162,11 @@ func handleSyncStream(s network.Stream, chain *Chain) {
 			logging.Warnf("statechain sync: read blocks: %v", err)
 			return
 		}
+		if len(blocks) == 0 {
+			logging.Warnf("statechain sync: empty read at index %d; stopping", idx)
+			_ = enc.Encode(syncResponse{HasMore: false})
+			return
+		}
 
 		totalSent += len(blocks)
 		hasMore := idx+uint64(len(blocks)) <= tip.Index && totalSent < syncMaxBlocks
@@ -141,7 +179,14 @@ func handleSyncStream(s network.Stream, chain *Chain) {
 	}
 }
 
-func requestSync(h host.Host, pid peer.ID, chain *Chain) error {
+func requestSync(h host.Host, pid peer.ID, chain *Chain) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Errorf("statechain sync: requestSync panic with %s: %v", pid.ShortString(), r)
+			err = fmt.Errorf("statechain sync: requestSync panic: %v", r)
+		}
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), syncStreamDeadline)
 	defer cancel()
 
@@ -167,7 +212,14 @@ func requestSync(h host.Host, pid peer.ID, chain *Chain) error {
 
 	dec := json.NewDecoder(io.LimitReader(s, syncMaxResponseSize))
 	added := 0
+	pages := 0
+	emptyStreak := 0
+	peerLabel := pid.ShortString()
 	for {
+		if pages >= maxSyncPages {
+			logging.Warnf("statechain sync: peer %s tripped circuit breaker (page cap %d); closing stream", peerLabel, maxSyncPages)
+			return fmt.Errorf("%w: peer %s: page cap %d", errSyncCircuitOpen, peerLabel, maxSyncPages)
+		}
 		var resp syncResponse
 		if err := dec.Decode(&resp); err != nil {
 			if err == io.EOF {
@@ -175,11 +227,22 @@ func requestSync(h host.Host, pid peer.ID, chain *Chain) error {
 			}
 			return err
 		}
-		for _, b := range resp.Blocks {
-			if err := chain.AddBlock(b); err != nil {
-				logging.Warnf("statechain sync: block %d: %v", b.Index, err)
-			} else {
-				added++
+		pages++
+		kept := dropNilBlocks(resp.Blocks, peerLabel)
+		if len(kept) == 0 {
+			emptyStreak++
+			if emptyStreak >= maxConsecutiveEmptyPages {
+				logging.Warnf("statechain sync: peer %s tripped circuit breaker (%d consecutive empty pages); closing stream", peerLabel, emptyStreak)
+				return fmt.Errorf("%w: peer %s: %d consecutive empty pages", errSyncCircuitOpen, peerLabel, emptyStreak)
+			}
+		} else {
+			emptyStreak = 0
+			for _, b := range kept {
+				if err := chain.AddBlock(b); err != nil {
+					logging.Warnf("statechain sync: block %d: %v", b.Index, err)
+				} else {
+					added++
+				}
 			}
 		}
 		if !resp.HasMore {
@@ -191,7 +254,7 @@ func requestSync(h host.Host, pid peer.ID, chain *Chain) error {
 	}
 
 	if added > 0 {
-		logging.Debugf("statechain sync: synced %d block(s) from %s", added, pid.ShortString())
+		logging.Debugf("statechain sync: synced %d block(s) from %s", added, peerLabel)
 	}
 	return nil
 }
@@ -213,6 +276,11 @@ func ResyncOnGap(h host.Host, chain *Chain) {
 		return
 	}
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("statechain sync: gap-resync panic: %v", r)
+			}
+		}()
 		for i, pid := range h.Network().Peers() {
 			if i >= 3 {
 				return
