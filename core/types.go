@@ -50,6 +50,27 @@ func IsValidAsset(asset string) bool {
 	return validAssets[asset]
 }
 
+// IsLeaseBlock returns true for all compute lease block types.
+func IsLeaseBlock(t BlockType) bool {
+	switch t {
+	case BlockLease, BlockLeaseAccept, BlockLeaseSettle, BlockLeaseCancel, BlockLeaseForceSettle, BlockLeaseRenew:
+		return true
+	}
+	return false
+}
+
+// DefaultAssetForBlock returns the explicit asset if non-empty, or the canonical
+// default asset for the given block type (XUSD for lease blocks and mints, XE otherwise).
+func DefaultAssetForBlock(t BlockType, asset string) string {
+	if asset != "" {
+		return asset
+	}
+	if IsLeaseBlock(t) || t == BlockMint {
+		return "XUSD"
+	}
+	return "XE"
+}
+
 type Keyset struct {
 	Keys      []string `json:"keys"`
 	Threshold int      `json:"threshold"`

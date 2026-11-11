@@ -249,10 +249,7 @@ func (qm *QuorumManager) promotable(account, previous, hash string) bool {
 	if err != nil || staged == nil {
 		return false
 	}
-	asset := staged.Asset
-	if asset == "" {
-		asset = "XE"
-	}
+	asset := DefaultAssetForBlock(staged.Type, staged.Asset)
 	var parentBalance uint64
 	if previous != "0" {
 		parentBalance = qm.ledger.GetAssetBalanceAtBlock(account, asset, previous)
@@ -293,10 +290,7 @@ func (qm *QuorumManager) confirmConflict(result *quorumResult) error {
 				}
 			}
 
-			asset := winnerBlock.Asset
-			if asset == "" {
-				asset = "XE"
-			}
+			asset := DefaultAssetForBlock(winnerBlock.Type, winnerBlock.Asset)
 			var parentBalance uint64
 			if result.ConflictPrev != "0" {
 				parentBalance = qm.ledger.GetAssetBalanceAtBlock(result.ConflictAccount, asset, result.ConflictPrev)
