@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
@@ -15,6 +16,17 @@ import (
 const MaxMessageBytes = 8192
 
 const DefaultPoWDifficulty uint64 = 0xffffc00000000000
+
+// MaxPoWDifficulty defines the upper bound of acceptable chat proof-of-work difficulty.
+// It mitigates unbounded CPU exhaustion denial-of-service from unverified or malicious node advertisements.
+const MaxPoWDifficulty uint64 = 0xffffff0000000000
+
+// DefaultPoWTimeout defines the maximum duration allowed for chat proof-of-work computation.
+const DefaultPoWTimeout = 30 * time.Second
+
+var (
+	ErrDifficultyTooHigh = fmt.Errorf("chat pow difficulty exceeds maximum allowable threshold")
+)
 
 const MaxEnvelopeSkew = 5 * time.Minute
 
@@ -58,6 +70,15 @@ func ComputeEnvelopeID(from, pubKey, to, message string, timestamp int64) string
 }
 
 func NewEnvelope(from, to, message string, kp *core.KeyPair, difficulty uint64) (*Envelope, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultPoWTimeout)
+	defer cancel()
+	return NewEnvelopeWithContext(ctx, from, to, message, kp, difficulty)
+}
+
+func NewEnvelopeWithContext(ctx context.Context, from, to, message string, kp *core.KeyPair, difficulty uint64) (*Envelope, error) {
+	if difficulty > MaxPoWDifficulty {
+		return nil, ErrDifficultyTooHigh
+	}
 	ts := core.Now().UnixNano()
 
 	pubKey := kp.PubKeyHex()
@@ -76,12 +97,19 @@ func NewEnvelope(from, to, message string, kp *core.KeyPair, difficulty uint64) 
 		Signature: hex.EncodeToString(sig),
 	}
 	if difficulty > 0 {
-		env.PoWNonce = core.ComputePoWConcurrent(idBytes, difficulty, runtime.NumCPU())
+		nonce, err := core.ComputePoWWithContext(ctx, idBytes, difficulty, runtime.NumCPU())
+		if err != nil {
+			return nil, fmt.Errorf("chat pow: %w", err)
+		}
+		env.PoWNonce = nonce
 	}
 	return env, nil
 }
 
 func (e *Envelope) VerifyFull(difficulty uint64) error {
+	if difficulty > MaxPoWDifficulty {
+		return ErrDifficultyTooHigh
+	}
 	if e.From == "" || e.PubKey == "" || e.To == "" || e.Message == "" || e.Timestamp == 0 || e.Signature == "" {
 		return fmt.Errorf("missing required fields")
 	}
