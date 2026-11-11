@@ -830,15 +830,9 @@ func (l *Ledger) addBlock(b *Block, skipTimestamp bool) error {
 			}
 
 			var parentBalance uint64
-			if chain != nil && b.Previous != "0" {
-				for _, cb := range chain.Blocks {
-					if cb.Asset == b.Asset {
-						parentBalance = cb.Balance
-					}
-					if cb.Hash == b.Previous {
-						break
-					}
-				}
+			if b.Previous != "0" {
+				asset := DefaultAssetForBlock(b.Type, b.Asset)
+				parentBalance = l.GetAssetBalanceAtBlock(b.Account, asset, b.Previous)
 			}
 			if err := l.ValidateStagedBlock(b, parentBalance); err != nil {
 				return fmt.Errorf("conflict block: %w", err)
@@ -2734,6 +2728,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 	if err := l.verifyBlockCredential(b); err != nil {
 		return err
 	}
+	if b.Asset != "" && !IsValidAsset(b.Asset) {
+		return fmt.Errorf("staged block: unsupported asset: %q", b.Asset)
+	}
 	switch b.Type {
 	case BlockSend:
 		if b.Amount == 0 {
@@ -2777,6 +2774,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged receive: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
 	case BlockLease:
+		if b.Asset != "" && b.Asset != "XUSD" {
+			return fmt.Errorf("staged lease: asset must be XUSD, got %q", b.Asset)
+		}
 		if b.Amount > parentBalance {
 			return fmt.Errorf("staged lease: insufficient balance: have %d, need %d", parentBalance, b.Amount)
 		}
@@ -2784,6 +2784,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
 		}
 	case BlockLeaseAccept:
+		if b.Asset != "" && b.Asset != "XUSD" {
+			return fmt.Errorf("staged lease_accept: asset must be XUSD, got %q", b.Asset)
+		}
 		if b.Amount > parentBalance {
 			return fmt.Errorf("staged lease_accept: insufficient balance: have %d, need %d", parentBalance, b.Amount)
 		}
@@ -2791,7 +2794,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_accept: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
 		}
 	case BlockLeaseSettle:
-
+		if b.Asset != "" && b.Asset != "XUSD" {
+			return fmt.Errorf("staged lease_settle: asset must be XUSD, got %q", b.Asset)
+		}
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged lease_settle: GetPendingSend: %w", err)
@@ -2807,6 +2812,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_settle: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
 	case BlockLeaseCancel:
+		if b.Asset != "" && b.Asset != "XUSD" {
+			return fmt.Errorf("staged lease_cancel: asset must be XUSD, got %q", b.Asset)
+		}
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged lease_cancel: GetPendingSend: %w", err)
@@ -2819,6 +2827,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_cancel: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
 	case BlockLeaseForceSettle:
+		if b.Asset != "" && b.Asset != "XUSD" {
+			return fmt.Errorf("staged lease_force_settle: asset must be XUSD, got %q", b.Asset)
+		}
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged lease_force_settle: GetPendingSend: %w", err)
@@ -2829,6 +2840,16 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		expectedBal := parentBalance + pending.Amount
 		if b.Balance != expectedBal {
 			return fmt.Errorf("staged lease_force_settle: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
+		}
+	case BlockLeaseRenew:
+		if b.Asset != "" && b.Asset != "XUSD" {
+			return fmt.Errorf("staged lease_renew: asset must be XUSD, got %q", b.Asset)
+		}
+		if b.Amount > parentBalance {
+			return fmt.Errorf("staged lease_renew: insufficient balance: have %d, need %d", parentBalance, b.Amount)
+		}
+		if b.Balance != parentBalance-b.Amount {
+			return fmt.Errorf("staged lease_renew: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
 		}
 	case BlockMultisigOpen:
 		return fmt.Errorf("staged multisig_open: conflicting account opens are invalid")
