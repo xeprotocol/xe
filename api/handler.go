@@ -532,7 +532,8 @@ func (h *Handler) handleGetPending(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing address")
 		return
 	}
-	pending := h.node.GetPending(address)
+	offset, limit := parsePagination(r)
+	pending := paginateSlice(h.node.GetPending(address), offset, limit)
 	resp := struct {
 		Address string         `json:"address"`
 		Pending []pendingEntry `json:"pending"`
