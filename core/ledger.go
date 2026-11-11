@@ -1850,7 +1850,10 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 	}
 
 	oldBal := l.getAssetBalanceOverlay(b.Account, "XUSD")
-	expectedBal := oldBal + leaseBlock.Amount
+	expectedBal := oldBal + pending.Amount
+	if expectedBal < oldBal {
+		return fmt.Errorf("balance would overflow uint64")
+	}
 	if b.Balance != expectedBal {
 		return fmt.Errorf("balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 	}
@@ -2815,6 +2818,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_cancel: no pending send for lease")
 		}
 		expectedBal := parentBalance + pending.Amount
+		if expectedBal < parentBalance {
+			return fmt.Errorf("staged lease_cancel: balance would overflow uint64")
+		}
 		if b.Balance != expectedBal {
 			return fmt.Errorf("staged lease_cancel: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
@@ -2827,6 +2833,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_force_settle: no pending escrow for lease")
 		}
 		expectedBal := parentBalance + pending.Amount
+		if expectedBal < parentBalance {
+			return fmt.Errorf("staged lease_force_settle: balance would overflow uint64")
+		}
 		if b.Balance != expectedBal {
 			return fmt.Errorf("staged lease_force_settle: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
