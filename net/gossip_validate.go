@@ -149,6 +149,9 @@ func directoryValidator() pubsub.ValidatorEx {
 		if reg.Account == "" || reg.PubKey == "" || reg.Signature == "" || reg.NodePeer == "" {
 			return pubsub.ValidationReject
 		}
+		if len(reg.NodePeer) < 12 {
+			return pubsub.ValidationReject
+		}
 
 		if err := directory.VerifyRegistration(&reg); err != nil {
 			return pubsub.ValidationReject
