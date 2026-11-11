@@ -1,7 +1,9 @@
 package metrics
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -13,7 +15,11 @@ import (
 
 var Registry = prometheus.NewRegistry()
 
-const QuorumRatio = 0.67
+const (
+	QuorumRatio          = 0.67
+	maxMetricsInFlight   = 4
+	metricsScrapeTimeout = 10 * time.Second
+)
 
 var (
 	BuildInfo = newGaugeVec("xe_build_info",
@@ -156,24 +162,93 @@ func RegisterCounterFunc(name, help string, fn func() float64) {
 	}
 }
 
-var preScrape atomic.Pointer[func()]
+var (
+	preScrape atomic.Pointer[func()]
+	publishMu sync.Mutex
+)
 
-func SetPreScrape(fn func()) { preScrape.Store(&fn) }
+func SetPreScrape(fn func()) {
+	if fn == nil {
+		preScrape.Store(nil)
+		return
+	}
+	preScrape.Store(&fn)
+}
+
+func WithPublishLock(fn func()) {
+	publishMu.Lock()
+	defer publishMu.Unlock()
+	fn()
+}
+
+type bufferedScrapeWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	code   int
+}
+
+func (b *bufferedScrapeWriter) Header() http.Header {
+	if b.header == nil {
+		b.header = make(http.Header)
+	}
+	return b.header
+}
+
+func (b *bufferedScrapeWriter) WriteHeader(code int) {
+	if b.code == 0 {
+		b.code = code
+	}
+}
+
+func (b *bufferedScrapeWriter) Write(p []byte) (int, error) {
+	if b.code == 0 {
+		b.code = http.StatusOK
+	}
+	return b.body.Write(p)
+}
 
 func Handler() http.Handler {
+	// Leave MaxRequestsInFlight and Timeout at 0 on promhttp so it does not wrap
+	// inner in http.TimeoutHandler (whose child goroutine would outlive a canceled
+	// request context and escape WithPublishLock / inFlightSem while still gathering).
 	inner := promhttp.HandlerFor(
 		prometheus.Gatherers{prometheus.DefaultGatherer, Registry},
 		promhttp.HandlerOpts{
-			ErrorHandling:       promhttp.HTTPErrorOnError,
-			MaxRequestsInFlight: 4,
-			Timeout:             10 * time.Second,
+			ErrorHandling: promhttp.HTTPErrorOnError,
 		},
 	)
+	inFlightSem := make(chan struct{}, maxMetricsInFlight)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if fn := preScrape.Load(); fn != nil && *fn != nil {
-			(*fn)()
+		select {
+		case inFlightSem <- struct{}{}:
+			defer func() { <-inFlightSem }()
+		default:
+			http.Error(w, fmt.Sprintf("Limit of concurrent requests reached (%d), try again later.", maxMetricsInFlight), http.StatusServiceUnavailable)
+			return
 		}
-		inner.ServeHTTP(w, r)
+		if r.Context().Err() != nil {
+			return
+		}
+
+		var buf bufferedScrapeWriter
+		WithPublishLock(func() {
+			if fn := preScrape.Load(); fn != nil && *fn != nil {
+				(*fn)()
+			}
+			inner.ServeHTTP(&buf, r)
+		})
+
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(metricsScrapeTimeout))
+		for k, vals := range buf.header {
+			for _, v := range vals {
+				w.Header().Add(k, v)
+			}
+		}
+		if buf.code == 0 {
+			buf.code = http.StatusOK
+		}
+		w.WriteHeader(buf.code)
+		_, _ = w.Write(buf.body.Bytes())
 	})
 }
 
