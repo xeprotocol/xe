@@ -19,6 +19,9 @@ type ChatStore struct {
 }
 
 func NewChatStore(maxPerAccount int) *ChatStore {
+	if maxPerAccount <= 0 {
+		maxPerAccount = 1
+	}
 	return &ChatStore{
 		messages:      make(map[string][]*Envelope),
 		seen:          make(map[string]int64),
@@ -29,6 +32,12 @@ func NewChatStore(maxPerAccount int) *ChatStore {
 
 func (s *ChatStore) Store(env *Envelope) bool {
 	s.mu.Lock()
+	if s.seen == nil {
+		s.seen = make(map[string]int64)
+	}
+	if s.messages == nil {
+		s.messages = make(map[string][]*Envelope)
+	}
 	if _, dup := s.seen[env.ID]; dup {
 		s.mu.Unlock()
 		return false
@@ -70,12 +79,15 @@ func (s *ChatStore) pruneSeenLocked() {
 }
 
 func (s *ChatStore) storeFor(account string, env *Envelope) {
+	limit := s.maxPerAccount
+	if limit <= 0 {
+		limit = 1
+	}
 	msgs := s.messages[account]
-	if len(msgs) >= s.maxPerAccount {
-
-		newMsgs := make([]*Envelope, s.maxPerAccount)
+	if len(msgs) >= limit {
+		newMsgs := make([]*Envelope, limit)
 		copy(newMsgs, msgs[1:])
-		newMsgs[s.maxPerAccount-1] = env
+		newMsgs[limit-1] = env
 		s.messages[account] = newMsgs
 	} else {
 		s.messages[account] = append(msgs, env)
