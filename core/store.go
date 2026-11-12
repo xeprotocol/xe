@@ -32,6 +32,8 @@ type FinalVoteStore interface {
 	GetFinalVote(account, previous string) (hash string, ok bool, err error)
 
 	PutFinalVoteIfAbsent(account, previous, hash string) (stored string, written bool, err error)
+
+	DeleteFinalVote(account, previous string) error
 }
 
 type Syncer interface {

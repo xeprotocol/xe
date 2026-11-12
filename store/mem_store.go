@@ -633,6 +633,13 @@ func (m *MemStore) PutFinalVoteIfAbsent(account, previous, hash string) (string,
 	return hash, true, nil
 }
 
+func (m *MemStore) DeleteFinalVote(account, previous string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.finalVotes, account+"|"+previous)
+	return nil
+}
+
 func (m *MemStore) DeleteVotesForConflict(account, previous string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
