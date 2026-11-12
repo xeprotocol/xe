@@ -172,14 +172,10 @@ func (n *Node) RequestAndCreateLease(ctx context.Context, vcpus, memoryMB, diskG
 		return "", fmt.Errorf("request lease: %w", err)
 	}
 
-	if err := n.CreateLeaseBlock(offer.Provider, offer.VCPUs, offer.MemoryMB, offer.DiskGB, durationSecs, offer.TotalCost, accessPubKey, offer.CertificateHash); err != nil {
+	leaseHash, err := n.CreateLeaseBlock(offer.Provider, offer.VCPUs, offer.MemoryMB, offer.DiskGB, durationSecs, offer.TotalCost, accessPubKey, offer.CertificateHash)
+	if err != nil {
 		return "", fmt.Errorf("create lease block: %w", err)
 	}
 
-	chain := n.Ledger.GetChain(n.KeyPair.Address())
-	if len(chain) == 0 {
-		return "", fmt.Errorf("no blocks after lease creation")
-	}
-	last := chain[len(chain)-1]
-	return last.Hash, nil
+	return leaseHash, nil
 }
