@@ -2095,18 +2095,23 @@ func (l *Ledger) validateLockedEmissionAt(atTime int64, lockedR, lockedCap, lock
 	if len(candidates) == 0 {
 		return fmt.Errorf("%s epoch not yet available for time %d: retry after statechain syncs", opName, atTime)
 	}
+	cur := candidates[0]
+	// On live accept/renew, the block author must lock the active epoch's terms (candidates[0]).
+	// Multi-epoch tolerance is only permitted during sync/replay (skipSkew=true) to accommodate statechain lag.
+	if !skipSkew {
+		if lockedR == cur.R && lockedCap == cur.PayoutCap && lockedTWAP == cur.TWAP {
+			return nil
+		}
+		return fmt.Errorf("%s locked emission mismatch: block (R=%d cap=%d twap=%d) != epoch@time (R=%d cap=%d twap=%d)",
+			opName, lockedR, lockedCap, lockedTWAP, cur.R, cur.PayoutCap, cur.TWAP)
+	}
 	for i := range candidates {
 		e := &candidates[i]
 		if lockedR == e.R && lockedCap == e.PayoutCap && lockedTWAP == e.TWAP {
 			return nil
 		}
 	}
-	cur := candidates[0]
-	if skipSkew {
-		return fmt.Errorf("%s locked emission mismatch on sync: block (R=%d cap=%d twap=%d) != epoch@time (R=%d cap=%d twap=%d): retry after statechain syncs",
-			opName, lockedR, lockedCap, lockedTWAP, cur.R, cur.PayoutCap, cur.TWAP)
-	}
-	return fmt.Errorf("%s locked emission mismatch: block (R=%d cap=%d twap=%d) != epoch@time (R=%d cap=%d twap=%d)",
+	return fmt.Errorf("%s locked emission mismatch on sync: block (R=%d cap=%d twap=%d) != epoch@time (R=%d cap=%d twap=%d): retry after statechain syncs",
 		opName, lockedR, lockedCap, lockedTWAP, cur.R, cur.PayoutCap, cur.TWAP)
 }
 
