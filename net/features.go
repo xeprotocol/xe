@@ -73,8 +73,25 @@ var LocalFeatures = sync.OnceValue(func() []string {
 	return f
 })
 
+func SanitizePeerCapabilities(c PeerCapabilities) PeerCapabilities {
+	known := core.KnownFeatureSet()
+	seen := make(map[string]bool)
+	var filtered []string
+	for _, f := range c.Features {
+		if known[f] && !seen[f] {
+			seen[f] = true
+			filtered = append(filtered, f)
+			if len(filtered) == maxAdvertisedFeatures {
+				break
+			}
+		}
+	}
+	c.Features = filtered
+	return c
+}
+
 func (g *NetworkGater) RecordPeerCapabilities(p peer.ID, c PeerCapabilities) {
-	g.caps.record(p, c)
+	g.caps.record(p, SanitizePeerCapabilities(c))
 }
 
 func (g *NetworkGater) PeerCapabilities(p peer.ID) (PeerCapabilities, bool) {
