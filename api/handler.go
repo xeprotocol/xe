@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -235,7 +237,25 @@ func (h *Handler) Mux() http.Handler {
 		origin = "http://localhost:3000"
 	}
 
-	return corsMiddleware(rateLimitMiddleware(mux, newRateLimiters()), origin)
+	return corsMiddleware(normalizePathMiddleware(rateLimitMiddleware(mux, newRateLimiters())), origin)
+}
+
+func normalizePathMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if unescaped, err := url.PathUnescape(p); err == nil {
+			p = unescaped
+		}
+		p = path.Clean(p)
+		if p == "" || p == "." {
+			p = "/"
+		} else if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		r.URL.Path = p
+		r.URL.RawPath = ""
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -876,9 +896,9 @@ func (h *Handler) handleStateChainBlocks(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) handleStateKV(w http.ResponseWriter, r *http.Request) {
-	key := r.PathValue("key")
+	key := strings.TrimSuffix(r.PathValue("key"), "/")
 	if key == "" {
-		writeError(w, http.StatusBadRequest, "missing key")
+		h.handleStateKVAll(w, r)
 		return
 	}
 	val, ok := h.node.GetStateKV(key)
