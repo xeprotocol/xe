@@ -173,6 +173,7 @@ func (n *Node) GetReadiness() *ReadinessInfo {
 		FeatureReadyMilli: map[string]uint64{},
 		TotalReps:         len(del.Weights),
 	}
+	known := core.KnownFeatureSet()
 	versionWeights := map[string]uint64{}
 	for rep, w := range del.Weights {
 		c, ok := byAccount[rep]
@@ -183,7 +184,9 @@ func (n *Node) GetReadiness() *ReadinessInfo {
 		info.ResolvedReps++
 		versionWeights[c.Version] += w
 		for _, f := range c.Features {
-			info.FeatureWeight[f] += w
+			if known[f] {
+				info.FeatureWeight[f] += w
+			}
 		}
 	}
 	for f, w := range info.FeatureWeight {
