@@ -1780,8 +1780,15 @@ func (n *Node) cleanupOrphanedVMs() {
 	}
 	for _, info := range n.VMManager.List() {
 		lease, err := ls.GetLease(info.LeaseHash)
-		if err != nil || lease == nil {
-
+		if err != nil {
+			log.Printf("Orphan cleanup: failed to query lease %s: %v", shortHash(info.LeaseHash), err)
+			continue
+		}
+		if lease == nil {
+			log.Printf("Cleaning up orphaned VM for missing lease %s", shortHash(info.LeaseHash))
+			if err := n.VMManager.Teardown(info.LeaseHash); err != nil {
+				log.Printf("Orphan cleanup failed for missing lease %s: %v", shortHash(info.LeaseHash), err)
+			}
 			continue
 		}
 		if lease.State.Terminal() {
