@@ -12,6 +12,29 @@ Type=simple
 User=xe
 Group=xe
 EnvironmentFile=/etc/xe/xe-node.env
+
+ExecStartPre=/bin/sh -c '\
+  if [ -z "$$XE_GENESIS_DIR" ]; then \
+    echo "ERROR: XE_GENESIS_DIR is not set in /etc/xe/xe-node.env" >&2; \
+    exit 1; \
+  fi; \
+  if [ ! -d "$$XE_GENESIS_DIR" ]; then \
+    echo "ERROR: XE_GENESIS_DIR ($$XE_GENESIS_DIR) does not exist or is not a directory. See docs/run-a-node.md" >&2; \
+    exit 1; \
+  fi; \
+  if [ ! -f "$$XE_GENESIS_DIR/ledger-genesis.json" ] || [ ! -f "$$XE_GENESIS_DIR/statechain-genesis.json" ]; then \
+    echo "ERROR: XE_GENESIS_DIR ($$XE_GENESIS_DIR) must contain both ledger-genesis.json and statechain-genesis.json" >&2; \
+    exit 1; \
+  fi; \
+  if [ -z "$$XE_BOOTSTRAP" ] || [ "$$XE_BOOTSTRAP" = "REPLACE_ME" ]; then \
+    if [ -n "$$XE_DIAL" ]; then \
+      echo "ERROR: XE_DIAL is deprecated; please rename it to XE_BOOTSTRAP in /etc/xe/xe-node.env" >&2; \
+      exit 1; \
+    fi; \
+    echo "ERROR: XE_BOOTSTRAP is unset or REPLACE_ME in /etc/xe/xe-node.env. Provide bootstrap multiaddrs." >&2; \
+    exit 1; \
+  fi'
+
 ExecStart=/usr/local/bin/xe-node node \
   --data ${XE_DATA_DIR} \
   --port ${XE_P2P_PORT} \
@@ -19,6 +42,8 @@ ExecStart=/usr/local/bin/xe-node node \
   --genesis-dir ${XE_GENESIS_DIR} \
   --api-bind ${XE_API_BIND} \
   --api-port ${XE_API_PORT} \
+  --metrics-addr ${XE_METRICS_ADDR} \
+  --log-level ${XE_LOG_LEVEL} \
   $XE_EXTRA_ARGS
 
 Restart=always
@@ -45,6 +70,8 @@ ReadWritePaths=/var/lib/xe
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=xe-node
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=5000
 
 [Install]
 WantedBy=multi-user.target
