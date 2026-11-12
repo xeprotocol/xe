@@ -66,7 +66,7 @@ func OpsMux(h *Handler) http.Handler {
 			"endpoints": []string{"GET /metrics", "GET /health", "GET /ready"},
 		})
 	})
-	return mux
+	return normalizePathMiddleware(mux)
 }
 
 const (
