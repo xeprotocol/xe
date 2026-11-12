@@ -1142,7 +1142,18 @@ func cmdLeaseRenew(hash, secsStr string) {
 	}
 	var out map[string]any
 	_ = json.Unmarshal(rb, &out)
-	fmt.Printf("Renewed lease %s: +%ss (renew block %v, cost %v XUSD)\n", shortAddr(hash), secsStr, out["renew_hash"], out["cost"])
+	var cost uint64
+	switch c := out["cost"].(type) {
+	case float64:
+		cost = uint64(c)
+	case int64:
+		cost = uint64(c)
+	case uint64:
+		cost = c
+	case string:
+		cost, _ = strconv.ParseUint(c, 10, 64)
+	}
+	fmt.Printf("Renewed lease %s: +%ss (renew block %v, cost %s XUSD)\n", shortAddr(hash), secsStr, out["renew_hash"], core.FormatAmount(cost, core.AssetXUSD))
 }
 
 func cmdReputation(addr string) {
