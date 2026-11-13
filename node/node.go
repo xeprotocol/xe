@@ -1440,6 +1440,9 @@ func leaseAlreadyAccepted(lease *core.Lease) bool {
 func (n *Node) beginAccept(leaseHash string) bool {
 	n.acceptInFlightMu.Lock()
 	defer n.acceptInFlightMu.Unlock()
+	if n.acceptInFlight == nil {
+		n.acceptInFlight = make(map[string]struct{})
+	}
 	if _, busy := n.acceptInFlight[leaseHash]; busy {
 		return false
 	}
@@ -1464,7 +1467,8 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	defer n.endAccept(leaseBlock.Hash)
 	retry := false
 	defer func() { n.acceptSched.record(leaseBlock.Hash, retry, time.Now()) }()
-	if leaseAlreadyAccepted(n.GetLease(leaseBlock.Hash)) {
+	lease := n.GetLease(leaseBlock.Hash)
+	if leaseAlreadyAccepted(lease) || (lease != nil && (lease.State == core.LeaseCancelled || lease.Settled)) {
 		return
 	}
 
@@ -1476,6 +1480,7 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 
 	if err := n.acceptPolicy.Allow(leaseBlock, n.activeLeaseCount()); err != nil {
 		log.Printf("Auto-accept policy rejected lease %s: %v", shortHash(leaseBlock.Hash), err)
+		retry = true
 		return
 	}
 
@@ -1484,6 +1489,7 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 
 	if stake > n.Ledger.GetAssetBalances(myAddr)["XUSD"] {
 		log.Printf("Cannot auto-accept lease %s: insufficient XUSD for stake", shortHash(leaseBlock.Hash))
+		retry = true
 		return
 	}
 
@@ -1503,6 +1509,7 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	certHash, err := n.acceptCertificateHash(leaseBlock, startTime)
 	if err != nil {
 		log.Printf("Cannot auto-accept lease %s: %v", shortHash(leaseBlock.Hash), err)
+		retry = true
 		return
 	}
 
@@ -1512,6 +1519,7 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	if stake > xusdBal {
 		n.blockCreateMu.Unlock()
 		log.Printf("Cannot auto-accept lease %s: insufficient XUSD for stake (have %d, need %d)", shortHash(leaseBlock.Hash), xusdBal, stake)
+		retry = true
 		return
 	}
 
@@ -1539,6 +1547,7 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 				usedVCPUs, usedMemMB, usedDiskGB,
 				leaseBlock.VCPUs, leaseBlock.MemoryMB, leaseBlock.DiskGB,
 				n.providerVCPUs, n.providerMemoryMB, n.providerDiskGB)
+			retry = true
 			return
 		}
 
@@ -1564,6 +1573,7 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	if n.VMManager != nil {
 		if _, err := n.VMManager.Get(leaseBlock.Hash); err != nil {
 			log.Printf("Lease %s: VM provision failed, not accepting", shortHash(leaseBlock.Hash))
+			retry = true
 			return
 		}
 	}
@@ -1581,6 +1591,7 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 		log.Printf("Lease %s: XUSD balance changed during provisioning (have %d, need %d), tearing down",
 			shortHash(leaseBlock.Hash), xusdBal, stake)
 		n.teardownVM(&core.Lease{LeaseHash: leaseBlock.Hash})
+		retry = true
 		return
 	}
 
@@ -1605,6 +1616,7 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 		n.blockCreateMu.Unlock()
 		log.Printf("Failed to sign lease_accept: %v", err)
 		n.teardownVM(&core.Lease{LeaseHash: leaseBlock.Hash})
+		retry = true
 		return
 	}
 	n.solvePoW(b)
@@ -1622,11 +1634,15 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	}
 	n.blockCreateMu.Unlock()
 
-	if err := n.Gossip.Publish(n.ctx, b); err != nil {
-		log.Printf("Failed to publish lease_accept: %v", err)
-		return
+	if n.syncTracker != nil {
+		n.syncTracker.MarkDirty()
 	}
-	n.syncTracker.MarkDirty()
+	if n.Gossip != nil {
+		if err := n.Gossip.Publish(n.ctx, b); err != nil {
+			log.Printf("Failed to publish lease_accept: %v", err)
+			return
+		}
+	}
 	log.Printf("Auto-accepted lease %s (stake=%d XUSD)", shortHash(leaseBlock.Hash), stake)
 }
 
@@ -1684,7 +1700,8 @@ func (n *Node) leaseWatchTick(now time.Time, wg *sync.WaitGroup) {
 			continue
 		}
 
-		if leaseAlreadyAccepted(n.GetLease(leaseBlock.Hash)) {
+		lease := n.GetLease(leaseBlock.Hash)
+		if leaseAlreadyAccepted(lease) || (lease != nil && (lease.State == core.LeaseCancelled || lease.Settled)) {
 			n.acceptSched.record(leaseBlock.Hash, false, now)
 			continue
 		}
