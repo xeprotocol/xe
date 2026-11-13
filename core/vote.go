@@ -106,11 +106,6 @@ func (vm *VoteManager) flushPendingVotes(account, prev string) {
 
 func (vm *VoteManager) ReceiveVote(v *Vote) error {
 	if err := vm.ValidateVote(v); err != nil {
-
-		if vm.isConflictNotFound(v) {
-			vm.bufferVote(v)
-			return nil
-		}
 		return err
 	}
 
@@ -141,6 +136,9 @@ func (vm *VoteManager) receiveVoteInner(v *Vote) error {
 	}
 
 	conflict := vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev)
+	if conflict == nil && !vm.positionResolved(v.ConflictAccount, v.ConflictPrev) {
+		return fmt.Errorf("receiveVoteInner: conflict not found for %s|%s", v.ConflictAccount, v.ConflictPrev)
+	}
 	if conflict != nil && conflict.WeightSnapshot != nil {
 		v.Weight = conflict.WeightSnapshot[v.RepAccount()]
 	} else {
@@ -255,6 +253,13 @@ func (vm *VoteManager) ValidateVote(v *Vote) error {
 	}
 	if delta > voteWindowNanos {
 		return fmt.Errorf("ValidateVote: timestamp out of range: delta=%v", time.Duration(delta))
+	}
+
+	if vm.ledger != nil {
+		conflict := vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev)
+		if conflict == nil && !vm.positionResolved(v.ConflictAccount, v.ConflictPrev) {
+			return fmt.Errorf("ValidateVote: conflict not found for %s|%s", v.ConflictAccount, v.ConflictPrev)
+		}
 	}
 
 	return nil
