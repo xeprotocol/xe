@@ -31,7 +31,12 @@ func (n *Node) RenewLease(leaseHash string, additionalSecs uint64) (*core.Block,
 	}
 
 	var attestations []core.TimekeeperAttestation
-	if tkConfig := n.getTimekeeperConfig(); tkConfig != nil {
+	if n.acceptAttestHook != nil {
+		attestations, err = n.acceptAttestHook(leaseHash)
+		if err != nil {
+			return nil, fmt.Errorf("gather attestations for lease_renew %s: %w", shortHash(leaseHash), err)
+		}
+	} else if tkConfig := n.getTimekeeperConfig(); tkConfig != nil {
 		attestations, err = n.gatherAttestations(leaseHash, tkConfig)
 		if err != nil {
 			return nil, fmt.Errorf("gather attestations for lease_renew %s: %w", shortHash(leaseHash), err)
@@ -76,9 +81,12 @@ func (n *Node) RenewLease(leaseHash string, additionalSecs uint64) (*core.Block,
 	if err := n.Ledger.AddBlock(b); err != nil {
 		return nil, fmt.Errorf("add lease_renew: %w", err)
 	}
+	if n.syncTracker != nil {
+		n.syncTracker.MarkDirty()
+	}
 	if n.Gossip != nil {
 		if err := n.Gossip.Publish(n.ctx, b); err != nil {
-			return nil, fmt.Errorf("gossip lease_renew: %w", err)
+			log.Printf("block %s committed locally but gossip publish failed (sync will propagate): %v", b.Hash, err)
 		}
 	}
 	log.Printf("Renewed lease %s: +%ds, cost %d XUSD (renew block %s)", shortHash(leaseHash), additionalSecs, cost, shortHash(b.Hash))

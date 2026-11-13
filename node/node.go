@@ -786,7 +786,15 @@ func (n *Node) Send(destination string, amount uint64, asset string) error {
 	if err := n.Ledger.AddBlock(b); err != nil {
 		return err
 	}
-	return n.Gossip.Publish(n.ctx, b)
+	if n.syncTracker != nil {
+		n.syncTracker.MarkDirty()
+	}
+	if n.Gossip != nil {
+		if err := n.Gossip.Publish(n.ctx, b); err != nil {
+			log.Printf("block %s committed locally but gossip publish failed (sync will propagate): %v", b.Hash, err)
+		}
+	}
+	return nil
 }
 
 func (n *Node) Receive() (int, error) {
@@ -832,8 +840,13 @@ func (n *Node) Receive() (int, error) {
 		if err := n.Ledger.AddBlock(b); err != nil {
 			return count, fmt.Errorf("receive %s: %w", shortHash(p.SendHash), err)
 		}
-		if err := n.Gossip.Publish(n.ctx, b); err != nil {
-			return count, fmt.Errorf("publish receive: %w", err)
+		if n.syncTracker != nil {
+			n.syncTracker.MarkDirty()
+		}
+		if n.Gossip != nil {
+			if err := n.Gossip.Publish(n.ctx, b); err != nil {
+				log.Printf("block %s committed locally but gossip publish failed (sync will propagate): %v", b.Hash, err)
+			}
 		}
 		count++
 	}
@@ -1283,9 +1296,13 @@ func (n *Node) SubmitBlock(b *core.Block) error {
 	if err := n.Ledger.AddBlock(b); err != nil {
 		return err
 	}
-	n.syncTracker.MarkDirty()
-	if err := n.Gossip.Publish(n.ctx, b); err != nil {
-		log.Printf("block %s committed locally but gossip publish failed (sync will propagate): %v", b.Hash, err)
+	if n.syncTracker != nil {
+		n.syncTracker.MarkDirty()
+	}
+	if n.Gossip != nil {
+		if err := n.Gossip.Publish(n.ctx, b); err != nil {
+			log.Printf("block %s committed locally but gossip publish failed (sync will propagate): %v", b.Hash, err)
+		}
 	}
 	return nil
 }
@@ -2121,7 +2138,15 @@ func (n *Node) CreateLeaseBlock(provider string, vcpus, memoryMB, diskGB, durati
 	if err := n.Ledger.AddBlock(b); err != nil {
 		return err
 	}
-	return n.Gossip.Publish(n.ctx, b)
+	if n.syncTracker != nil {
+		n.syncTracker.MarkDirty()
+	}
+	if n.Gossip != nil {
+		if err := n.Gossip.Publish(n.ctx, b); err != nil {
+			log.Printf("block %s committed locally but gossip publish failed (sync will propagate): %v", b.Hash, err)
+		}
+	}
+	return nil
 }
 
 func (n *Node) GetLeases() []*core.Lease {
