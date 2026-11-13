@@ -1102,6 +1102,9 @@ func (l *Ledger) validateAndAddReceive(b *Block) error {
 		if l.GetConflict(src.Account, src.Previous) != nil {
 			return fmt.Errorf("source send %s is contested by an unresolved conflict — receive deferred pending resolution", shortHash(b.Source))
 		}
+		if b.Timestamp < src.Timestamp {
+			return fmt.Errorf("receive timestamp %d is before source send timestamp %d", b.Timestamp, src.Timestamp)
+		}
 	}
 
 	pendingAsset := pending.Asset
@@ -1625,6 +1628,10 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 	if leaseBlock.Destination != b.Account {
 		return fmt.Errorf("lease_accept: provider account mismatch")
 	}
+	if b.Timestamp < leaseBlock.Timestamp {
+		return fmt.Errorf("lease_accept timestamp %d is before source lease timestamp %d",
+			b.Timestamp, leaseBlock.Timestamp)
+	}
 
 	if existing, ok, err := l.getLeaseOverlay(b.Source); ok {
 		if err != nil {
@@ -1810,6 +1817,10 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 	if leaseBlock.Account != b.Account {
 		return fmt.Errorf("lease_cancel: only the consumer can cancel a lease")
 	}
+	if b.Timestamp < leaseBlock.Timestamp {
+		return fmt.Errorf("lease_cancel timestamp %d is before source lease timestamp %d",
+			b.Timestamp, leaseBlock.Timestamp)
+	}
 
 	if existing, ok, err := l.getLeaseOverlay(b.Source); ok {
 		if err != nil {
@@ -1935,6 +1946,10 @@ func (l *Ledger) validateAndAddLeaseForceSettle(b *Block, skipSkew bool) error {
 	eligibleAt := expiry + LeaseSettleGrace + LeaseForceSettleGap
 	if forceTime < eligibleAt {
 		return fmt.Errorf("lease not yet force-settleable: need timestamp >= %d, got %d", eligibleAt, forceTime)
+	}
+	if minTs := l.minLeaseForceSettleTimestamp(b.Source, lease); b.Timestamp < minTs {
+		return fmt.Errorf("lease_force_settle timestamp %d is before causal lease bound %d",
+			b.Timestamp, minTs)
 	}
 
 	if expireAt := expiry + LeaseEscrowExpiry; forceTime >= expireAt {
@@ -2114,6 +2129,45 @@ func renewalMayBeMissing(lease *Lease) bool {
 	return lease.EffectiveDurationSecs() < LeaseMaxDuration
 }
 
+func (l *Ledger) minLeaseRenewTimestamp(leaseHash string, lease *Lease) int64 {
+	minTs := lease.StartTime
+	if leaseBlock := l.GetBlockOrStaged(leaseHash); leaseBlock != nil && leaseBlock.Timestamp > minTs {
+		minTs = leaseBlock.Timestamp
+	}
+	for i := range lease.Renewals {
+		if rb := l.GetBlockOrStaged(lease.Renewals[i].RenewHash); rb != nil && rb.Timestamp > minTs {
+			minTs = rb.Timestamp
+		}
+	}
+	return minTs
+}
+
+func (l *Ledger) minLeaseForceSettleTimestamp(leaseHash string, lease *Lease) int64 {
+	minTs := lease.EffectiveExpiry() + LeaseSettleGrace + LeaseForceSettleGap
+	if leaseBlock := l.GetBlockOrStaged(leaseHash); leaseBlock != nil && leaseBlock.Timestamp > minTs {
+		minTs = leaseBlock.Timestamp
+	}
+	for i := range lease.Renewals {
+		if rb := l.GetBlockOrStaged(lease.Renewals[i].RenewHash); rb != nil && rb.Timestamp > minTs {
+			minTs = rb.Timestamp
+		}
+	}
+	return minTs
+}
+
+func (l *Ledger) minLeaseSettleTimestamp(leaseHash string, lease *Lease) int64 {
+	minTs := lease.EffectiveExpiry()
+	if leaseBlock := l.GetBlockOrStaged(leaseHash); leaseBlock != nil && leaseBlock.Timestamp > minTs {
+		minTs = leaseBlock.Timestamp
+	}
+	for i := range lease.Renewals {
+		if rb := l.GetBlockOrStaged(lease.Renewals[i].RenewHash); rb != nil && rb.Timestamp > minTs {
+			minTs = rb.Timestamp
+		}
+	}
+	return minTs
+}
+
 func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 	if b.Asset != "XE" {
 		return fmt.Errorf("lease_settle block must have asset=XE")
@@ -2161,6 +2215,9 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 	expiry := lease.EffectiveExpiry()
 	if settleTime < expiry {
 		return fmt.Errorf("lease not yet expired: need timestamp >= %d, got %d", expiry, settleTime)
+	}
+	if minTs := l.minLeaseSettleTimestamp(b.Source, lease); b.Timestamp < minTs {
+		return fmt.Errorf("lease_settle timestamp %d is before causal lease bound %d", b.Timestamp, minTs)
 	}
 
 	if settleTime > expiry+LeaseSettleGrace {
@@ -2769,6 +2826,11 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		if l.isLiveLeaseEscrow(b.Source) {
 			return fmt.Errorf("staged receive: cannot receive a live lease escrow: %s", shortHash(b.Source))
 		}
+		if src := l.GetBlockOrStaged(b.Source); src != nil && b.Timestamp < src.Timestamp {
+			return fmt.Errorf(
+				"staged receive: timestamp %d is before source send timestamp %d",
+				b.Timestamp, src.Timestamp)
+		}
 		expectedBal := parentBalance + pending.Amount
 		if expectedBal < parentBalance {
 			return fmt.Errorf("staged receive: balance would overflow uint64")
@@ -2790,6 +2852,28 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		if b.Balance != parentBalance-b.Amount {
 			return fmt.Errorf("staged lease_accept: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
 		}
+		if leaseBlock := l.GetBlockOrStaged(b.Source); leaseBlock != nil && b.Timestamp < leaseBlock.Timestamp {
+			return fmt.Errorf("staged lease_accept: timestamp %d is before source lease timestamp %d",
+				b.Timestamp, leaseBlock.Timestamp)
+		}
+	case BlockLeaseRenew:
+		if b.Amount > parentBalance {
+			return fmt.Errorf("staged lease_renew: insufficient balance: have %d, need %d", parentBalance, b.Amount)
+		}
+		if b.Balance != parentBalance-b.Amount {
+			return fmt.Errorf("staged lease_renew: balance mismatch: expected %d, got %d",
+				parentBalance-b.Amount, b.Balance)
+		}
+		if lease, ok, lerr := l.getLeaseOverlay(b.Source); ok && lerr == nil && lease != nil {
+			if minTs := l.minLeaseRenewTimestamp(b.Source, lease); b.Timestamp < minTs {
+				return fmt.Errorf("staged lease_renew: timestamp %d is before causal lease bound %d",
+					b.Timestamp, minTs)
+			}
+		} else if leaseBlock := l.GetBlockOrStaged(b.Source); leaseBlock != nil &&
+			b.Timestamp < leaseBlock.Timestamp {
+			return fmt.Errorf("staged lease_renew: timestamp %d is before source lease timestamp %d",
+				b.Timestamp, leaseBlock.Timestamp)
+		}
 	case BlockLeaseSettle:
 
 		pending, err := l.store.GetPendingSend(b.Source)
@@ -2798,6 +2882,16 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		}
 		if pending == nil {
 			return fmt.Errorf("staged lease_settle: no pending escrow for lease")
+		}
+		if lease, ok, lerr := l.getLeaseOverlay(b.Source); ok && lerr == nil && lease != nil {
+			if minTs := l.minLeaseSettleTimestamp(b.Source, lease); b.Timestamp < minTs {
+				return fmt.Errorf("staged lease_settle: timestamp %d is before causal lease bound %d",
+					b.Timestamp, minTs)
+			}
+		} else if leaseBlock := l.GetBlockOrStaged(b.Source); leaseBlock != nil &&
+			b.Timestamp < leaseBlock.Timestamp {
+			return fmt.Errorf("staged lease_settle: timestamp %d is before source lease timestamp %d",
+				b.Timestamp, leaseBlock.Timestamp)
 		}
 		expectedBal := parentBalance + b.Amount
 		if expectedBal < parentBalance {
@@ -2814,6 +2908,10 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		if pending == nil {
 			return fmt.Errorf("staged lease_cancel: no pending send for lease")
 		}
+		if leaseBlock := l.GetBlockOrStaged(b.Source); leaseBlock != nil && b.Timestamp < leaseBlock.Timestamp {
+			return fmt.Errorf("staged lease_cancel: timestamp %d is before source lease timestamp %d",
+				b.Timestamp, leaseBlock.Timestamp)
+		}
 		expectedBal := parentBalance + pending.Amount
 		if b.Balance != expectedBal {
 			return fmt.Errorf("staged lease_cancel: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
@@ -2825,6 +2923,16 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		}
 		if pending == nil {
 			return fmt.Errorf("staged lease_force_settle: no pending escrow for lease")
+		}
+		if lease, ok, lerr := l.getLeaseOverlay(b.Source); ok && lerr == nil && lease != nil {
+			if minTs := l.minLeaseForceSettleTimestamp(b.Source, lease); b.Timestamp < minTs {
+				return fmt.Errorf("staged lease_force_settle: timestamp %d is before causal lease bound %d",
+					b.Timestamp, minTs)
+			}
+		} else if leaseBlock := l.GetBlockOrStaged(b.Source); leaseBlock != nil &&
+			b.Timestamp < leaseBlock.Timestamp {
+			return fmt.Errorf("staged lease_force_settle: timestamp %d is before source lease timestamp %d",
+				b.Timestamp, leaseBlock.Timestamp)
 		}
 		expectedBal := parentBalance + pending.Amount
 		if b.Balance != expectedBal {

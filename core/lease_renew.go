@@ -61,6 +61,9 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 	if renewTime >= expiry {
 		return fmt.Errorf("lease_renew: lease no longer live (renewal time %d >= effective expiry %d)", renewTime, expiry)
 	}
+	if minTs := l.minLeaseRenewTimestamp(b.Source, lease); b.Timestamp < minTs {
+		return fmt.Errorf("lease_renew timestamp %d is before causal lease bound %d", b.Timestamp, minTs)
+	}
 
 	if b.CertificateHash == "" {
 		return fmt.Errorf("lease_renew: performance certificate required")
