@@ -233,8 +233,11 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 			assetDebit = &AssetDelta{Account: b.Account, Asset: "XUSD", Amount: restoreLease.Stake}
 		}
 	case BlockLeaseCancel:
-
-		restoreLease = l.priorLease(b.Source, LeaseCreated)
+		if preCancel := l.getPreCancelLease(b.Source); preCancel != nil {
+			restoreLease = preCancel
+		} else {
+			restoreLease = l.priorLease(b.Source, LeaseCreated)
+		}
 		addPending = l.escrowPendingOf(b.Source)
 	case BlockLeaseRenew:
 

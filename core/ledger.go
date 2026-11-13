@@ -283,6 +283,9 @@ type Ledger struct {
 
 	cascadeMu     sync.RWMutex
 	activeCascade *cascadeBuild
+
+	preCancelLeaseMu sync.RWMutex
+	preCancelLeases  map[string]*Lease
 }
 
 func NewLedger(s Store, cfg LedgerConfig) *Ledger {
@@ -310,6 +313,7 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 		assetBalances:       make(map[string]map[string]uint64),
 		keysets:             make(map[string]*Keyset),
 		accountKeys:         make(map[string]string),
+		preCancelLeases:     make(map[string]*Lease),
 	}
 
 	repStore, _ := s.(ReputationStore)
@@ -487,6 +491,36 @@ func (l *Ledger) releaseLeaseLock(leaseHash string, entry *accountLock) {
 		delete(l.leaseLocks, leaseHash)
 	}
 	l.leaseLocksMu.Unlock()
+}
+
+func (l *Ledger) recordPreCancelLease(lease *Lease) {
+	if lease == nil {
+		return
+	}
+	l.preCancelLeaseMu.Lock()
+	defer l.preCancelLeaseMu.Unlock()
+	cp := *lease
+	if len(lease.Renewals) > 0 {
+		cp.Renewals = append([]LeaseSegment(nil), lease.Renewals...)
+	}
+	l.preCancelLeases[lease.LeaseHash] = &cp
+}
+
+func (l *Ledger) getPreCancelLease(leaseHash string) *Lease {
+	l.preCancelLeaseMu.RLock()
+	defer l.preCancelLeaseMu.RUnlock()
+	if l.preCancelLeases == nil {
+		return nil
+	}
+	lease := l.preCancelLeases[leaseHash]
+	if lease == nil {
+		return nil
+	}
+	cp := *lease
+	if len(lease.Renewals) > 0 {
+		cp.Renewals = append([]LeaseSegment(nil), lease.Renewals...)
+	}
+	return &cp
 }
 
 func isLeaseStateTransition(t BlockType) bool {
@@ -1631,7 +1665,19 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 			return fmt.Errorf("GetLease: %w", err)
 		}
 		if existing != nil && existing.State != LeaseCreated {
-			return fmt.Errorf("lease already accepted")
+			chain, _ := l.getAccountChainOverlay(b.Account)
+			hasAcceptOnChain := false
+			if chain != nil {
+				for _, blk := range chain.Blocks {
+					if blk.Type == BlockLeaseAccept && blk.Source == b.Source {
+						hasAcceptOnChain = true
+						break
+					}
+				}
+			}
+			if hasAcceptOnChain || existing.Provider != b.Account {
+				return fmt.Errorf("lease already accepted")
+			}
 		}
 	}
 
@@ -1712,7 +1758,11 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 	}
 
 	commit.ExpectLeaseHash = b.Source
-	commit.ExpectLeaseState = LeaseCreated
+	if existing, ok, _ := l.getLeaseOverlay(b.Source); ok && existing != nil {
+		commit.ExpectLeaseState = existing.State
+	} else {
+		commit.ExpectLeaseState = LeaseCreated
+	}
 	commit.PutLease = &Lease{
 		LeaseHash:       b.Source,
 		State:           LeaseAccepted,
@@ -1731,6 +1781,9 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 		LockedR:         lockedR,
 		LockedPayoutCap: lockedCap,
 		LockedTWAP:      lockedTWAP,
+	}
+	if existing, ok, _ := l.getLeaseOverlay(b.Source); ok && existing != nil && len(existing.Renewals) > 0 {
+		commit.PutLease.Renewals = append([]LeaseSegment(nil), existing.Renewals...)
 	}
 
 	if err := l.commitBlockWrite(commit, prevBalance); err != nil {
@@ -1780,6 +1833,12 @@ func (l *Ledger) resolveCancelWinsOverAccept(leaseHash, provider string) error {
 		return fmt.Errorf("cancel-wins: provider chain busy: retry after sync")
 	}
 	defer l.releaseAccountLock(provider, entry)
+
+	if ls, ok := l.store.(LeaseStore); ok {
+		if cur, err := ls.GetLease(leaseHash); err == nil && cur != nil {
+			l.recordPreCancelLease(cur)
+		}
+	}
 
 	if err := l.undoBlockApply(provider, acceptBlock); err != nil {
 		return fmt.Errorf("cancel-wins: unwind provider accept: %w", err)
@@ -2189,6 +2248,16 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 	}
 	if escrow == nil {
 		return fmt.Errorf("no escrow pending to burn for lease: %s", shortHash(b.Source))
+	}
+	expectedEscrow := lease.Cost
+	for _, r := range lease.Renewals {
+		expectedEscrow += r.Cost
+	}
+	if escrow.Amount != expectedEscrow {
+		if skipSkew && renewalMayBeMissing(lease) {
+			return fmt.Errorf("lease_settle: escrow amount mismatch: pending escrow has %d, lease requires %d: retry after sync", escrow.Amount, expectedEscrow)
+		}
+		return fmt.Errorf("lease_settle: escrow amount mismatch: pending escrow has %d, lease requires %d", escrow.Amount, expectedEscrow)
 	}
 
 	chain, err := l.getAccountChainOverlay(b.Account)
