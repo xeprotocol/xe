@@ -2791,13 +2791,44 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_accept: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
 		}
 	case BlockLeaseSettle:
-
+		if b.Asset != "XE" {
+			return fmt.Errorf("staged lease_settle: must have asset=XE")
+		}
+		if b.Source == "" {
+			return fmt.Errorf("staged lease_settle: must reference a source lease hash")
+		}
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged lease_settle: GetPendingSend: %w", err)
 		}
 		if pending == nil {
 			return fmt.Errorf("staged lease_settle: no pending escrow for lease")
+		}
+		lease, ok, err := l.getLeaseOverlay(b.Source)
+		if !ok {
+			return fmt.Errorf("staged lease_settle: store does not support leases")
+		}
+		if err != nil {
+			return fmt.Errorf("staged lease_settle: GetLease: %w", err)
+		}
+		if lease == nil {
+			return fmt.Errorf("staged lease_settle: lease not found: %s", shortHash(b.Source))
+		}
+		if lease.Settled {
+			return fmt.Errorf("staged lease_settle: lease already settled")
+		}
+		if lease.Provider != b.Account {
+			return fmt.Errorf("staged lease_settle: provider account mismatch")
+		}
+		if lease.State != LeaseAccepted {
+			return fmt.Errorf("staged lease_settle: lease not settleable in %s state", lease.State)
+		}
+		expectedXE, err := LeaseTotalEmission(lease)
+		if err != nil {
+			return fmt.Errorf("staged lease_settle: %w", err)
+		}
+		if b.Amount != expectedXE {
+			return fmt.Errorf("staged lease_settle: amount mismatch: expected %d, got %d", expectedXE, b.Amount)
 		}
 		expectedBal := parentBalance + b.Amount
 		if expectedBal < parentBalance {
