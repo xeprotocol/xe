@@ -384,5 +384,11 @@ func (l *Ledger) undoBlockApply(account string, b *Block) error {
 		return err
 	}
 	apply()
+	if l.finalStore != nil {
+		_ = l.finalStore.DeleteVotesForConflict(account, b.Previous)
+	}
+	if l.finalVoteStore != nil {
+		_ = l.finalVoteStore.DeleteFinalVote(account, b.Previous)
+	}
 	return nil
 }

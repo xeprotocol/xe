@@ -1559,6 +1559,17 @@ func (s *BadgerStore) PutFinalVoteIfAbsent(account, previous, hash string) (stri
 	return stored, written, nil
 }
 
+func (s *BadgerStore) DeleteFinalVote(account, previous string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		key := prefixedKey(prefixFinalVote, account+"|"+previous)
+		err := txn.Delete(key)
+		if err == badger.ErrKeyNotFound {
+			return nil
+		}
+		return err
+	})
+}
+
 func (s *BadgerStore) PutLease(lease *core.Lease) error {
 	data, err := json.Marshal(lease)
 	if err != nil {
