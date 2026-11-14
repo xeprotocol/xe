@@ -231,19 +231,20 @@ func verifyMultisig(b *Block, keyset *DAOKeyset) error {
 
 	keysetMap := make(map[string]bool, len(keyset.Keys))
 	for _, k := range keyset.Keys {
-		keysetMap[k] = true
+		keysetMap[strings.ToLower(k)] = true
 	}
 
 	seen := make(map[string]bool, len(b.Signatures))
 	validCount := 0
 
 	for _, sig := range b.Signatures {
-		if seen[sig.PublicKey] {
+		normPub := strings.ToLower(sig.PublicKey)
+		if seen[normPub] {
 			return fmt.Errorf("duplicate signer: %s", shortKey(sig.PublicKey))
 		}
-		seen[sig.PublicKey] = true
+		seen[normPub] = true
 
-		if !keysetMap[sig.PublicKey] {
+		if !keysetMap[normPub] {
 			return fmt.Errorf("signer %s not in keyset", shortKey(sig.PublicKey))
 		}
 
@@ -365,19 +366,20 @@ func verifyOracleMultisig(b *Block, config *OracleConfig) error {
 
 	keysetMap := make(map[string]bool, len(config.Keys))
 	for _, k := range config.Keys {
-		keysetMap[k] = true
+		keysetMap[strings.ToLower(k)] = true
 	}
 
 	seen := make(map[string]bool, len(b.Signatures))
 	validCount := 0
 
 	for _, sig := range b.Signatures {
-		if seen[sig.PublicKey] {
+		normPub := strings.ToLower(sig.PublicKey)
+		if seen[normPub] {
 			return fmt.Errorf("duplicate signer: %s", shortKey(sig.PublicKey))
 		}
-		seen[sig.PublicKey] = true
+		seen[normPub] = true
 
-		if !keysetMap[sig.PublicKey] {
+		if !keysetMap[normPub] {
 			return fmt.Errorf("signer %s not in oracle keyset", shortKey(sig.PublicKey))
 		}
 
