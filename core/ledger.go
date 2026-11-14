@@ -1672,7 +1672,7 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 	if tkConfig == nil {
 		return fmt.Errorf("lease_accept: timekeepers not configured")
 	}
-	startTime, err := ValidateAttestations(b.Attestations, b.Source, tkConfig, skipSkew)
+	startTime, err := ValidateAttestationsForOp(b.Attestations, b.Source, string(BlockLeaseAccept), tkConfig, skipSkew)
 	if err != nil {
 		return fmt.Errorf("lease_accept attestation: %w", err)
 	}
@@ -1926,7 +1926,7 @@ func (l *Ledger) validateAndAddLeaseForceSettle(b *Block, skipSkew bool) error {
 	if tkConfig == nil {
 		return fmt.Errorf("lease_force_settle: timekeepers not configured")
 	}
-	forceTime, err := ValidateAttestations(b.Attestations, b.Source, tkConfig, skipSkew)
+	forceTime, err := ValidateAttestationsForOp(b.Attestations, b.Source, string(BlockLeaseForceSettle), tkConfig, skipSkew)
 	if err != nil {
 		return fmt.Errorf("lease_force_settle attestation: %w", err)
 	}
@@ -2153,7 +2153,7 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 	if tkConfigSettle == nil {
 		return fmt.Errorf("lease_settle: timekeepers not configured")
 	}
-	settleTime, err := ValidateAttestations(b.Attestations, b.Source, tkConfigSettle, skipSkew)
+	settleTime, err := ValidateAttestationsForOp(b.Attestations, b.Source, string(BlockLeaseSettle), tkConfigSettle, skipSkew)
 	if err != nil {
 		return fmt.Errorf("lease_settle attestation: %w", err)
 	}

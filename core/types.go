@@ -113,6 +113,7 @@ type TimekeeperAttestation struct {
 	PublicKey string `json:"public_key"`
 	Timestamp int64  `json:"timestamp"`
 	Signature string `json:"signature"`
+	Operation string `json:"operation,omitempty"`
 }
 
 type TimekeeperConfig struct {

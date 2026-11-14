@@ -49,14 +49,20 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 	if tkConfig == nil {
 		return fmt.Errorf("lease_renew: timekeepers not configured")
 	}
-	renewTime, err := ValidateAttestations(b.Attestations, b.Source, tkConfig, skipSkew)
+	renewTime, err := ValidateAttestationsForOp(b.Attestations, b.Source, string(BlockLeaseRenew), tkConfig, skipSkew)
 	if err != nil {
 		return fmt.Errorf("lease_renew attestation: %w", err)
 	}
 
 	expiry := lease.EffectiveExpiry()
-	if renewTime < lease.StartTime {
-		return fmt.Errorf("lease_renew: renewal time %d before lease start %d", renewTime, lease.StartTime)
+	if renewTime <= lease.StartTime {
+		return fmt.Errorf("lease_renew: renewal time %d must be strictly after lease start %d", renewTime, lease.StartTime)
+	}
+	if len(lease.Renewals) > 0 {
+		lastStart := lease.Renewals[len(lease.Renewals)-1].StartTime
+		if renewTime <= lastStart {
+			return fmt.Errorf("lease_renew: renewal time %d must be strictly after previous renewal start %d", renewTime, lastStart)
+		}
 	}
 	if renewTime >= expiry {
 		return fmt.Errorf("lease_renew: lease no longer live (renewal time %d >= effective expiry %d)", renewTime, expiry)
