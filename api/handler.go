@@ -98,6 +98,10 @@ type Handler struct {
 	recentBlocks []*core.Block
 	recentAt     time.Time
 
+	accountsMu   sync.Mutex
+	accountsList []node.AccountSummary
+	accountsAt   time.Time
+
 	observer *node.Observer
 }
 
@@ -153,7 +157,7 @@ func (h *Handler) routes() []apiRoute {
 		{"GET", "/health", "Liveness: the process is up and its internal loops are running. Says nothing about consensus", h.handleHealth},
 		{"GET", "/ready", "Readiness: synced, peered, delegated vote weight present, quorum reachable, finality advancing. 503 when not ready", h.handleReady},
 
-		{"GET", "/accounts", "All known accounts with frontier hash and block count", h.handleGetAllAccounts},
+		{"GET", "/accounts", "All known accounts with frontier hash and block count (paginated, 100 by default, 1000 max)", h.handleGetAllAccounts},
 		{"GET", "/accounts/{address}/balance", "Per-asset balance for an account", h.handleGetBalance},
 		{"GET", "/accounts/{address}/chain", "Full block chain for an account", h.handleGetChain},
 		{"GET", "/accounts/{address}/keyset", "Multisig keyset for an account, if any", h.handleGetKeyset},
@@ -163,7 +167,7 @@ func (h *Handler) routes() []apiRoute {
 
 		{"GET", "/supply", "Aggregate supply per asset and the conservation identity", h.handleGetSupply},
 
-		{"GET", "/pending", "All pending sends across accounts", h.handleGetAllPending},
+		{"GET", "/pending", "All pending sends across accounts (paginated, 100 by default, 1000 max)", h.handleGetAllPending},
 		{"GET", "/pending/{address}", "Pending sends to a single account", h.handleGetPending},
 
 		{"GET", "/blocks/recent", "Most recent blocks across the lattice", h.handleGetRecentBlocks},
@@ -625,8 +629,14 @@ func (h *Handler) handleGetAllPending(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.enrichPending(page))
 }
 
-func (h *Handler) handleGetAllAccounts(w http.ResponseWriter, r *http.Request) {
-	offset, limit := parsePagination(r)
+const accountsCacheTTL = 2 * time.Second
+
+func (h *Handler) cachedAccounts() []node.AccountSummary {
+	h.accountsMu.Lock()
+	defer h.accountsMu.Unlock()
+	if h.accountsList != nil && time.Since(h.accountsAt) < accountsCacheTTL {
+		return h.accountsList
+	}
 	accounts := h.node.GetAllAccounts()
 	sort.Slice(accounts, func(i, j int) bool {
 		if a, b := accounts[i].Balances["XE"], accounts[j].Balances["XE"]; a != b {
@@ -634,6 +644,14 @@ func (h *Handler) handleGetAllAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		return accounts[i].Address < accounts[j].Address
 	})
+	h.accountsList = accounts
+	h.accountsAt = time.Now()
+	return h.accountsList
+}
+
+func (h *Handler) handleGetAllAccounts(w http.ResponseWriter, r *http.Request) {
+	offset, limit := parsePagination(r)
+	accounts := h.cachedAccounts()
 	if offset >= len(accounts) {
 		writeJSON(w, http.StatusOK, []node.AccountSummary{})
 		return

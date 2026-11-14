@@ -93,6 +93,16 @@ func (m *MemStore) GetAccountChain(account string) (*core.AccountChain, error) {
 	return copyChain(chain), nil
 }
 
+func (m *MemStore) GetAccountChainLength(account string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	chain, ok := m.chains[account]
+	if !ok || chain == nil {
+		return 0, nil
+	}
+	return len(chain.Blocks), nil
+}
+
 func (m *MemStore) PutAccountChain(account string, chain *core.AccountChain) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

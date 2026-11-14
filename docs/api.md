@@ -438,7 +438,7 @@ file are committed under `deploy/monitoring/`.
 ## Accounts
 
 ### GET /accounts
-All known accounts. Query: `?offset=N&limit=M`. Returns an array of account summaries.
+All known accounts (paginated, 100 by default, 1000 max). Query: `?offset=N&limit=M`. Returns an array of account summaries.
 ```bash
 curl "https://ldn.core.test.network/accounts?limit=2"
 ```
@@ -625,7 +625,7 @@ The walk is cached briefly, so `computed_at` may trail the request by a second o
 ## Pending sends
 
 ### GET /pending
-All pending (sent but not yet received) sends across accounts. Query: `?offset=N&limit=M`. Each entry is enriched with the send block's `Timestamp`.
+All pending (sent but not yet received) sends across accounts (paginated, 100 by default, 1000 max). Query: `?offset=N&limit=M`. Each entry is enriched with the send block's `Timestamp`.
 ```bash
 curl "https://ldn.core.test.network/pending?limit=2"
 ```

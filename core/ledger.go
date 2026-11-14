@@ -2386,6 +2386,10 @@ func (l *Ledger) GetChain(account string) []*Block {
 	return out
 }
 
+func (l *Ledger) GetAccountChainLength(account string) (int, error) {
+	return l.store.GetAccountChainLength(account)
+}
+
 var storeReadErrors atomic.Uint64
 
 func StoreReadErrors() uint64 {
@@ -2547,6 +2551,11 @@ func (l *Ledger) initBlockCount() {
 	frontiers := l.Frontiers()
 	var count int64
 	for acc := range frontiers {
+		n, err := l.store.GetAccountChainLength(acc)
+		if err == nil {
+			count += int64(n)
+			continue
+		}
 		chain, err := l.store.GetAccountChain(acc)
 		if err != nil || chain == nil {
 			continue
