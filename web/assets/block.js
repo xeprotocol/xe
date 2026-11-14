@@ -1,4 +1,4 @@
-import { api } from './api.js';
+import { api, formatRawBlockJson } from './api.js';
 import { shortAddr, shortHash, timeOfDay, relativeTime, formatAmount, formatMilli, formatMilliUSD } from './format.js';
 import { makeSortableTable } from './sortable.js';
 
@@ -162,7 +162,7 @@ function render(block, hash) {
   }
 
   const raw = document.getElementById('raw');
-  raw.textContent = JSON.stringify(block, null, 2);
+  raw.textContent = formatRawBlockJson(block);
   document.getElementById('raw-section').hidden = false;
 }
 
