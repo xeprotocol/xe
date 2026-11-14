@@ -711,6 +711,9 @@ func lookupLeaseForceSettleTimestamp(store Store, lease *Lease) int64 {
 func normalizeBlockHex(b *Block) {
 	b.Account = strings.ToLower(b.Account)
 	b.Previous = strings.ToLower(b.Previous)
+	if b.Previous == zeroHash64 {
+		b.Previous = "0"
+	}
 	b.Hash = strings.ToLower(b.Hash)
 	b.Signature = strings.ToLower(b.Signature)
 	b.Destination = strings.ToLower(b.Destination)
@@ -800,6 +803,16 @@ func (l *Ledger) addBlock(b *Block, skipTimestamp bool) error {
 
 	if err := l.verifyBlockCredential(b); err != nil {
 		return err
+	}
+
+	if isZeroPrevious(b.Previous) && b.Type != BlockGenesis {
+		chain, err := l.store.GetAccountChain(b.Account)
+		if err != nil {
+			return fmt.Errorf("GetAccountChain: %w", err)
+		}
+		if chain != nil && len(chain.Blocks) > 0 {
+			return fmt.Errorf("account %s already has a chain: previous cannot be 0 (frontier is %s)", shortAddr(b.Account), shortHash(chain.Frontier()))
+		}
 	}
 
 	if cs, ok := l.store.(ConflictStore); ok {
@@ -919,6 +932,15 @@ func (l *Ledger) dispatchValidateAndAdd(b *Block, skipTimestamp bool) error {
 
 	if err := l.verifyBlockCredential(b); err != nil {
 		return err
+	}
+	if isZeroPrevious(b.Previous) && b.Type != BlockGenesis {
+		chain, err := l.getAccountChainOverlay(b.Account)
+		if err != nil {
+			return fmt.Errorf("GetAccountChain: %w", err)
+		}
+		if chain != nil && len(chain.Blocks) > 0 {
+			return fmt.Errorf("account %s already has a chain: previous cannot be 0 (frontier is %s)", shortAddr(b.Account), shortHash(chain.Frontier()))
+		}
 	}
 	switch b.Type {
 	case BlockSend:
@@ -1450,7 +1472,7 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 	}
 
 	var pubKey string
-	if b.Previous == "0" {
+	if isZeroPrevious(b.Previous) {
 		pubKey = b.PubKey
 	} else {
 		pubKey = l.GetAccountKey(b.Account)

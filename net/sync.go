@@ -603,11 +603,17 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	rejected := 0
 	for retry := 0; retry < maxRetries && len(pending) > 0; retry++ {
 		var retryable []*core.Block
+		retryableAccounts := make(map[string]bool)
 		for _, b := range pending {
+			if retryableAccounts[b.Account] {
+				retryable = append(retryable, b)
+				continue
+			}
 			err := ledger.AddSyncedBlock(b)
 			if err != nil {
 				if isRetryableError(err) {
 					retryable = append(retryable, b)
+					retryableAccounts[b.Account] = true
 				} else {
 					rejected++
 					quarantine.add(b.Hash)

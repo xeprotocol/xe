@@ -97,9 +97,24 @@ func HashBlock(b *Block) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+const zeroHash64 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+func isZeroPrevious(prev string) bool {
+	return prev == "0" || prev == zeroHash64
+}
+
+func canOpenAccount(t BlockType) bool {
+	switch t {
+	case BlockReceive, BlockMultisigOpen, BlockMint, BlockGenesis:
+		return true
+	default:
+		return false
+	}
+}
+
 func SignBlock(b *Block, kp *KeyPair) error {
-	if b.Previous == "0" && b.PubKey == "" && len(b.Signatures) == 0 &&
-		b.Type != BlockMultisigOpen && b.Type != BlockMultisigUpdate {
+	if isZeroPrevious(b.Previous) && b.PubKey == "" && len(b.Signatures) == 0 &&
+		canOpenAccount(b.Type) && b.Type != BlockMultisigOpen {
 		b.PubKey = kp.PubKeyHex()
 	}
 	hash, err := HashBlock(b)
@@ -117,13 +132,16 @@ func SignBlock(b *Block, kp *KeyPair) error {
 }
 
 func ValidatePubKeyDeclaration(b *Block) error {
+	if isZeroPrevious(b.Previous) && !canOpenAccount(b.Type) {
+		return fmt.Errorf("%s block cannot open an account (previous must not be 0)", b.Type)
+	}
 	if len(b.Signatures) > 0 {
 		if b.PubKey != "" {
 			return fmt.Errorf("multisig block must not declare pub_key")
 		}
 		return nil
 	}
-	if b.Previous == "0" {
+	if isZeroPrevious(b.Previous) {
 		if b.PubKey == "" {
 			return fmt.Errorf("open block must declare pub_key")
 		}
@@ -159,7 +177,7 @@ func VerifyBlock(b *Block) error {
 		return nil
 	}
 
-	if b.Previous != "0" {
+	if !isZeroPrevious(b.Previous) {
 		return nil
 	}
 
