@@ -44,7 +44,7 @@ func MarshalCanonical(b *Block) ([]byte, error) {
 		buf.Write(keyBytes)
 
 		if op.Action == ActionSet {
-			valBytes := []byte(op.Value)
+			valBytes := normalizeOpValue(op.Value)
 			var valLen [4]byte
 			binary.BigEndian.PutUint32(valLen[:], uint32(len(valBytes)))
 			buf.Write(valLen[:])
@@ -60,4 +60,16 @@ func MarshalCanonical(b *Block) ([]byte, error) {
 	buf.Write(ts[:])
 
 	return buf.Bytes(), nil
+}
+
+// normalizeOpValue canonicalizes line endings in op.Value to LF (\n).
+// Per RFC 8259, raw carriage-return (\r) bytes never appear in valid JSON string
+// literals (escaped newlines are \r\n, not raw bytes). Raw \r bytes only
+// appear in json.RawMessage values as whitespace from CRLF line endings.
+func normalizeOpValue(v []byte) []byte {
+	if len(v) == 0 || !bytes.ContainsRune(v, '\r') {
+		return v
+	}
+	v = bytes.ReplaceAll(v, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(v, []byte("\r"), []byte("\n"))
 }
