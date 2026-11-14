@@ -147,7 +147,7 @@ func (g *Gossip) Subscribe(ctx context.Context) <-chan *core.Block {
 			}
 
 			b := bm.Block
-			if len(b.Hash) != 64 || len(b.Signature) != 128 || len(b.Account) != 64 {
+			if !validGossipBlockEnvelope(b) {
 				continue
 			}
 

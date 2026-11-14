@@ -567,7 +567,15 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	n.selfRegister()
 
 	n.wg.Add(9)
-	go func() { defer n.wg.Done(); n.handleIncoming(gossip.Subscribe(ctx)) }()
+	go func() {
+		defer n.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("gossip: recovered panic in block ingestion loop: %v", r)
+			}
+		}()
+		n.handleIncoming(gossip.Subscribe(ctx))
+	}()
 	go func() { defer n.wg.Done(); n.handleIncomingVotes(voteGossip.Subscribe(ctx)) }()
 	go func() { defer n.wg.Done(); n.handleMarketplace(marketGossip.Subscribe(ctx)) }()
 	go func() { defer n.wg.Done(); n.settleLoop() }()
@@ -704,38 +712,49 @@ func (n *Node) bootstrapWithRetry(addrs []string) {
 
 func (n *Node) handleIncoming(blocks <-chan *core.Block) {
 	for b := range blocks {
-
-		if b.Account == n.KeyPair.Address() {
-			continue
-		}
-		err := n.Ledger.AddBlock(b)
-		if err != nil {
-
-			metrics.BlocksAdded.WithLabelValues("gossip_rejected").Inc()
-			logging.Debugf("Rejected block %s: %v", shortHash(b.Hash), err)
-		} else {
-			metrics.BlocksAdded.WithLabelValues("gossip").Inc()
-			logging.Debugf("Accepted block %s (%s on %s)", shortHash(b.Hash), b.Type, shortAddr(b.Account))
-			n.syncTracker.MarkDirty()
-
-			if b.Type == core.BlockLease && b.Destination == n.KeyPair.Address() && n.isProvider {
-				n.wg.Add(1)
-				go func() {
-					defer n.wg.Done()
-					n.autoAcceptLease(b)
-				}()
+		func(b *core.Block) {
+			defer func() {
+				if r := recover(); r != nil {
+					metrics.BlocksAdded.WithLabelValues("gossip_rejected").Inc()
+					logging.Errorf("gossip: recovered panic while ingesting block: %v", r)
+				}
+			}()
+			if b == nil {
+				return
 			}
+			if n.KeyPair != nil && b.Account == n.KeyPair.Address() {
+				return
+			}
+			err := n.Ledger.AddBlock(b)
+			if err != nil {
+				metrics.BlocksAdded.WithLabelValues("gossip_rejected").Inc()
+				logging.Debugf("Rejected block %s: %v", shortHash(b.Hash), err)
+			} else {
+				metrics.BlocksAdded.WithLabelValues("gossip").Inc()
+				logging.Debugf("Accepted block %s (%s on %s)", shortHash(b.Hash), b.Type, shortAddr(b.Account))
+				if n.syncTracker != nil {
+					n.syncTracker.MarkDirty()
+				}
 
-			if b.Type == core.BlockLeaseSettle && b.Source != "" {
-				if v, ok := n.consumerVMs.Load(b.Source); ok {
-					old := v.(*vm.Info)
-					updated := *old
-					updated.Status = "stopped"
-					updated.Credentials = nil
-					n.consumerVMs.Store(b.Source, &updated)
+				if b.Type == core.BlockLease && n.KeyPair != nil && b.Destination == n.KeyPair.Address() && n.isProvider {
+					n.wg.Add(1)
+					go func() {
+						defer n.wg.Done()
+						n.autoAcceptLease(b)
+					}()
+				}
+
+				if b.Type == core.BlockLeaseSettle && b.Source != "" {
+					if v, ok := n.consumerVMs.Load(b.Source); ok {
+						old := v.(*vm.Info)
+						updated := *old
+						updated.Status = "stopped"
+						updated.Credentials = nil
+						n.consumerVMs.Store(b.Source, &updated)
+					}
 				}
 			}
-		}
+		}(b)
 	}
 }
 

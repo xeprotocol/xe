@@ -55,7 +55,7 @@ func ValidateKeyset(ks *Keyset) error {
 		}
 		lower := hex.EncodeToString(mustDecodeHex(k))
 		if seen[lower] {
-			return fmt.Errorf("duplicate key: %s", k[:12])
+			return fmt.Errorf("duplicate key: %s", shortHash(k))
 		}
 		seen[lower] = true
 	}
@@ -71,6 +71,9 @@ func mustDecodeHex(s string) []byte {
 }
 
 func VerifyMultisig(hash string, sigs []BlockSignature, ks *Keyset) error {
+	if ks == nil {
+		return fmt.Errorf("keyset is nil")
+	}
 	if len(sigs) == 0 {
 		return fmt.Errorf("no signatures")
 	}
@@ -90,17 +93,23 @@ func VerifyMultisig(hash string, sigs []BlockSignature, ks *Keyset) error {
 
 	for _, sig := range sigs {
 		pk := sig.PublicKey
+		if len(pk) != 64 {
+			return fmt.Errorf("invalid signer public key length for %s: got %d, want 64", shortHash(pk), len(pk))
+		}
+		if _, err := hex.DecodeString(pk); err != nil {
+			return fmt.Errorf("invalid signer public key hex for %s: %w", shortHash(pk), err)
+		}
 		if seen[pk] {
-			return fmt.Errorf("duplicate signer: %s", pk[:12])
+			return fmt.Errorf("duplicate signer: %s", shortHash(pk))
 		}
 		seen[pk] = true
 
 		if !keysetMap[pk] {
-			return fmt.Errorf("signer %s not in keyset", pk[:12])
+			return fmt.Errorf("signer %s not in keyset", shortHash(pk))
 		}
 
 		if err := VerifyHexSignature(pk, sig.Sig, hashBytes); err != nil {
-			return fmt.Errorf("sig from %s: %w", pk[:12], err)
+			return fmt.Errorf("sig from %s: %w", shortHash(pk), err)
 		}
 		validCount++
 	}
@@ -112,6 +121,9 @@ func VerifyMultisig(hash string, sigs []BlockSignature, ks *Keyset) error {
 }
 
 func VerifyMultisigAny(hash string, sigs []BlockSignature, ks *Keyset) error {
+	if ks == nil {
+		return fmt.Errorf("keyset is nil")
+	}
 	if len(sigs) == 0 {
 		return fmt.Errorf("no signatures")
 	}
@@ -127,6 +139,12 @@ func VerifyMultisigAny(hash string, sigs []BlockSignature, ks *Keyset) error {
 	}
 
 	for _, sig := range sigs {
+		if len(sig.PublicKey) != 64 {
+			return fmt.Errorf("invalid signer public key length for %s: got %d, want 64", shortHash(sig.PublicKey), len(sig.PublicKey))
+		}
+		if _, err := hex.DecodeString(sig.PublicKey); err != nil {
+			return fmt.Errorf("invalid signer public key hex for %s: %w", shortHash(sig.PublicKey), err)
+		}
 		if !keysetMap[sig.PublicKey] {
 			continue
 		}

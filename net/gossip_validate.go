@@ -60,6 +60,35 @@ func isHex64(s string) bool {
 	return err == nil
 }
 
+func isHex128(s string) bool {
+	if len(s) != 128 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+func validGossipBlockEnvelope(b *core.Block) bool {
+	if b == nil {
+		return false
+	}
+	if !isHex64(b.Hash) || !isHex64(b.Account) {
+		return false
+	}
+	if len(b.Signature) != 128 && len(b.Signatures) == 0 {
+		return false
+	}
+	if b.Signature != "" && !isHex128(b.Signature) {
+		return false
+	}
+	for _, sig := range b.Signatures {
+		if !isHex64(sig.PublicKey) || !isHex128(sig.Sig) {
+			return false
+		}
+	}
+	return true
+}
+
 func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 	return func(_ context.Context, _ peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
 		var bm BlockMsg
@@ -67,14 +96,7 @@ func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 			return pubsub.ValidationReject
 		}
 		b := bm.Block
-		if b == nil {
-			return pubsub.ValidationReject
-		}
-		if !isHex64(b.Hash) || !isHex64(b.Account) {
-			return pubsub.ValidationReject
-		}
-
-		if len(b.Signature) != 128 && len(b.Signatures) == 0 {
+		if !validGossipBlockEnvelope(b) {
 			return pubsub.ValidationReject
 		}
 
