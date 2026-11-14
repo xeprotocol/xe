@@ -113,7 +113,7 @@ const (
 	LeaseVCPURate     = uint64(20_000)
 	LeaseMemGBRate    = uint64(10_000)
 	LeaseDiskGBRate   = uint64(1_000)
-	LeaseStakeDivisor = uint64(0)
+	LeaseStakeDivisor = uint64(5)
 )
 
 const (
