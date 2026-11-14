@@ -96,6 +96,7 @@ func (l *Ledger) priorLease(leaseHash string, target LeaseState) *Lease {
 	restored := *cur
 	restored.State = target
 	restored.Settled = false
+	restored.StakeForfeited = false
 	if target == LeaseCreated {
 		restored.Stake = 0
 		restored.StartTime = 0
@@ -175,7 +176,7 @@ func (l *Ledger) xusdBalanceOnChain(chain *AccountChain) uint64 {
 			bal = b.Balance
 		}
 		if b.Type == BlockLeaseSettle && hasLeases {
-			if lease, err := ls.GetLease(b.Source); err == nil && lease != nil {
+			if lease, err := ls.GetLease(b.Source); err == nil && lease != nil && !lease.StakeForfeited {
 				bal += lease.Stake
 			}
 		}
@@ -225,11 +226,16 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 
 		restoreLease = l.priorLease(b.Source, LeaseCreated)
 	case BlockLeaseSettle, BlockLeaseForceSettle:
-
+		var wasStakeForfeited bool
+		if ls, ok := l.store.(LeaseStore); ok {
+			if cur, err := ls.GetLease(b.Source); err == nil && cur != nil {
+				wasStakeForfeited = cur.StakeForfeited
+			}
+		}
 		restoreLease = l.priorLease(b.Source, LeaseAccepted)
 		addPending = l.escrowPendingOf(b.Source)
 
-		if b.Type == BlockLeaseSettle && restoreLease != nil {
+		if b.Type == BlockLeaseSettle && restoreLease != nil && !wasStakeForfeited {
 			assetDebit = &AssetDelta{Account: b.Account, Asset: "XUSD", Amount: restoreLease.Stake}
 		}
 	case BlockLeaseCancel:
@@ -259,7 +265,11 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		case BlockLeaseAccept:
 			repRevert = &ReputationEvent{Kind: EventLeaseAccepted, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer}
 		case BlockLeaseSettle:
-			repRevert = &ReputationEvent{Kind: EventLeaseSettled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer, DurationSecs: restoreLease.Duration}
+			if assetDebit == nil {
+				repRevert = &ReputationEvent{Kind: EventLeaseUnfulfilled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer}
+			} else {
+				repRevert = &ReputationEvent{Kind: EventLeaseSettled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer, DurationSecs: restoreLease.Duration}
+			}
 		case BlockLeaseForceSettle:
 			repRevert = &ReputationEvent{Kind: EventLeaseUnfulfilled, Provider: restoreLease.Provider, Consumer: restoreLease.Consumer}
 		case BlockLeaseCancel:

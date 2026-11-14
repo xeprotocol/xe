@@ -258,10 +258,13 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 	}
 	unplaceable := make([]string, 0)
 	for h, st := range stakes {
+		lease := byHash[h]
 		if _, settled := emissions[h]; settled {
+			if lease != nil && lease.StakeForfeited {
+				add(&get(AssetXUSD.Symbol).StakeForfeited, st)
+			}
 			continue
 		}
-		lease := byHash[h]
 		switch {
 		case lease == nil:
 			unplaceable = append(unplaceable, shortHash(h))

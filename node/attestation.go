@@ -32,7 +32,14 @@ type AttestationResponse struct {
 func (n *Node) canAttest(identifier string) error {
 	if lease := n.GetLease(identifier); lease != nil {
 		switch lease.State {
-		case core.LeaseCreated, core.LeaseAccepted:
+		case core.LeaseCreated:
+			return nil
+		case core.LeaseAccepted:
+			if n.isProvider && n.KeyPair != nil && lease.Provider == n.KeyPair.Address() && n.VMManager != nil {
+				if _, err := n.VMManager.Get(identifier); err != nil {
+					return fmt.Errorf("lease %s has no provisioned VM on provider: %w", shortHash(identifier), err)
+				}
+			}
 			return nil
 		}
 		return fmt.Errorf("lease %s is %s: no attestation-gated transitions remain", shortHash(identifier), lease.State)
