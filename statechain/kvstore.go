@@ -85,10 +85,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			if _, err := hex.DecodeString(k); err != nil {
 				return fmt.Errorf("dao_keyset key[%d] invalid hex: %w", i, err)
 			}
-			if seen[k] {
+			norm := strings.ToLower(k)
+			if seen[norm] {
 				return fmt.Errorf("dao_keyset key[%d] is a duplicate", i)
 			}
-			seen[k] = true
+			seen[norm] = true
 		}
 	case "sys.timekeepers":
 		var tk struct {
@@ -104,10 +105,19 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 		if tk.Threshold < 1 || tk.Threshold > len(tk.Keys) {
 			return fmt.Errorf("timekeepers threshold %d invalid for %d keys", tk.Threshold, len(tk.Keys))
 		}
+		seen := make(map[string]bool, len(tk.Keys))
 		for i, k := range tk.Keys {
 			if len(k) != 64 {
 				return fmt.Errorf("timekeepers key[%d] invalid length: got %d, want 64 hex chars", i, len(k))
 			}
+			if _, err := hex.DecodeString(k); err != nil {
+				return fmt.Errorf("timekeepers key[%d] invalid hex: %w", i, err)
+			}
+			norm := strings.ToLower(k)
+			if seen[norm] {
+				return fmt.Errorf("timekeepers key[%d] is a duplicate", i)
+			}
+			seen[norm] = true
 		}
 	case "sys.minter":
 
@@ -128,10 +138,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			if _, err := hex.DecodeString(k); err != nil {
 				return fmt.Errorf("minter key[%d] invalid hex: %w", i, err)
 			}
-			if seen[k] {
+			norm := strings.ToLower(k)
+			if seen[norm] {
 				return fmt.Errorf("minter key[%d] is a duplicate", i)
 			}
-			seen[k] = true
+			seen[norm] = true
 		}
 	case "sys.oracle":
 		var oc OracleConfig
@@ -155,10 +166,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			if _, err := hex.DecodeString(k); err != nil {
 				return fmt.Errorf("oracle key[%d] invalid hex: %w", i, err)
 			}
-			if seen[k] {
+			norm := strings.ToLower(k)
+			if seen[norm] {
 				return fmt.Errorf("oracle key[%d] is a duplicate", i)
 			}
-			seen[k] = true
+			seen[norm] = true
 		}
 	case "sys.phase":
 
@@ -201,10 +213,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 				if _, err := hex.DecodeString(a); err != nil {
 					return fmt.Errorf("representatives address[%d] invalid hex: %w", i, err)
 				}
-				if seen[a] {
+				norm := strings.ToLower(a)
+				if seen[norm] {
 					return fmt.Errorf("representatives address[%d] is a duplicate", i)
 				}
-				seen[a] = true
+				seen[norm] = true
 			}
 		default:
 
