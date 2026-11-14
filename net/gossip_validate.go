@@ -60,6 +60,24 @@ func isHex64(s string) bool {
 	return err == nil
 }
 
+func hasValidBlockSignatures(b *core.Block) bool {
+	if b == nil {
+		return false
+	}
+	if len(b.Signatures) == 0 {
+		return len(b.Signature) == 128
+	}
+	if b.Signature != "" && len(b.Signature) != 128 {
+		return false
+	}
+	for _, sig := range b.Signatures {
+		if len(sig.PublicKey) != 64 || len(sig.Sig) != 128 {
+			return false
+		}
+	}
+	return true
+}
+
 func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 	return func(_ context.Context, _ peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
 		var bm BlockMsg
@@ -74,13 +92,13 @@ func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 			return pubsub.ValidationReject
 		}
 
-		if len(b.Signature) != 128 && len(b.Signatures) == 0 {
+		if !hasValidBlockSignatures(b) {
 			return pubsub.ValidationReject
 		}
 
 		expected, err := core.HashBlock(b)
 		if err != nil || expected != b.Hash {
-			return pubsub.ValidationIgnore
+			return pubsub.ValidationReject
 		}
 
 		if cfg.Difficulty > 0 {
@@ -205,7 +223,7 @@ func marketplaceValidator() pubsub.ValidatorEx {
 		case "":
 			return pubsub.ValidationReject
 		default:
-			return pubsub.ValidationIgnore
+			return pubsub.ValidationReject
 		}
 		return pubsub.ValidationAccept
 	}
