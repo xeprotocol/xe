@@ -196,6 +196,12 @@ func (vm *VoteManager) isConflictNotFound(v *Vote) bool {
 		return false
 	}
 
+	if vm.ledger != nil {
+		if b := vm.ledger.GetBlockOrStaged(v.BlockHash); b != nil && !blockMatchesPosition(b, v.ConflictAccount, v.ConflictPrev) {
+			return false
+		}
+	}
+
 	conflict := vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev)
 	return conflict == nil
 }
@@ -255,6 +261,14 @@ func (vm *VoteManager) ValidateVote(v *Vote) error {
 	}
 	if delta > voteWindowNanos {
 		return fmt.Errorf("ValidateVote: timestamp out of range: delta=%v", time.Duration(delta))
+	}
+
+	if vm.ledger != nil {
+		if b := vm.ledger.GetBlockOrStaged(v.BlockHash); b != nil && !blockMatchesPosition(b, v.ConflictAccount, v.ConflictPrev) {
+			return fmt.Errorf("ValidateVote: block %s belongs to %s|%s, not %s|%s",
+				shortHash(v.BlockHash), shortAddr(b.Account), shortHash(b.Previous),
+				shortAddr(v.ConflictAccount), shortHash(v.ConflictPrev))
+		}
 	}
 
 	return nil

@@ -109,16 +109,15 @@ func (qm *QuorumManager) finalTally(account, previous string) (*quorumResult, er
 	weightByBlock := make(map[string]*big.Int)
 	candidateSet := make(map[string]bool)
 	for _, v := range votes {
+		var b *Block
+		if qm.ledger != nil {
+			b = qm.ledger.GetBlockOrStaged(v.BlockHash)
+			if b != nil && !blockMatchesPosition(b, account, previous) {
+				continue
+			}
+		}
 		candidateSet[v.BlockHash] = true
-		if !v.Final {
-			continue
-		}
-
-		if qm.ledger == nil {
-			continue
-		}
-		b := qm.ledger.GetBlockOrStaged(v.BlockHash)
-		if b == nil || b.Account != account || b.Previous != previous {
+		if !v.Final || b == nil {
 			continue
 		}
 		if weightByBlock[v.BlockHash] == nil {
