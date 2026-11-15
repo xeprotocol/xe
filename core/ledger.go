@@ -1099,8 +1099,15 @@ func (l *Ledger) validateAndAddReceive(b *Block) error {
 	}
 
 	if src := l.GetBlockOrStaged(b.Source); src != nil {
-		if l.GetConflict(src.Account, src.Previous) != nil {
-			return fmt.Errorf("source send %s is contested by an unresolved conflict — receive deferred pending resolution", shortHash(b.Source))
+		// Check whether ANY conflict exists on the source account (not just at the
+		// send's own previous). A send that is a descendant of a conflicted block
+		// must also be deferred: the conflict is registered at the fork point, which
+		// may be an ancestor of the send. Checking only at src.Previous misses this
+		// case and allows a receive that the subsequent swap cascade would not unwind
+		// — leading to supply inflation. (Fix for xeprotocol/xe#229, Defect 1.)
+		if conflicts := l.GetConflictsForAccount(src.Account); len(conflicts) > 0 {
+			return fmt.Errorf("source send %s is contested by an unresolved conflict on account %s — receive deferred pending resolution",
+				shortHash(b.Source), shortAddr(src.Account))
 		}
 	}
 
@@ -2972,6 +2979,60 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 			l.releaseAccountLock(locks[i].acc, locks[i].entry)
 		}
 	}()
+
+	// ── Re-check pending sends after acquiring foreign locks (Fix for
+	// xeprotocol/xe#229, Defect 2) ──
+	//
+	// The plan was built from unlocked reads. Between the plan read and
+	// the lock acquisition above, a concurrent receive may have resolved a
+	// pending send that was still pending at plan time. If the send is no
+	// longer pending, the destination now holds tokens from a send that the
+	// resolved chain will no longer contain — we must include the
+	// destination in the rollback plan so the cascade unwinds it.
+	for i := len(chain.Blocks) - 1; i > idx; i-- {
+		b := chain.Blocks[i]
+		if b.Type != BlockSend {
+			continue
+		}
+		if !planned[b.Hash] {
+			continue
+		}
+		// During planning this send was pending (ps != nil), so the
+		// destination was skipped. Re-check now under the destination lock.
+		if ps, _ := l.store.GetPendingSend(b.Hash); ps == nil {
+			// The receive landed in the window — include the destination.
+			if err := l.planRollbackOfSend(b.Hash, planned, &plan); err != nil {
+				return fmt.Errorf("SwapBlock: re-check rollback: %w", err)
+			}
+			// Acquire the lock for the newly-discovered destination account
+			// if not already held.
+			send := l.GetBlock(b.Hash)
+			if send != nil && send.Destination != "" && !seenLock[send.Destination] && send.Destination != account {
+				seenLock[send.Destination] = true
+				locks = append(locks, heldLock{send.Destination, l.acquireAccountLock(send.Destination)})
+			}
+		}
+	}
+	// Also re-check the old block itself if it was a send.
+	if oldBlock.Type == BlockSend {
+		if ps, _ := l.store.GetPendingSend(oldBlock.Hash); ps == nil {
+			if _, alreadyPlanned := planned[oldBlock.Hash]; !alreadyPlanned || true {
+				oldRecheck, perr := l.planCascade(oldBlock.Hash, planned)
+				if perr != nil {
+					return fmt.Errorf("SwapBlock: re-check old block rollback: %w", perr)
+				}
+				if len(oldRecheck) > 0 {
+					plan = append(plan, oldRecheck...)
+					for _, st := range oldRecheck {
+						if st.account != account && !seenLock[st.account] {
+							seenLock[st.account] = true
+							locks = append(locks, heldLock{st.account, l.acquireAccountLock(st.account)})
+						}
+					}
+				}
+			}
+		}
+	}
 
 	cascade := newCascadeBuild(newHash)
 	snapshots := map[string]*AccountChain{}
