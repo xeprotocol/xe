@@ -298,6 +298,20 @@ func (n *Node) certificateInfoByHash(hash string) *core.CertificateInfo {
 		return nil
 	}
 	return &core.CertificateInfo{
+		Hash:                 cert.Hash,
+		Provider:             cert.Provider,
+		ExpiresAt:            cert.ExpiresAt,
+		PriceMultiplierMilli: cert.PriceMultiplierMilli,
+	}
+}
+
+func (n *Node) certificateInfoByProvider(provider string) *core.CertificateInfo {
+	cert := n.GetCertificateByProvider(provider)
+	if cert == nil {
+		return nil
+	}
+	return &core.CertificateInfo{
+		Hash:                 cert.Hash,
 		Provider:             cert.Provider,
 		ExpiresAt:            cert.ExpiresAt,
 		PriceMultiplierMilli: cert.PriceMultiplierMilli,

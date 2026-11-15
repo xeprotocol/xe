@@ -81,6 +81,20 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 			shortHash(b.CertificateHash), cert.ExpiresAt, renewTime)
 	}
 
+	if l.currentCertificateFn != nil {
+		currentCert := l.currentCertificateFn(lease.Provider)
+		if currentCert != nil {
+			if currentCert.Hash != "" && b.CertificateHash != currentCert.Hash {
+				return fmt.Errorf("lease_renew: certificate %s is not provider's current certificate %s",
+					shortHash(b.CertificateHash), shortHash(currentCert.Hash))
+			}
+			if cert.PriceMultiplierMilli < currentCert.PriceMultiplierMilli {
+				return fmt.Errorf("lease_renew: certificate price multiplier %d is lower than provider current rate %d",
+					cert.PriceMultiplierMilli, currentCert.PriceMultiplierMilli)
+			}
+		}
+	}
+
 	expectedCost, err := LeaseCost(lease.VCPUs, lease.MemoryMB, lease.DiskGB, b.Duration, cert.PriceMultiplierMilli)
 	if err != nil {
 		return fmt.Errorf("lease_renew cost %w", err)
