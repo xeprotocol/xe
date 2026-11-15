@@ -775,7 +775,16 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 					return err
 				}
 			}
-			destHashes = append(destHashes, c.AddPending.SendHash)
+			already := false
+			for _, h := range destHashes {
+				if h == c.AddPending.SendHash {
+					already = true
+					break
+				}
+			}
+			if !already {
+				destHashes = append(destHashes, c.AddPending.SendHash)
+			}
 			destData, err := json.Marshal(destHashes)
 			if err != nil {
 				return err
@@ -1060,7 +1069,16 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 			} else if err != badger.ErrKeyNotFound {
 				return err
 			}
-			destHashes = append(destHashes, u.AddPending.SendHash)
+			already := false
+			for _, h := range destHashes {
+				if h == u.AddPending.SendHash {
+					already = true
+					break
+				}
+			}
+			if !already {
+				destHashes = append(destHashes, u.AddPending.SendHash)
+			}
 			dd, err := json.Marshal(destHashes)
 			if err != nil {
 				return err
@@ -1119,6 +1137,40 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 
 func (s *BadgerStore) CommitCascade(undos []*core.BlockUndo, commit *core.BlockCommit) error {
 	err := s.db.Update(func(txn *badger.Txn) error {
+		if commit != nil && commit.ExpectLeaseHash != "" {
+			var lease *core.Lease
+			if item, err := txn.Get(prefixedKey(prefixLease, commit.ExpectLeaseHash)); err == nil {
+				var stored core.Lease
+				if err := item.Value(func(val []byte) error {
+					return json.Unmarshal(val, &stored)
+				}); err != nil {
+					return err
+				}
+				lease = &stored
+			} else if err != badger.ErrKeyNotFound {
+				return fmt.Errorf("CommitCascade: lease CAS read: %w", err)
+			}
+			for _, u := range undos {
+				if u.RestoreLease != nil && u.RestoreLease.LeaseHash == commit.ExpectLeaseHash {
+					cp := *u.RestoreLease
+					lease = &cp
+				}
+				if u.DeleteLeaseHash == commit.ExpectLeaseHash {
+					lease = nil
+				}
+			}
+			if lease == nil {
+				return fmt.Errorf("CommitCascade: %w: lease %s not found", core.ErrLeaseStateConflict, commit.ExpectLeaseHash[:12])
+			}
+			if lease.State != commit.ExpectLeaseState {
+				return fmt.Errorf("CommitCascade: %w: lease %s is %s, want %s",
+					core.ErrLeaseStateConflict, commit.ExpectLeaseHash[:12], lease.State, commit.ExpectLeaseState)
+			}
+			if commit.ExpectLeaseEffectiveDurationSecs != 0 && lease.EffectiveDurationSecs() != commit.ExpectLeaseEffectiveDurationSecs {
+				return fmt.Errorf("CommitCascade: %w: lease %s effective duration %d, want %d",
+					core.ErrLeaseStateConflict, commit.ExpectLeaseHash[:12], lease.EffectiveDurationSecs(), commit.ExpectLeaseEffectiveDurationSecs)
+			}
+		}
 		for i, u := range undos {
 			if err := applyUndoTxn(txn, u); err != nil {
 				return fmt.Errorf("undo %d/%d (%s): %w", i+1, len(undos), shortStr(u.Account), err)
