@@ -74,7 +74,7 @@ func (cs *certSet) currentValid(provider string, now int64) *perf.Certificate {
 	defer cs.mu.RUnlock()
 	list := cs.byProvider[provider]
 	for i := len(list) - 1; i >= 0; i-- {
-		if list[i].ExpiresAt > now {
+		if (list[i].IssuedAt == 0 || list[i].IssuedAt <= now) && list[i].ExpiresAt > now {
 			return list[i]
 		}
 	}

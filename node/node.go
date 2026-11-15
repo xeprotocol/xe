@@ -253,17 +253,19 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	var featureActiveFn func(feature string) bool
 
 	var certLookupFn func(hash string) *core.CertificateInfo
+	var currentCertLookupFn func(provider string, at int64) *core.CertificateInfo
 	ledger := core.NewLedger(s, core.LedgerConfig{
-		Difficulty:          cfg.Difficulty,
-		TimestampWindow:     core.DefaultTimestampWindow,
-		TimekeeperConfigFn:  func() *core.TimekeeperConfig { return timekeeperConfigFn() },
-		MinterConfigFn:      func() *core.MinterConfig { return minterConfigFn() },
-		CertificateLookupFn: func(hash string) *core.CertificateInfo { return certLookupFn(hash) },
-		EpochRFn:            func() uint64 { return epochRFn() },
-		EpochPayoutCapFn:    func() uint64 { return epochPayoutCapFn() },
-		EpochTWAPFn:         func() uint64 { return epochTWAPFn() },
-		EpochAtFn:           func(ns int64) []core.EpochParams { return epochAtFn(ns) },
-		FeatureActiveFn:     func(feature string) bool { return featureActiveFn(feature) },
+		Difficulty:                 cfg.Difficulty,
+		TimestampWindow:            core.DefaultTimestampWindow,
+		TimekeeperConfigFn:         func() *core.TimekeeperConfig { return timekeeperConfigFn() },
+		MinterConfigFn:             func() *core.MinterConfig { return minterConfigFn() },
+		CertificateLookupFn:        func(hash string) *core.CertificateInfo { return certLookupFn(hash) },
+		CurrentCertificateLookupFn: func(provider string, at int64) *core.CertificateInfo { return currentCertLookupFn(provider, at) },
+		EpochRFn:                   func() uint64 { return epochRFn() },
+		EpochPayoutCapFn:           func() uint64 { return epochPayoutCapFn() },
+		EpochTWAPFn:                func() uint64 { return epochTWAPFn() },
+		EpochAtFn:                  func(ns int64) []core.EpochParams { return epochAtFn(ns) },
+		FeatureActiveFn:            func(feature string) bool { return featureActiveFn(feature) },
 	})
 
 	vs := s.(core.VoteStore)
@@ -508,6 +510,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	n.registerAttestationHandler()
 
 	certLookupFn = n.certificateInfoByHash
+	currentCertLookupFn = n.CertificateInfoByProviderAt
 
 	n.registerVMHandlers()
 	n.registerChatHandler()

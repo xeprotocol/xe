@@ -209,6 +209,8 @@ type LedgerConfig struct {
 
 	CertificateLookupFn func(hash string) *CertificateInfo
 
+	CurrentCertificateLookupFn func(provider string, at int64) *CertificateInfo
+
 	EpochRFn func() uint64
 
 	EpochPayoutCapFn func() uint64
@@ -261,7 +263,8 @@ type Ledger struct {
 	blockAddedCallback  func(*Block)
 	timekeeperConfigFn  func() *TimekeeperConfig
 	minterConfigFn      func() *MinterConfig
-	certificateLookupFn func(hash string) *CertificateInfo
+	certificateLookupFn        func(hash string) *CertificateInfo
+	currentCertificateLookupFn func(provider string, at int64) *CertificateInfo
 	epochRFn            func() uint64
 	epochPayoutCapFn    func() uint64
 	epochTWAPFn         func() uint64
@@ -299,7 +302,8 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 		timestampWindow:     cfg.TimestampWindow,
 		timekeeperConfigFn:  cfg.TimekeeperConfigFn,
 		minterConfigFn:      cfg.MinterConfigFn,
-		certificateLookupFn: cfg.CertificateLookupFn,
+		certificateLookupFn:        cfg.CertificateLookupFn,
+		currentCertificateLookupFn: cfg.CurrentCertificateLookupFn,
 		epochRFn:            cfg.EpochRFn,
 		featureActiveFn:     cfg.FeatureActiveFn,
 		epochPayoutCapFn:    cfg.EpochPayoutCapFn,
