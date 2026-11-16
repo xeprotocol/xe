@@ -32,8 +32,12 @@ func NewUIHandler(fsys fs.FS, cfg UIConfig) (http.Handler, error) {
 		if r.URL.Path == "" {
 			r.URL.Path = "/"
 		}
+		priorXFF := r.Header.Get("X-Forwarded-For")
 		origDirector(r)
 		r.Host = target.Host
+		if priorXFF != "" {
+			r.Header.Set("X-Forwarded-For", priorXFF)
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -80,8 +84,12 @@ func newPrefixProxy(prefix, base string) (http.Handler, error) {
 		if r.URL.Path == "" {
 			r.URL.Path = "/"
 		}
+		priorXFF := r.Header.Get("X-Forwarded-For")
 		origDirector(r)
 		r.Host = target.Host
+		if priorXFF != "" {
+			r.Header.Set("X-Forwarded-For", priorXFF)
+		}
 	}
 	return proxy, nil
 }
