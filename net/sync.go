@@ -323,7 +323,7 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 				if !outboundRL.allow(pid) {
 					return
 				}
-				if err := requestSync(h, pid, ledger, quarantine, tracker); err != nil {
+				if err := requestSync(ctx, h, pid, ledger, quarantine, tracker); err != nil {
 					metrics.RecordSyncRound(false)
 					if isProtocolNotSupported(err) {
 						tracker.markSyncIncapable(pid)
@@ -363,7 +363,7 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 				synced = true
 				p := pid
 				gate.spawn(func() {
-					if err := requestSync(h, p, ledger, quarantine, tracker); err != nil {
+					if err := requestSync(ctx, h, p, ledger, quarantine, tracker); err != nil {
 						metrics.RecordSyncRound(false)
 						if isProtocolNotSupported(err) {
 							tracker.markSyncIncapable(p)
@@ -407,11 +407,24 @@ func (g *spawnGate) spawn(f func()) bool {
 	return true
 }
 
+const syncShutdownTimeout = 5 * time.Second
+
 func (g *spawnGate) wait() {
 	g.mu.Lock()
 	g.closed = true
 	g.mu.Unlock()
-	g.wg.Wait()
+
+	done := make(chan struct{})
+	go func() {
+		g.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(syncShutdownTimeout):
+		logging.Warnf("sync: shutdown timeout (%s) reached waiting for in-flight sync goroutines", syncShutdownTimeout)
+	}
 }
 
 func runPeriodicResync(ctx context.Context, tick <-chan time.Time, round func()) {
@@ -526,11 +539,16 @@ func streamPages(enc pageEncoder, ch <-chan SyncResponse) (int, error) {
 	return total, encErr
 }
 
-func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *blockQuarantine, tracker *syncTracker) error {
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func requestSync(ctx context.Context, h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *blockQuarantine, tracker *syncTracker) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	s, err := h.NewStream(ctx, pid, syncProtocol)
+	if syncCtx.Err() != nil {
+		return syncCtx.Err()
+	}
+	s, err := h.NewStream(syncCtx, pid, syncProtocol)
 	if err != nil {
 		return err
 	}
@@ -560,6 +578,9 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	gotTerminal := false
 
 	for {
+		if syncCtx.Err() != nil {
+			return syncCtx.Err()
+		}
 		lr.N = maxSyncResponseBytes
 		var resp SyncResponse
 		if err := dec.Decode(&resp); err != nil {
@@ -602,8 +623,14 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	const maxRetries = 10
 	rejected := 0
 	for retry := 0; retry < maxRetries && len(pending) > 0; retry++ {
+		if syncCtx.Err() != nil {
+			return syncCtx.Err()
+		}
 		var retryable []*core.Block
 		for _, b := range pending {
+			if syncCtx.Err() != nil {
+				return syncCtx.Err()
+			}
 			err := ledger.AddSyncedBlock(b)
 			if err != nil {
 				if isRetryableError(err) {
@@ -629,6 +656,9 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 
 		reasons := map[string]int{}
 		for _, b := range pending {
+			if syncCtx.Err() != nil {
+				return syncCtx.Err()
+			}
 			err := ledger.AddSyncedBlock(b)
 			if err == nil {
 				added++
