@@ -3,6 +3,7 @@ package net
 import (
 	"context"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,7 +27,9 @@ const (
 
 	discoveryFindLimit = 64
 
-	discoveryDialTimeout = 15 * time.Second
+	discoveryDialTimeout = 5 * time.Second
+
+	discoveryMaxInFlight = 4
 
 	discoveryDialsPerRound = 8
 )
@@ -103,28 +106,20 @@ func (a *AmbientDiscovery) round(ctx context.Context) int {
 		return 0
 	}
 
-	found, dialed := 0, 0
+	found := 0
+	var candidates []peer.AddrInfo
 	for pi := range ch {
 		found++
-		if dialed >= discoveryDialsPerRound || a.peerCount() >= a.target {
-			continue
-		}
 		if pi.ID == a.host.ID() || len(pi.Addrs) == 0 {
 			continue
 		}
 		if a.host.Network().Connectedness(pi.ID) == network.Connected {
 			continue
 		}
-		dialCtx, dcancel := context.WithTimeout(ctx, discoveryDialTimeout)
-		err := a.host.Connect(dialCtx, pi)
-		dcancel()
-		if err != nil {
-			continue
-		}
-		dialed++
-		a.connected.Add(1)
-		log.Printf("discovery: connected to %s", pi.ID.ShortString())
+		candidates = append(candidates, pi)
 	}
+
+	dialed := a.dialCandidates(ctx, candidates)
 
 	a.found.Add(uint64(found))
 	if found > 0 {
@@ -132,6 +127,59 @@ func (a *AmbientDiscovery) round(ctx context.Context) int {
 			found, dialed, a.peerCount())
 	}
 	return found
+}
+
+func (a *AmbientDiscovery) dialCandidates(ctx context.Context, candidates []peer.AddrInfo) int {
+	if len(candidates) == 0 || a.peerCount() >= a.target {
+		return 0
+	}
+
+	var successful atomic.Int32
+	sem := make(chan struct{}, discoveryMaxInFlight)
+	var wg sync.WaitGroup
+
+	roundCtx, roundCancel := context.WithTimeout(ctx, discoveryInterval)
+	defer roundCancel()
+
+	for _, pi := range candidates {
+		if int(successful.Load()) >= discoveryDialsPerRound || a.peerCount() >= a.target {
+			break
+		}
+
+		select {
+		case <-roundCtx.Done():
+			break
+		case sem <- struct{}{}:
+		}
+
+		if int(successful.Load()) >= discoveryDialsPerRound || a.peerCount() >= a.target {
+			<-sem
+			break
+		}
+
+		wg.Add(1)
+		go func(target peer.AddrInfo) {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+
+			dialCtx, dcancel := context.WithTimeout(roundCtx, discoveryDialTimeout)
+			defer dcancel()
+
+			err := a.host.Connect(dialCtx, target)
+			if err != nil {
+				return
+			}
+
+			successful.Add(1)
+			a.connected.Add(1)
+			log.Printf("discovery: connected to %s", target.ID.ShortString())
+		}(pi)
+	}
+
+	wg.Wait()
+	return int(successful.Load())
 }
 
 func (a *AmbientDiscovery) peerCount() int {
