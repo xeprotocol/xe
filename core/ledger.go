@@ -737,6 +737,9 @@ func (l *Ledger) AddSyncedBlock(b *Block) error {
 }
 
 func (l *Ledger) addBlock(b *Block, skipTimestamp bool) error {
+	if b == nil {
+		return errors.New("cannot add nil block")
+	}
 	bc := *b
 	if len(bc.Attestations) > 0 {
 		bc.Attestations = append([]TimekeeperAttestation(nil), bc.Attestations...)

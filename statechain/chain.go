@@ -107,6 +107,10 @@ func (c *Chain) AddBlock(b *Block) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if b == nil {
+		return errors.New("cannot add nil block")
+	}
+
 	if err := VerifyBlockHash(b); err != nil {
 		return err
 	}
