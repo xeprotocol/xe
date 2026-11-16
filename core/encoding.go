@@ -724,7 +724,7 @@ func DecodeVote(data []byte) (*Vote, error) {
 	}
 
 	sig := make([]byte, sigLen)
-	copy(sig, data[140:140+sigLen])
+	copy(sig, data[140:140+int(sigLen)])
 
 	return &Vote{
 		RepPubKey:       repPubKey,
