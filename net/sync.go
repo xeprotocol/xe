@@ -3,7 +3,9 @@ package net
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	sync2 "sync/atomic"
@@ -242,17 +244,25 @@ func (st *syncTracker) isDirtyForTest() bool {
 	return sync2.LoadInt32(&st.dirty) != 0
 }
 
-const maxQuarantineEntries = 8192
+const (
+	maxQuarantineEntries   = 8192
+	maxUnappliedSyncRounds = 3
+)
 
 type blockQuarantine struct {
-	mu     sync.RWMutex
-	hashes map[string]struct{}
-	order  []string
-	max    int
+	mu           sync.RWMutex
+	hashes       map[string]struct{}
+	unappliedCnt map[string]int
+	order        []string
+	max          int
 }
 
 func newBlockQuarantine() *blockQuarantine {
-	return &blockQuarantine{hashes: make(map[string]struct{}), max: maxQuarantineEntries}
+	return &blockQuarantine{
+		hashes:       make(map[string]struct{}),
+		unappliedCnt: make(map[string]int),
+		max:          maxQuarantineEntries,
+	}
 }
 
 func (q *blockQuarantine) add(hash string) {
@@ -271,6 +281,57 @@ func (q *blockQuarantine) add(hash string) {
 
 	metrics.BlocksQuarantined.Inc()
 	metrics.QuarantinedBlocks.Set(float64(len(q.hashes)))
+}
+
+func (q *blockQuarantine) recordUnapplied(hash string, maxRounds int) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.unappliedCnt[hash]++
+	if q.unappliedCnt[hash] >= maxRounds {
+		delete(q.unappliedCnt, hash)
+		if _, ok := q.hashes[hash]; !ok {
+			q.hashes[hash] = struct{}{}
+			q.order = append(q.order, hash)
+			for len(q.order) > q.max {
+				oldest := q.order[0]
+				q.order = q.order[1:]
+				delete(q.hashes, oldest)
+			}
+			metrics.BlocksQuarantined.Inc()
+			metrics.QuarantinedBlocks.Set(float64(len(q.hashes)))
+			return true
+		}
+	}
+	return false
+}
+
+func (q *blockQuarantine) clearUnapplied(hash string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	delete(q.unappliedCnt, hash)
+}
+
+type unappliedLogState struct {
+	mu          sync.Mutex
+	lastCount   int
+	lastReasons string
+	lastLogged  time.Time
+}
+
+var unappliedLogger = &unappliedLogState{}
+
+func (s *unappliedLogState) log(count int, reasons map[string]int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	reasonsStr := fmt.Sprintf("%v", reasons)
+	now := time.Now()
+	if count != s.lastCount || reasonsStr != s.lastReasons || now.Sub(s.lastLogged) >= 5*time.Minute {
+		s.lastCount = count
+		s.lastReasons = reasonsStr
+		s.lastLogged = now
+		logging.Warnf("sync: %d block(s) could not be added after retries; reasons: %v", count, reasons)
+	}
 }
 
 func (q *blockQuarantine) contains(hash string) bool {
@@ -582,8 +643,12 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			break
 		}
 	}
-	if tracker != nil && gotTerminal {
-		tracker.recordRejections(pid, rejectedAccounts)
+	if tracker != nil {
+		if gotTerminal {
+			tracker.recordRejections(pid, rejectedAccounts)
+		} else {
+			tracker.MarkDirty()
+		}
 	}
 
 	filtered := allBlocks[:0]
@@ -617,6 +682,7 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 				}
 			} else {
 				added++
+				quarantine.clearUnapplied(b.Hash)
 				metrics.BlocksAdded.WithLabelValues("sync").Inc()
 			}
 		}
@@ -626,12 +692,12 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 		pending = retryable
 	}
 	if len(pending) > 0 {
-
 		reasons := map[string]int{}
 		for _, b := range pending {
 			err := ledger.AddSyncedBlock(b)
 			if err == nil {
 				added++
+				quarantine.clearUnapplied(b.Hash)
 				continue
 			}
 			msg := err.Error()
@@ -639,8 +705,13 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 				msg = msg[:60]
 			}
 			reasons[msg]++
+			if quarantine.recordUnapplied(b.Hash, maxUnappliedSyncRounds) {
+				logging.Warnf("sync: block %s dependency unresolvable after %d sync passes; quarantined", shortHash(b.Hash), maxUnappliedSyncRounds)
+			}
 		}
-		logging.Warnf("sync: %d block(s) could not be added after retries; reasons: %v", len(pending), reasons)
+		if len(reasons) > 0 {
+			unappliedLogger.log(len(pending), reasons)
+		}
 	}
 	if added > 0 {
 		logging.Debugf("sync: synced %d block(s) from %s", added, pid.ShortString())
@@ -683,6 +754,7 @@ func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.
 		for acc := range ourFrontiers {
 			accounts = append(accounts, acc)
 		}
+		sort.Strings(accounts)
 
 		capHit := false
 		for _, account := range accounts {
@@ -742,7 +814,7 @@ func findMissingBlocksPaginated(remoteFrontiers map[string]string, ledger *core.
 			}
 			ch <- SyncResponse{
 				Blocks:   pending,
-				HasMore:  false,
+				HasMore:  capHit,
 				Cursor:   cursor,
 				Rejected: rejected,
 			}
