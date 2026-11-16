@@ -1,5 +1,7 @@
 package core
 
+import "strings"
+
 func (l *Ledger) FinalizedFrontier(account string) string {
 	fh := l.FinalHeight(account)
 	if fh == 0 {
@@ -13,6 +15,7 @@ func (l *Ledger) FinalizedFrontier(account string) string {
 }
 
 func (l *Ledger) SpendableBalances(account string) map[string]uint64 {
+	account = strings.ToLower(account)
 	out := make(map[string]uint64)
 	fh := l.FinalHeight(account)
 	if fh == 0 {

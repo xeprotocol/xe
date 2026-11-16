@@ -545,6 +545,7 @@ func (l *Ledger) deleteAccountBalances(account string) {
 }
 
 func (l *Ledger) GetAssetBalances(account string) map[string]uint64 {
+	account = strings.ToLower(account)
 	l.assetBalMu.RLock()
 	defer l.assetBalMu.RUnlock()
 	m := l.assetBalances[account]
@@ -2359,6 +2360,7 @@ func (l *Ledger) Store() Store {
 }
 
 func (l *Ledger) GetBalance(account string) uint64 {
+	account = strings.ToLower(account)
 	chain, err := l.store.GetAccountChain(account)
 	if err != nil {
 		storeReadErrors.Add(1)
@@ -2372,6 +2374,7 @@ func (l *Ledger) GetBalance(account string) uint64 {
 }
 
 func (l *Ledger) GetChain(account string) []*Block {
+	account = strings.ToLower(account)
 	chain, err := l.store.GetAccountChain(account)
 	if err != nil {
 		storeReadErrors.Add(1)
