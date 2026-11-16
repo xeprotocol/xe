@@ -73,7 +73,9 @@ type Node struct {
 	consumerVMs      sync.Map
 	pendingOffersMu  sync.Mutex
 	pendingOffers    map[string]*xenet.ResourceOffer
-	providerAds      sync.Map
+	providerAdsMu    sync.RWMutex
+	providerAds      map[string]*xenet.ResourceAdvertisement
+	providerAdsOrder []string
 	blockCreateMu    sync.Mutex
 	reservedRes      vm.Resources
 	reservedResMu    sync.Mutex
@@ -93,6 +95,10 @@ type Node struct {
 }
 
 const maxInFlightVotePulls = 32
+const (
+	maxProviderAds = 4096
+	providerAdTTL  = 30 * time.Minute
+)
 
 type Config struct {
 	Port       int
@@ -495,6 +501,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		gater:                  gater,
 		activationLog:          newActivationReporter(),
 		pendingOffers:          make(map[string]*xenet.ResourceOffer),
+		providerAds:            make(map[string]*xenet.ResourceAdvertisement),
 		acceptInFlight:         make(map[string]struct{}),
 		pullSem:                make(chan struct{}, maxInFlightVotePulls),
 		ctx:                    ctx,
@@ -566,10 +573,11 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 
 	n.selfRegister()
 
-	n.wg.Add(9)
+	n.wg.Add(10)
 	go func() { defer n.wg.Done(); n.handleIncoming(gossip.Subscribe(ctx)) }()
 	go func() { defer n.wg.Done(); n.handleIncomingVotes(voteGossip.Subscribe(ctx)) }()
 	go func() { defer n.wg.Done(); n.handleMarketplace(marketGossip.Subscribe(ctx)) }()
+	go func() { defer n.wg.Done(); n.providerAdsPruneLoop() }()
 	go func() { defer n.wg.Done(); n.settleLoop() }()
 	go func() { defer n.wg.Done(); n.handleStateChain(scGossip.Subscribe(ctx)) }()
 	go func() { defer n.wg.Done(); n.handleDirectoryGossip(dirGossip.Subscribe(ctx)) }()
@@ -1047,7 +1055,7 @@ func (n *Node) advertiseResources() {
 		log.Printf("Failed to publish resource advertisement: %v", err)
 	}
 
-	n.providerAds.Store(ad.Provider, ad)
+	n.recordProviderAd(ad)
 }
 
 type ProviderInfo struct {
@@ -1068,12 +1076,102 @@ func leaseHoldsCapacity(lease *core.Lease) bool {
 	return !lease.State.Terminal() && lease.State != core.LeaseCreated
 }
 
+func (n *Node) recordProviderAd(ad *xenet.ResourceAdvertisement) {
+	if ad == nil || ad.Provider == "" {
+		return
+	}
+	n.providerAdsMu.Lock()
+	defer n.providerAdsMu.Unlock()
+
+	// If already present, update in place
+	if _, exists := n.providerAds[ad.Provider]; !exists {
+		n.providerAdsOrder = append(n.providerAdsOrder, ad.Provider)
+	}
+	n.providerAds[ad.Provider] = ad
+
+	// Evict oldest if exceeding capacity
+	for len(n.providerAdsOrder) > maxProviderAds {
+		oldest := n.providerAdsOrder[0]
+		n.providerAdsOrder = n.providerAdsOrder[1:]
+		delete(n.providerAds, oldest)
+	}
+}
+
+func (n *Node) providerAdsPruneLoop() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-ticker.C:
+			n.pruneExpiredProviderAds()
+		}
+	}
+}
+
+func (n *Node) pruneExpiredProviderAds() int {
+	n.providerAdsMu.Lock()
+	defer n.providerAdsMu.Unlock()
+
+	now := time.Now().UnixNano()
+	cutoff := now - int64(providerAdTTL)
+
+	pruned := 0
+	newOrder := make([]string, 0, len(n.providerAdsOrder))
+	for _, provider := range n.providerAdsOrder {
+		ad, exists := n.providerAds[provider]
+		if !exists {
+			continue
+		}
+		if ad.Timestamp < cutoff {
+			delete(n.providerAds, provider)
+			pruned++
+		} else {
+			newOrder = append(newOrder, provider)
+		}
+	}
+	n.providerAdsOrder = newOrder
+	return pruned
+}
+
 func (n *Node) GetProviders() []*ProviderInfo {
 	leases := n.GetLeases()
 
-	providers := make([]*ProviderInfo, 0)
-	n.providerAds.Range(func(key, value any) bool {
-		ad := value.(*xenet.ResourceAdvertisement)
+	// Pre-index leases by provider to avoid quadratic O(ads * leases) scans
+	type leaseStats struct {
+		totalLeases  int
+		activeLeases int
+		usedVCPUs    uint64
+		usedMemoryMB uint64
+		usedDiskGB   uint64
+	}
+	leaseMap := make(map[string]*leaseStats)
+	for _, l := range leases {
+		st, ok := leaseMap[l.Provider]
+		if !ok {
+			st = &leaseStats{}
+			leaseMap[l.Provider] = st
+		}
+		st.totalLeases++
+		if leaseHoldsCapacity(l) {
+			st.activeLeases++
+			st.usedVCPUs += l.VCPUs
+			st.usedMemoryMB += l.MemoryMB
+			st.usedDiskGB += l.DiskGB
+		}
+	}
+
+	n.providerAdsMu.RLock()
+	now := time.Now().UnixNano()
+	cutoff := now - int64(providerAdTTL)
+
+	providers := make([]*ProviderInfo, 0, len(n.providerAds))
+	for _, ad := range n.providerAds {
+		// Filter out expired ads on read
+		if ad.Timestamp < cutoff {
+			continue
+		}
 		info := &ProviderInfo{
 			Account:             ad.Provider,
 			VCPUs:               ad.VCPUs,
@@ -1082,20 +1180,17 @@ func (n *Node) GetProviders() []*ProviderInfo {
 			MaxConcurrentLeases: ad.MaxConcurrentLeases,
 			Timestamp:           ad.Timestamp,
 		}
-		for _, l := range leases {
-			if l.Provider == ad.Provider {
-				info.TotalLeases++
-				if leaseHoldsCapacity(l) {
-					info.ActiveLeases++
-					info.UsedVCPUs += l.VCPUs
-					info.UsedMemoryMB += l.MemoryMB
-					info.UsedDiskGB += l.DiskGB
-				}
-			}
+		if st, ok := leaseMap[ad.Provider]; ok {
+			info.TotalLeases = st.totalLeases
+			info.ActiveLeases = st.activeLeases
+			info.UsedVCPUs = st.usedVCPUs
+			info.UsedMemoryMB = st.usedMemoryMB
+			info.UsedDiskGB = st.usedDiskGB
 		}
 		providers = append(providers, info)
-		return true
-	})
+	}
+	n.providerAdsMu.RUnlock()
+
 	return providers
 }
 
@@ -1396,7 +1491,7 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 				logging.Warnf("Rejecting resource advertisement: %v", err)
 				continue
 			}
-			n.providerAds.Store(msg.Ad.Provider, msg.Ad)
+			n.recordProviderAd(msg.Ad)
 
 		case "offer":
 			if msg.Offer == nil {
