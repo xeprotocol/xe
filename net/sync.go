@@ -402,6 +402,11 @@ func (g *spawnGate) spawn(f func()) bool {
 	g.mu.Unlock()
 	go func() {
 		defer g.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("spawnGate: recovered from panic in worker goroutine: %v", r)
+			}
+		}()
 		f()
 	}()
 	return true
@@ -568,7 +573,11 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 			}
 			return err
 		}
-		allBlocks = append(allBlocks, resp.Blocks...)
+		for _, b := range resp.Blocks {
+			if b != nil {
+				allBlocks = append(allBlocks, b)
+			}
+		}
 		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)", pid.ShortString(), len(resp.Blocks), len(allBlocks), resp.HasMore)
 		if !resp.HasMore {
 			rejectedAccounts = resp.Rejected
@@ -586,9 +595,12 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 		tracker.recordRejections(pid, rejectedAccounts)
 	}
 
-	filtered := allBlocks[:0]
+	filtered := make([]*core.Block, 0, len(allBlocks))
 	skipped := 0
 	for _, b := range allBlocks {
+		if b == nil {
+			continue
+		}
 		if quarantine.contains(b.Hash) {
 			skipped++
 		} else {
