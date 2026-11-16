@@ -21,7 +21,17 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 		return fmt.Errorf("lease not found: %s", shortHash(b.Source))
 	}
 	if lease.Settled {
-		return fmt.Errorf("lease already settled")
+		if lease.State == LeaseSettled && b.Timestamp < lease.EffectiveExpiry() {
+			if rerr := l.resolveRenewWinsOverSettle(b.Source, lease.Provider); rerr != nil {
+				return rerr
+			}
+			lease, ok, err = l.getLeaseOverlay(b.Source)
+			if !ok || err != nil || lease == nil {
+				return fmt.Errorf("lease reload after settle unwind failed")
+			}
+		} else {
+			return fmt.Errorf("lease already settled")
+		}
 	}
 	if lease.State != LeaseAccepted {
 
