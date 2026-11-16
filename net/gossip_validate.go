@@ -146,7 +146,7 @@ func directoryValidator() pubsub.ValidatorEx {
 		if err := json.Unmarshal(msg.Data, &reg); err != nil {
 			return pubsub.ValidationReject
 		}
-		if reg.Account == "" || reg.PubKey == "" || reg.Signature == "" || reg.NodePeer == "" {
+		if reg.Account == "" || reg.PubKey == "" || reg.Signature == "" || len(reg.NodePeer) < 12 {
 			return pubsub.ValidationReject
 		}
 
