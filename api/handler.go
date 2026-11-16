@@ -382,17 +382,52 @@ func clientIP(r *http.Request) string {
 	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
-			return last
+		// Walk backwards to find the nearest non-loopback client IP
+		for i := len(parts) - 1; i >= 0; i-- {
+			candidate := strings.TrimSpace(parts[i])
+			if candidate == "" {
+				continue
+			}
+			if candHost, _, err := net.SplitHostPort(candidate); err == nil {
+				candidate = candHost
+			}
+			if !isLoopbackHost(candidate) {
+				return candidate
+			}
 		}
 	}
 	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
+		candidate := xr
+		if candHost, _, err := net.SplitHostPort(candidate); err == nil {
+			candidate = candHost
+		}
+		if !isLoopbackHost(candidate) {
+			return candidate
+		}
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		for _, part := range parts {
+			candidate := strings.TrimSpace(part)
+			if candidate != "" {
+				if candHost, _, err := net.SplitHostPort(candidate); err == nil {
+					candidate = candHost
+				}
+				return candidate
+			}
+		}
+	}
+	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
+		if candHost, _, err := net.SplitHostPort(xr); err == nil {
+			xr = candHost
+		}
 		return xr
 	}
 	return host
 }
 
 func isLoopbackHost(host string) bool {
+	host = strings.Trim(host, "[]")
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()
 	}
