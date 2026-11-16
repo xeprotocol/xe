@@ -39,22 +39,64 @@ const (
 	unrecognizedDropThreshold = 3
 
 	syncReprobeInterval = 10 * time.Minute
+
+	maxConcurrentOutboundSync = 4
+	maxConcurrentInboundSync  = 8
 )
 
 type syncRateLimiter struct {
-	mu   sync.Mutex
-	last map[peer.ID]time.Time
+	mu        sync.Mutex
+	last      map[peer.ID]time.Time
+	inFlight  map[peer.ID]struct{}
+	maxActive int
 }
 
-func newSyncRateLimiter() *syncRateLimiter {
-	return &syncRateLimiter{last: make(map[peer.ID]time.Time)}
+func newSyncRateLimiter(maxActive ...int) *syncRateLimiter {
+	limit := 0
+	if len(maxActive) > 0 {
+		limit = maxActive[0]
+	}
+	return &syncRateLimiter{
+		last:      make(map[peer.ID]time.Time),
+		inFlight:  make(map[peer.ID]struct{}),
+		maxActive: limit,
+	}
 }
 
 func (rl *syncRateLimiter) allow(pid peer.ID) bool {
+	return rl.tryAcquire(pid)
+}
+
+func (rl *syncRateLimiter) canAcquire(pid peer.ID) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	now := time.Now()
+	if _, ok := rl.inFlight[pid]; ok {
+		return false
+	}
+	if rl.maxActive > 0 && len(rl.inFlight) >= rl.maxActive {
+		return false
+	}
+	if t, ok := rl.last[pid]; ok && time.Since(t) < syncCooldown {
+		return false
+	}
+	return true
+}
 
+func (rl *syncRateLimiter) tryAcquire(pid peer.ID) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	// 1. Single-flight per peer: no overlapping syncs for the same peer
+	if _, ok := rl.inFlight[pid]; ok {
+		return false
+	}
+
+	// 2. Global concurrency cap
+	if rl.maxActive > 0 && len(rl.inFlight) >= rl.maxActive {
+		return false
+	}
+
+	now := time.Now()
 	for id, t := range rl.last {
 		if now.Sub(t) >= syncCooldown {
 			delete(rl.last, id)
@@ -63,8 +105,17 @@ func (rl *syncRateLimiter) allow(pid peer.ID) bool {
 	if t, ok := rl.last[pid]; ok && now.Sub(t) < syncCooldown {
 		return false
 	}
+
 	rl.last[pid] = now
+	rl.inFlight[pid] = struct{}{}
 	return true
+}
+
+func (rl *syncRateLimiter) release(pid peer.ID) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	delete(rl.inFlight, pid)
+	rl.last[pid] = time.Now()
 }
 
 type syncTracker struct {
@@ -301,8 +352,8 @@ func frontiersEqual(a, b map[string]string) bool {
 type SyncTracker = syncTracker
 
 func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTracker, func()) {
-	inboundRL := newSyncRateLimiter()
-	outboundRL := newSyncRateLimiter()
+	inboundRL := newSyncRateLimiter(maxConcurrentInboundSync)
+	outboundRL := newSyncRateLimiter(maxConcurrentOutboundSync)
 	tracker := newSyncTracker()
 	quarantine := newBlockQuarantine()
 	gate := &spawnGate{}
@@ -310,9 +361,11 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 	h.SetStreamHandler(syncProtocol, func(s network.Stream) {
 		defer func() { _ = s.Close() }()
 		_ = s.SetDeadline(time.Now().Add(60 * time.Second))
-		if !inboundRL.allow(s.Conn().RemotePeer()) {
+		pid := s.Conn().RemotePeer()
+		if !inboundRL.tryAcquire(pid) {
 			return
 		}
+		defer inboundRL.release(pid)
 		handleSyncStream(s, ledger, tracker)
 	})
 
@@ -320,10 +373,11 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 		ConnectedF: func(n network.Network, conn network.Conn) {
 			gate.spawn(func() {
 				pid := conn.RemotePeer()
-				if !outboundRL.allow(pid) {
+				if !outboundRL.tryAcquire(pid) {
 					return
 				}
-				if err := requestSync(h, pid, ledger, quarantine, tracker); err != nil {
+				defer outboundRL.release(pid)
+				if err := requestSync(ctx, h, pid, ledger, quarantine, tracker); err != nil {
 					metrics.RecordSyncRound(false)
 					if isProtocolNotSupported(err) {
 						tracker.markSyncIncapable(pid)
@@ -338,6 +392,7 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 			})
 		},
 		DisconnectedF: func(n network.Network, conn network.Conn) {
+			outboundRL.release(conn.RemotePeer())
 			tracker.removePeer(conn.RemotePeer())
 		},
 	})
@@ -349,7 +404,7 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 			currentFrontiers := ledger.Frontiers()
 			synced := false
 			for _, pid := range h.Network().Peers() {
-				if !outboundRL.allow(pid) {
+				if !outboundRL.canAcquire(pid) {
 					continue
 				}
 
@@ -360,10 +415,14 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 				if !tracker.shouldSync(pid, currentFrontiers) {
 					continue
 				}
-				synced = true
 				p := pid
+				if !outboundRL.tryAcquire(p) {
+					continue
+				}
+				synced = true
 				gate.spawn(func() {
-					if err := requestSync(h, p, ledger, quarantine, tracker); err != nil {
+					defer outboundRL.release(p)
+					if err := requestSync(ctx, h, p, ledger, quarantine, tracker); err != nil {
 						metrics.RecordSyncRound(false)
 						if isProtocolNotSupported(err) {
 							tracker.markSyncIncapable(p)
@@ -526,9 +585,9 @@ func streamPages(enc pageEncoder, ch <-chan SyncResponse) (int, error) {
 	return total, encErr
 }
 
-func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *blockQuarantine, tracker *syncTracker) error {
+func requestSync(ctx context.Context, h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *blockQuarantine, tracker *syncTracker) error {
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, err := h.NewStream(ctx, pid, syncProtocol)
 	if err != nil {
