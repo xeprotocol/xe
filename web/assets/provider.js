@@ -19,6 +19,7 @@ const state = {
   active: [],
   past: [],
   pollTimer: null,
+  polling: false,
 };
 
 async function init() {
@@ -125,6 +126,8 @@ async function refreshAll() {
 
 async function pollSafely() {
   if (document.visibilityState === 'hidden') return;
+  if (state.polling) return;
+  state.polling = true;
   try {
     await refreshAll();
     if (!state.providerRow) {
@@ -136,6 +139,8 @@ async function pollSafely() {
     persistSnapshot();
   } catch (e) {
     showError('refresh: ' + e.message);
+  } finally {
+    state.polling = false;
   }
 }
 
@@ -245,8 +250,8 @@ function activeRow(l) {
   tr.appendChild(blockLinkTd(l.lease_hash, '/leases/?hash='));
   tr.appendChild(accountLinkTd(l.consumer));
   tr.appendChild(td(resourceSummary(l)));
-  tr.appendChild(td(formatAmount(l.cost, 'XUSD')));
-  tr.appendChild(td(formatAmount(l.stake, 'XUSD')));
+  tr.appendChild(td(formatAmount(l.cost, 'XCU')));
+  tr.appendChild(td(formatAmount(l.stake, 'XCU')));
   tr.appendChild(td(formatRemaining(l)));
   return tr;
 }
@@ -284,8 +289,8 @@ function pastRow(l) {
   tr.appendChild(blockLinkTd(l.lease_hash, '/leases/?hash='));
   tr.appendChild(accountLinkTd(l.consumer));
   tr.appendChild(td(resourceSummary(l)));
-  tr.appendChild(td(formatAmount(l.cost, 'XUSD')));
-  tr.appendChild(td(formatAmount(l.stake, 'XUSD')));
+  tr.appendChild(td(formatAmount(l.cost, 'XCU')));
+  tr.appendChild(td(formatAmount(l.stake, 'XCU')));
   return tr;
 }
 

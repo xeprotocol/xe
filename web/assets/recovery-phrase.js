@@ -1,6 +1,6 @@
 import { wordlist } from './wordlist-english.js';
 
-export const RECOVERY_PHRASE_COIN_TYPE = 1;
+export const RECOVERY_PHRASE_COIN_TYPE = 22597;
 const wordIndex = new Map(wordlist.map((word, index) => [word, index]));
 const utf8 = new TextEncoder();
 

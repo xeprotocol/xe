@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 )
@@ -16,6 +17,10 @@ type KVStore struct {
 
 func NewKVStore() *KVStore {
 	return &KVStore{data: make(map[string]json.RawMessage)}
+}
+
+func (kv *KVStore) clone() *KVStore {
+	return &KVStore{data: maps.Clone(kv.data)}
 }
 
 func ValidateKey(key string) error {
@@ -85,10 +90,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			if _, err := hex.DecodeString(k); err != nil {
 				return fmt.Errorf("dao_keyset key[%d] invalid hex: %w", i, err)
 			}
-			if seen[k] {
+			lower := strings.ToLower(k)
+			if seen[lower] {
 				return fmt.Errorf("dao_keyset key[%d] is a duplicate", i)
 			}
-			seen[k] = true
+			seen[lower] = true
 		}
 	case "sys.timekeepers":
 		var tk struct {
@@ -104,10 +110,19 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 		if tk.Threshold < 1 || tk.Threshold > len(tk.Keys) {
 			return fmt.Errorf("timekeepers threshold %d invalid for %d keys", tk.Threshold, len(tk.Keys))
 		}
+		seen := make(map[string]bool, len(tk.Keys))
 		for i, k := range tk.Keys {
 			if len(k) != 64 {
 				return fmt.Errorf("timekeepers key[%d] invalid length: got %d, want 64 hex chars", i, len(k))
 			}
+			if _, err := hex.DecodeString(k); err != nil {
+				return fmt.Errorf("timekeepers key[%d] invalid hex: %w", i, err)
+			}
+			lower := strings.ToLower(k)
+			if seen[lower] {
+				return fmt.Errorf("timekeepers key[%d] is a duplicate", i)
+			}
+			seen[lower] = true
 		}
 	case "sys.minter":
 
@@ -128,10 +143,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			if _, err := hex.DecodeString(k); err != nil {
 				return fmt.Errorf("minter key[%d] invalid hex: %w", i, err)
 			}
-			if seen[k] {
+			lower := strings.ToLower(k)
+			if seen[lower] {
 				return fmt.Errorf("minter key[%d] is a duplicate", i)
 			}
-			seen[k] = true
+			seen[lower] = true
 		}
 	case "sys.oracle":
 		var oc OracleConfig
@@ -155,10 +171,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			if _, err := hex.DecodeString(k); err != nil {
 				return fmt.Errorf("oracle key[%d] invalid hex: %w", i, err)
 			}
-			if seen[k] {
+			lower := strings.ToLower(k)
+			if seen[lower] {
 				return fmt.Errorf("oracle key[%d] is a duplicate", i)
 			}
-			seen[k] = true
+			seen[lower] = true
 		}
 	case "sys.phase":
 
@@ -343,16 +360,29 @@ func validateEpochValue(value json.RawMessage, kv *KVStore) error {
 		return fmt.Errorf("epoch phase must be 1 or 2, got %d", ev.Phase)
 	}
 
-	if ev.PayoutCap != 0 {
-		lo, hi := uint64(1000), uint64(2000)
-		if kv != nil {
-			if tc, terr := kv.Tokenomics(); terr == nil && tc != nil {
-				lo, hi = tc.HermiteFloorMilli, tc.HermiteCeilingMilli
-			}
+	if ev.TWAPMilliUSD == 0 {
+		return fmt.Errorf("epoch twap_milli_usd must be > 0")
+	}
+
+	tc := DefaultTokenomicsConfig()
+	lo, hi := uint64(1000), uint64(2000)
+	factor := uint64(RCollusionFactorMilliDefault)
+	if kv != nil {
+		if chainTC, terr := kv.Tokenomics(); terr == nil && chainTC != nil {
+			tc = *chainTC
+			lo, hi = tc.HermiteFloorMilli, tc.HermiteCeilingMilli
+			factor = tc.RCollusionFactorMilli
 		}
-		if ev.PayoutCap < lo || ev.PayoutCap > hi {
-			return fmt.Errorf("epoch payout_cap (%d) out of range [%d, %d]", ev.PayoutCap, lo, hi)
-		}
+	}
+	if ev.PayoutCap < lo || ev.PayoutCap > hi {
+		return fmt.Errorf("epoch payout_cap (%d) out of range [%d, %d]", ev.PayoutCap, lo, hi)
+	}
+
+	if ev.RVolume > tc.RInit {
+		return fmt.Errorf("epoch r_volume (%d) exceeds r_init (%d)", ev.RVolume, tc.RInit)
+	}
+	if ev.RPriceFloor > tc.RPriceFloorTier1 {
+		return fmt.Errorf("epoch r_price_floor (%d) exceeds r_price_floor_tier_1 (%d)", ev.RPriceFloor, tc.RPriceFloorTier1)
 	}
 
 	expectedS := SMilliForPhase(ev.Phase)
@@ -360,14 +390,8 @@ func validateEpochValue(value json.RawMessage, kv *KVStore) error {
 		return fmt.Errorf("epoch s_milli (%d) does not match phase %d (expected %d)", ev.SMilli, ev.Phase, expectedS)
 	}
 
-	factor := uint64(RCollusionFactorMilliDefault)
-	if kv != nil {
-		if tc, terr := kv.Tokenomics(); terr == nil && tc != nil {
-			factor = tc.RCollusionFactorMilli
-		}
-	}
 	expectedRCol := expectedRCollusion(ev.TWAPMilliUSD, uint64(ev.SMilli), factor)
-	if ev.RCollusion != 0 && ev.RCollusion != expectedRCol {
+	if ev.RCollusion != expectedRCol {
 		return fmt.Errorf("epoch r_collusion (%d) != expected %d (twap=%d, s=%d)",
 			ev.RCollusion, expectedRCol, ev.TWAPMilliUSD, ev.SMilli)
 	}
@@ -441,11 +465,48 @@ func expectedRCollusion(twapMilliUSD, sMilli, factorMilli uint64) uint64 {
 	return factorMilli * (1000 - sMilli) / twapMilliUSD
 }
 
+func lowercaseKeys(key string, value json.RawMessage) json.RawMessage {
+	var v any
+	var keys *[]string
+	switch key {
+	case "sys.dao_keyset", "sys.timekeepers":
+		ks := &DAOKeyset{}
+		v, keys = ks, &ks.Keys
+	case "sys.oracle":
+		oc := &OracleConfig{}
+		v, keys = oc, &oc.Keys
+	case "sys.minter":
+		mc := &struct {
+			Keys []string `json:"keys"`
+		}{}
+		v, keys = mc, &mc.Keys
+	default:
+		return value
+	}
+	if err := json.Unmarshal(value, v); err != nil {
+		return value
+	}
+	changed := false
+	for i, k := range *keys {
+		if lower := strings.ToLower(k); lower != k {
+			(*keys)[i], changed = lower, true
+		}
+	}
+	if !changed {
+		return value
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return value
+	}
+	return out
+}
+
 func (kv *KVStore) ApplyOps(ops []Op) {
 	for _, op := range ops {
 		switch op.Action {
 		case ActionSet:
-			kv.data[op.Key] = json.RawMessage(append([]byte(nil), op.Value...))
+			kv.data[op.Key] = json.RawMessage(append([]byte(nil), lowercaseKeys(op.Key, op.Value)...))
 		case ActionDelete:
 			delete(kv.data, op.Key)
 		}

@@ -57,12 +57,12 @@ async function loadList() {
 function sortAccounts(list, key, dir) {
   const mul = dir === 'asc' ? 1 : -1;
   const xe = (a) => Number((a.balances && a.balances.XE) || 0);
-  const xusd = (a) => Number((a.balances && a.balances.XUSD) || 0);
+  const xcu = (a) => Number((a.balances && a.balances.XCU) || 0);
   const cmp = (a, b) => {
     switch (key) {
       case 'address': return mul * String(a.address).localeCompare(String(b.address));
       case 'xe': return mul * (xe(a) - xe(b));
-      case 'xusd': return mul * (xusd(a) - xusd(b));
+      case 'xcu': return mul * (xcu(a) - xcu(b));
       case 'blocks': return mul * ((a.block_count || 0) - (b.block_count || 0));
       case 'frontier': return mul * String(a.frontier || '').localeCompare(String(b.frontier || ''));
       case 'last': return mul * ((a.last_block_timestamp || 0) - (b.last_block_timestamp || 0));
@@ -77,7 +77,7 @@ function buildAccountRow(a) {
   tr.classList.add('linkrow');
   tr.appendChild(accountLinkTd(a.address));
   tr.appendChild(numTd(formatAmount((a.balances && a.balances.XE) || 0, 'XE')));
-  tr.appendChild(numTd(formatAmount((a.balances && a.balances.XUSD) || 0, 'XUSD')));
+  tr.appendChild(numTd(formatAmount((a.balances && a.balances.XCU) || 0, 'XCU')));
   tr.appendChild(numTd(commas(a.block_count)));
   tr.appendChild(blockLinkTd(a.frontier));
   tr.appendChild(td(a.last_block_timestamp ? relativeTime(a.last_block_timestamp) : '–'));

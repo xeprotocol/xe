@@ -1,9 +1,12 @@
 package directory
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
+
+var clock = time.Now
 
 type Registration struct {
 	Account string `json:"account"`
@@ -32,9 +35,15 @@ func New(ttl time.Duration) *Directory {
 	}
 }
 
+const MaxRegistrations = 50_000
+
 func (d *Directory) Register(reg *Registration) error {
 	if err := VerifyRegistration(reg); err != nil {
 		return err
+	}
+	now := clock().UnixNano()
+	if d.expired(reg.Timestamp, now) {
+		return fmt.Errorf("timestamp older than the directory TTL")
 	}
 
 	d.mu.Lock()
@@ -44,9 +53,19 @@ func (d *Directory) Register(reg *Registration) error {
 	if ok && existing.Timestamp >= reg.Timestamp {
 		return nil
 	}
+	if !ok && len(d.registrations) >= MaxRegistrations {
+		d.prune(now)
+		if len(d.registrations) >= MaxRegistrations {
+			return fmt.Errorf("directory full")
+		}
+	}
 
 	d.registrations[reg.Account] = reg
 	return nil
+}
+
+func (d *Directory) expired(ts, now int64) bool {
+	return ts < now-int64(d.ttl)
 }
 
 func (d *Directory) Lookup(account string) (*Registration, bool) {
@@ -58,7 +77,7 @@ func (d *Directory) Lookup(account string) (*Registration, bool) {
 		return nil, false
 	}
 
-	if time.Since(time.Unix(0, reg.Timestamp)) > d.ttl {
+	if d.expired(reg.Timestamp, clock().UnixNano()) {
 		return nil, false
 	}
 
@@ -75,10 +94,10 @@ func (d *Directory) List() []*Registration {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	now := time.Now().UnixNano()
+	now := clock().UnixNano()
 	out := make([]*Registration, 0, len(d.registrations))
 	for _, reg := range d.registrations {
-		if now-reg.Timestamp <= int64(d.ttl) {
+		if !d.expired(reg.Timestamp, now) {
 			out = append(out, reg)
 		}
 	}
@@ -88,11 +107,13 @@ func (d *Directory) List() []*Registration {
 func (d *Directory) Prune() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.prune(clock().UnixNano())
+}
 
-	now := time.Now().UnixNano()
+func (d *Directory) prune(now int64) int {
 	pruned := 0
 	for account, reg := range d.registrations {
-		if now-reg.Timestamp > int64(d.ttl) {
+		if d.expired(reg.Timestamp, now) {
 			delete(d.registrations, account)
 			pruned++
 		}

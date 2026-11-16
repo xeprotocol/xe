@@ -81,19 +81,20 @@
             "value": {
                 "epoch": 0,
                 "start_ns": 0,
-                "end_ns": 0,
-                "twap_milli_usd": 0,
+                "end_ns": 1,
+                "twap_milli_usd": 250,
                 "twav_milli_usd": 0,
                 "r_volume": 2000,
-                "r_price_floor": 0,
+                "r_price_floor": 2000,
+                "r_collusion": 3800,
                 "r_effective": 2000,
-                "r_source": "genesis",
+                "r_source": "tied",
                 "phase": 1,
-                "payout_cap": 0
+                "payout_cap": 1550
             }
         }
     ],
     "signatures": [],
-    "hash": "96a5ac54247f0609ac51cfd925287dbfb73144adbb34eeb658784b511751c212",
+    "hash": "5eac92fcc5cc967506e1193cd242ab4d5f5e1d5b24c50ca117d6de03bc969c2d",
     "timestamp": 0
 }

@@ -348,7 +348,7 @@ async function onSend(ev) {
   btn.disabled = true;
   btn.textContent = 'solving pow…';
   try {
-    const env = await buildEnvelope(state.keyPair, state.active, text);
+    const env = await buildEnvelope(state.keyPair, state.networkID, state.active, text);
     btn.textContent = 'sending…';
     const res = await fetch('/api/chat/send', {
       method: 'POST',

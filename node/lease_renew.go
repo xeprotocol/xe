@@ -47,18 +47,18 @@ func (n *Node) RenewLease(leaseHash string, additionalSecs uint64) (*core.Block,
 		return nil, fmt.Errorf("account not open")
 	}
 	prev := chain[len(chain)-1].Hash
-	xusdBal := n.Ledger.GetAssetBalances(myAddr)["XUSD"]
-	if cost > xusdBal {
-		return nil, fmt.Errorf("insufficient XUSD for renewal: have %d, need %d", xusdBal, cost)
+	xcuBal := n.Ledger.GetAssetBalances(myAddr)["XCU"]
+	if cost > xcuBal {
+		return nil, fmt.Errorf("insufficient XCU for renewal: have %d, need %d", xcuBal, cost)
 	}
 
 	b := &core.Block{
 		Type:            core.BlockLeaseRenew,
 		Account:         myAddr,
 		Previous:        prev,
-		Balance:         xusdBal - cost,
+		Balance:         xcuBal - cost,
 		Timestamp:       core.Now().UnixNano(),
-		Asset:           "XUSD",
+		Asset:           "XCU",
 		Source:          leaseHash,
 		Amount:          cost,
 		Duration:        additionalSecs,
@@ -81,6 +81,6 @@ func (n *Node) RenewLease(leaseHash string, additionalSecs uint64) (*core.Block,
 			return nil, fmt.Errorf("gossip lease_renew: %w", err)
 		}
 	}
-	log.Printf("Renewed lease %s: +%ds, cost %d XUSD (renew block %s)", shortHash(leaseHash), additionalSecs, cost, shortHash(b.Hash))
+	log.Printf("Renewed lease %s: +%ds, cost %d XCU (renew block %s)", shortHash(leaseHash), additionalSecs, cost, shortHash(b.Hash))
 	return b, nil
 }

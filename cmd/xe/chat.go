@@ -101,6 +101,7 @@ func cmdChat(args []string) {
 }
 
 func cmdChatSend(to, message string) {
+	initNetworkID()
 	kp := loadWallet()
 	c := apiClient()
 

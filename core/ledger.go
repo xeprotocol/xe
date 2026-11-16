@@ -1,6 +1,8 @@
 package core
 
 import (
+	"container/heap"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"math"
 	"math/big"
 	"math/bits"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -196,7 +199,7 @@ func ApplyGenesisLeaseTiming(b *Block) {
 
 const RFallback = uint64(2000)
 
-var FaucetMintAmount = 100 * AssetXUSD.UnitsPerToken
+var FaucetMintAmount = 100 * AssetXCU.UnitsPerToken
 
 type LedgerConfig struct {
 	Difficulty uint64
@@ -204,6 +207,8 @@ type LedgerConfig struct {
 	TimestampWindow int64
 
 	TimekeeperConfigFn func() *TimekeeperConfig
+
+	TimekeeperErasFn func() []TimekeeperEra
 
 	MinterConfigFn func() *MinterConfig
 
@@ -252,6 +257,16 @@ type Ledger struct {
 	assetBalMu    sync.RWMutex
 	assetBalances map[string]map[string]uint64
 
+	summaryDirty map[string]struct{}
+
+	summaryMu   sync.Mutex
+	summaries   map[string]*AccountSummary
+	summaryByXE []*AccountSummary
+	summaryByID []*AccountSummary
+
+	finalSnapMu sync.Mutex
+	finalSnaps  map[string]*finalSnapshot
+
 	blockCount          atomic.Int64
 	delegationUnderflow atomic.Uint64
 	finalityAdvances    atomic.Uint64
@@ -260,6 +275,7 @@ type Ledger struct {
 	conflictCallback    func(Conflict)
 	blockAddedCallback  func(*Block)
 	timekeeperConfigFn  func() *TimekeeperConfig
+	timekeeperErasFn    func() []TimekeeperEra
 	minterConfigFn      func() *MinterConfig
 	certificateLookupFn func(hash string) *CertificateInfo
 	epochRFn            func() uint64
@@ -271,6 +287,9 @@ type Ledger struct {
 
 	keysetMu sync.RWMutex
 	keysets  map[string]*Keyset
+
+	recentMu        sync.Mutex
+	recentFrontiers map[string]frontierTime
 
 	accountKeyMu sync.RWMutex
 	accountKeys  map[string]string
@@ -298,6 +317,7 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 		difficulty:          cfg.Difficulty,
 		timestampWindow:     cfg.TimestampWindow,
 		timekeeperConfigFn:  cfg.TimekeeperConfigFn,
+		timekeeperErasFn:    cfg.TimekeeperErasFn,
 		minterConfigFn:      cfg.MinterConfigFn,
 		certificateLookupFn: cfg.CertificateLookupFn,
 		epochRFn:            cfg.EpochRFn,
@@ -308,6 +328,9 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 		delegation:          make(map[string]string),
 		weights:             make(map[string]*big.Int),
 		assetBalances:       make(map[string]map[string]uint64),
+		summaryDirty:        make(map[string]struct{}),
+		summaries:           make(map[string]*AccountSummary),
+		finalSnaps:          make(map[string]*finalSnapshot),
 		keysets:             make(map[string]*Keyset),
 		accountKeys:         make(map[string]string),
 	}
@@ -373,6 +396,7 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 			log.Printf("ERROR: total delegated weight is ZERO on startup — no block can finalize and every balance is unspendable until some account delegates again; the network is in silent finality death")
 		}
 	}
+	l.buildAccountSummaries()
 	return l
 }
 
@@ -489,6 +513,27 @@ func (l *Ledger) releaseLeaseLock(leaseHash string, entry *accountLock) {
 	l.leaseLocksMu.Unlock()
 }
 
+func (l *Ledger) ArchiveExpiredLease(lease *Lease) error {
+	as, ok := l.store.(LeaseArchiveStore)
+	if !ok {
+		return fmt.Errorf("store cannot archive leases")
+	}
+	accounts := []string{lease.Consumer, lease.Provider}
+	sort.Strings(accounts)
+	first := l.acquireAccountLock(accounts[0])
+	defer l.releaseAccountLock(accounts[0], first)
+	if accounts[1] != accounts[0] {
+		second, ok := l.acquireAccountLockTry(accounts[1])
+		if !ok {
+			return fmt.Errorf("account %s busy: archive on the next sweep", shortAddr(accounts[1]))
+		}
+		defer l.releaseAccountLock(accounts[1], second)
+	}
+	leaseEntry := l.acquireLeaseLock(lease.LeaseHash)
+	defer l.releaseLeaseLock(lease.LeaseHash, leaseEntry)
+	return as.ArchiveLease(lease)
+}
+
 func isLeaseStateTransition(t BlockType) bool {
 	switch t {
 	case BlockLeaseAccept, BlockLeaseSettle, BlockLeaseCancel, BlockLeaseForceSettle:
@@ -513,11 +558,13 @@ func (l *Ledger) addAssetBalance(account, asset string, delta uint64) {
 		l.assetBalances[account] = make(map[string]uint64)
 	}
 	l.assetBalances[account][asset] += delta
+	l.summaryDirty[account] = struct{}{}
 }
 
 func (l *Ledger) subAssetBalance(account, asset string, delta uint64) {
 	l.assetBalMu.Lock()
 	defer l.assetBalMu.Unlock()
+	l.summaryDirty[account] = struct{}{}
 	m := l.assetBalances[account]
 	if m == nil {
 		return
@@ -536,12 +583,14 @@ func (l *Ledger) setAssetBalance(account, asset string, balance uint64) {
 		l.assetBalances[account] = make(map[string]uint64)
 	}
 	l.assetBalances[account][asset] = balance
+	l.summaryDirty[account] = struct{}{}
 }
 
 func (l *Ledger) deleteAccountBalances(account string) {
 	l.assetBalMu.Lock()
 	defer l.assetBalMu.Unlock()
 	delete(l.assetBalances, account)
+	l.summaryDirty[account] = struct{}{}
 }
 
 func (l *Ledger) GetAssetBalances(account string) map[string]uint64 {
@@ -571,12 +620,18 @@ func (l *Ledger) rebuildAssetBalances() error {
 			continue
 		}
 		balByAsset := make(map[string]uint64)
-		for _, b := range chain.Blocks {
+
+		finalized := min(int(l.FinalHeight(acc)), len(chain.Blocks))
+		finalBal := make(map[string]uint64)
+		for i, b := range chain.Blocks {
 			asset := b.Asset
 			if asset == "" {
 				asset = "XE"
 			}
 			balByAsset[asset] = b.Balance
+			if i < finalized {
+				finalBal[asset] = b.Balance
+			}
 
 			if b.Type == BlockLeaseSettle {
 				if !hasLeases {
@@ -588,10 +643,13 @@ func (l *Ledger) rebuildAssetBalances() error {
 					log.Printf("rebuildAssetBalances: lease_settle block %s references missing lease %s", shortHash(b.Hash), shortHash(b.Source))
 					continue
 				}
-				balByAsset["XUSD"] += lease.Stake
+				balByAsset["XCU"] += lease.Stake
 			}
 		}
 		l.assetBalances[acc] = balByAsset
+		if finalized > 0 {
+			l.finalSnaps[acc] = &finalSnapshot{height: finalized, hash: chain.Blocks[finalized-1].Hash, balances: finalBal}
+		}
 	}
 	return nil
 }
@@ -1158,8 +1216,8 @@ func (l *Ledger) validateAndAddReceive(b *Block) error {
 }
 
 func (l *Ledger) MintForTesting(b *Block) error {
-	if b.Asset != "XUSD" {
-		return fmt.Errorf("mint: restricted to XUSD")
+	if b.Asset != "XCU" {
+		return fmt.Errorf("mint: restricted to XCU")
 	}
 	return l.seedForTesting(b)
 }
@@ -1424,6 +1482,15 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 			ks = b.MSKeyset
 		} else {
 			ks = l.GetKeyset(b.Account)
+			if ks != nil {
+				pks, err := l.keysetAtPrevious(b)
+				if err != nil {
+					return err
+				}
+				if pks != nil {
+					ks = pks
+				}
+			}
 		}
 		if ks == nil {
 			ks2, err := l.resolveMissingKeyset(b.Account)
@@ -1432,7 +1499,16 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 			}
 			ks = ks2
 		}
-		if IsSpendingOp(b.Type) {
+		threshold := IsSpendingOp(b.Type)
+		if !threshold {
+
+			changes, err := l.changesRepresentative(b)
+			if err != nil {
+				return err
+			}
+			threshold = changes
+		}
+		if threshold {
 			if err := VerifyMultisig(b.Hash, b.Signatures, ks); err != nil {
 				return fmt.Errorf("multisig: %w", err)
 			}
@@ -1464,6 +1540,26 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 	return nil
 }
 
+func (l *Ledger) changesRepresentative(b *Block) (bool, error) {
+	if b.Representative == "" {
+		return false, nil
+	}
+	for hash := b.Previous; hash != "0"; {
+		pb, err := l.store.GetBlock(hash)
+		if err != nil {
+			return false, fmt.Errorf("GetBlock (representative lookup): %w", err)
+		}
+		if pb == nil {
+			return false, fmt.Errorf("previous block not found (representative lookup): %s", shortHash(hash))
+		}
+		if pb.Representative != "" {
+			return pb.Representative != b.Representative, nil
+		}
+		hash = pb.Previous
+	}
+	return true, nil
+}
+
 func (l *Ledger) resolveMissingKeyset(account string) (*Keyset, error) {
 	chain, err := l.store.GetAccountChain(account)
 	if err != nil {
@@ -1473,17 +1569,45 @@ func (l *Ledger) resolveMissingKeyset(account string) (*Keyset, error) {
 	if chain == nil {
 		return nil, fmt.Errorf("block has signatures but multisig keyset is not known: unopened account %s (multisig_open not yet synced)", shortAddr(account))
 	}
-	var found *Keyset
-	for _, cb := range chain.Blocks {
-		if (cb.Type == BlockMultisigOpen || cb.Type == BlockMultisigUpdate) && cb.MSKeyset != nil {
-			found = cb.MSKeyset
-		}
-	}
+	found := lastKeyset(chain.Blocks)
 	if found == nil {
 		return nil, fmt.Errorf("block has signatures but account is not multisig")
 	}
 	l.setKeyset(account, found)
 	return found, nil
+}
+
+func (l *Ledger) keysetAtPrevious(b *Block) (*Keyset, error) {
+	hashes, err := l.chainHashes(b.Account)
+	if err != nil {
+		return nil, fmt.Errorf("GetAccountChain (keyset lookup): %w", err)
+	}
+	if len(hashes) == 0 || hashes[len(hashes)-1] == b.Previous {
+		return nil, nil
+	}
+	chain, err := l.store.GetAccountChain(b.Account)
+	if err != nil {
+		return nil, fmt.Errorf("GetAccountChain (keyset lookup): %w", err)
+	}
+	if chain == nil {
+		return nil, nil
+	}
+	for i, cb := range chain.Blocks {
+		if cb.Hash == b.Previous {
+			return lastKeyset(chain.Blocks[:i+1]), nil
+		}
+	}
+	return nil, nil
+}
+
+func lastKeyset(blocks []*Block) *Keyset {
+	var found *Keyset
+	for _, cb := range blocks {
+		if (cb.Type == BlockMultisigOpen || cb.Type == BlockMultisigUpdate) && cb.MSKeyset != nil {
+			found = cb.MSKeyset
+		}
+	}
+	return found
 }
 
 func (l *Ledger) rebuildKeysets() {
@@ -1504,8 +1628,8 @@ func (l *Ledger) rebuildKeysets() {
 }
 
 func (l *Ledger) validateAndAddLease(b *Block) error {
-	if b.Asset != "XUSD" {
-		return fmt.Errorf("lease block must have asset=XUSD")
+	if b.Asset != "XCU" {
+		return fmt.Errorf("lease block must have asset=XCU")
 	}
 	if b.Destination == "" {
 		return fmt.Errorf("lease block must have a destination (provider)")
@@ -1569,9 +1693,9 @@ func (l *Ledger) validateAndAddLease(b *Block) error {
 		}
 	}
 
-	oldBal := l.getAssetBalanceOverlay(b.Account, "XUSD")
+	oldBal := l.getAssetBalanceOverlay(b.Account, "XCU")
 	if b.Amount > oldBal {
-		return fmt.Errorf("insufficient XUSD balance: have %d, need %d", oldBal, b.Amount)
+		return fmt.Errorf("insufficient XCU balance: have %d, need %d", oldBal, b.Amount)
 	}
 	if b.Balance != oldBal-b.Amount {
 		return fmt.Errorf("balance mismatch: expected %d, got %d", oldBal-b.Amount, b.Balance)
@@ -1586,7 +1710,7 @@ func (l *Ledger) validateAndAddLease(b *Block) error {
 		Source:      b.Account,
 		Destination: b.Destination,
 		Amount:      b.Amount,
-		Asset:       "XUSD",
+		Asset:       "XCU",
 	}
 	commit.PutLease = &Lease{
 		LeaseHash:       b.Hash,
@@ -1604,9 +1728,22 @@ func (l *Ledger) validateAndAddLease(b *Block) error {
 	return l.commitBlockWrite(commit, prevBalance)
 }
 
+func (l *Ledger) timekeeperEras() []TimekeeperEra {
+	if l.timekeeperErasFn != nil {
+		return l.timekeeperErasFn()
+	}
+	if l.timekeeperConfigFn == nil {
+		return nil
+	}
+	if cfg := l.timekeeperConfigFn(); cfg != nil {
+		return []TimekeeperEra{{Config: cfg}}
+	}
+	return nil
+}
+
 func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
-	if b.Asset != "XUSD" {
-		return fmt.Errorf("lease_accept block must have asset=XUSD")
+	if b.Asset != "XCU" {
+		return fmt.Errorf("lease_accept block must have asset=XCU")
 	}
 	if b.Source == "" {
 		return fmt.Errorf("lease_accept must reference a source lease block")
@@ -1657,22 +1794,19 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 		}
 	}
 
-	oldBal := l.getAssetBalanceOverlay(b.Account, "XUSD")
+	oldBal := l.getAssetBalanceOverlay(b.Account, "XCU")
 	if b.Amount > oldBal {
-		return fmt.Errorf("insufficient XUSD balance for stake: have %d, need %d", oldBal, b.Amount)
+		return fmt.Errorf("insufficient XCU balance for stake: have %d, need %d", oldBal, b.Amount)
 	}
 	if b.Balance != oldBal-b.Amount {
 		return fmt.Errorf("balance mismatch: expected %d, got %d", oldBal-b.Amount, b.Balance)
 	}
 
-	if l.timekeeperConfigFn == nil {
+	tkEras := l.timekeeperEras()
+	if len(tkEras) == 0 {
 		return fmt.Errorf("lease_accept: timekeepers not configured")
 	}
-	tkConfig := l.timekeeperConfigFn()
-	if tkConfig == nil {
-		return fmt.Errorf("lease_accept: timekeepers not configured")
-	}
-	startTime, err := ValidateAttestations(b.Attestations, b.Source, tkConfig, skipSkew)
+	startTime, err := ValidateAttestationsAt(b.Attestations, b.Source, tkEras, skipSkew)
 	if err != nil {
 		return fmt.Errorf("lease_accept attestation: %w", err)
 	}
@@ -1689,7 +1823,7 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 	}
 	certInfo := l.certificateLookupFn(b.CertificateHash)
 	if certInfo == nil {
-		return fmt.Errorf("lease_accept: certificate not found: %s", b.CertificateHash[:12])
+		return fmt.Errorf("lease_accept: certificate not found: %s", shortHash(b.CertificateHash))
 	}
 	if certInfo.Provider != b.Account {
 		return fmt.Errorf("lease_accept: certificate belongs to different provider")
@@ -1790,8 +1924,8 @@ func (l *Ledger) resolveCancelWinsOverAccept(leaseHash, provider string) error {
 }
 
 func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
-	if b.Asset != "XUSD" {
-		return fmt.Errorf("lease_cancel block must have asset=XUSD")
+	if b.Asset != "XCU" {
+		return fmt.Errorf("lease_cancel block must have asset=XCU")
 	}
 	if b.Source == "" {
 		return fmt.Errorf("lease_cancel must reference a source lease block")
@@ -1849,7 +1983,7 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 		}
 	}
 
-	oldBal := l.getAssetBalanceOverlay(b.Account, "XUSD")
+	oldBal := l.getAssetBalanceOverlay(b.Account, "XCU")
 	expectedBal := oldBal + leaseBlock.Amount
 	if b.Balance != expectedBal {
 		return fmt.Errorf("balance mismatch: expected %d, got %d", expectedBal, b.Balance)
@@ -1877,8 +2011,8 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 }
 
 func (l *Ledger) validateAndAddLeaseForceSettle(b *Block, skipSkew bool) error {
-	if b.Asset != "XUSD" {
-		return fmt.Errorf("lease_force_settle block must have asset=XUSD")
+	if b.Asset != "XCU" {
+		return fmt.Errorf("lease_force_settle block must have asset=XCU")
 	}
 	if b.Source == "" {
 		return fmt.Errorf("lease_force_settle must reference a source lease block")
@@ -1919,14 +2053,11 @@ func (l *Ledger) validateAndAddLeaseForceSettle(b *Block, skipSkew bool) error {
 		return fmt.Errorf("cannot force-settle lease in %s state", lease.State)
 	}
 
-	if l.timekeeperConfigFn == nil {
+	tkEras := l.timekeeperEras()
+	if len(tkEras) == 0 {
 		return fmt.Errorf("lease_force_settle: timekeepers not configured")
 	}
-	tkConfig := l.timekeeperConfigFn()
-	if tkConfig == nil {
-		return fmt.Errorf("lease_force_settle: timekeepers not configured")
-	}
-	forceTime, err := ValidateAttestations(b.Attestations, b.Source, tkConfig, skipSkew)
+	forceTime, err := ValidateAttestationsAt(b.Attestations, b.Source, tkEras, skipSkew)
 	if err != nil {
 		return fmt.Errorf("lease_force_settle attestation: %w", err)
 	}
@@ -1966,7 +2097,7 @@ func (l *Ledger) validateAndAddLeaseForceSettle(b *Block, skipSkew bool) error {
 		}
 	}
 
-	oldBal := l.getAssetBalanceOverlay(b.Account, "XUSD")
+	oldBal := l.getAssetBalanceOverlay(b.Account, "XCU")
 	expectedBal := oldBal + pending.Amount
 	if expectedBal < oldBal {
 		return fmt.Errorf("lease_force_settle would overflow uint64 balance")
@@ -2088,6 +2219,10 @@ func LeaseTotalEmission(lease *Lease) (uint64, error) {
 }
 
 func (l *Ledger) validateLockedEmissionAt(atTime int64, lockedR, lockedCap, lockedTWAP uint64, skipSkew bool, opName string) error {
+
+	if lockedCap == 0 || lockedTWAP == 0 {
+		return fmt.Errorf("%s locked emission params invalid: locked_payout_cap (%d) and locked_twap (%d) must both be > 0", opName, lockedCap, lockedTWAP)
+	}
 	if l.epochAtFn == nil {
 		return nil
 	}
@@ -2146,14 +2281,11 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 		return fmt.Errorf("lease_settle: lease not settleable in %s state", lease.State)
 	}
 
-	if l.timekeeperConfigFn == nil {
+	tkEras := l.timekeeperEras()
+	if len(tkEras) == 0 {
 		return fmt.Errorf("lease_settle: timekeepers not configured")
 	}
-	tkConfigSettle := l.timekeeperConfigFn()
-	if tkConfigSettle == nil {
-		return fmt.Errorf("lease_settle: timekeepers not configured")
-	}
-	settleTime, err := ValidateAttestations(b.Attestations, b.Source, tkConfigSettle, skipSkew)
+	settleTime, err := ValidateAttestationsAt(b.Attestations, b.Source, tkEras, skipSkew)
 	if err != nil {
 		return fmt.Errorf("lease_settle attestation: %w", err)
 	}
@@ -2230,7 +2362,7 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 
 	commit.ExpectLeaseEffectiveDurationSecs = lease.EffectiveDurationSecs()
 
-	commit.AssetCredit = &AssetDelta{Account: b.Account, Asset: "XUSD", Amount: lease.Stake}
+	commit.AssetCredit = &AssetDelta{Account: b.Account, Asset: "XCU", Amount: lease.Stake}
 
 	if err := l.commitBlockWrite(commit, prevBalance); err != nil {
 		return err
@@ -2386,6 +2518,23 @@ func (l *Ledger) GetChain(account string) []*Block {
 	return out
 }
 
+func (l *Ledger) GetChainRange(account string, from, to int) ([]*Block, int) {
+	cr, ok := l.store.(ChainRangeReader)
+	if !ok {
+		chain := l.GetChain(account)
+		from = min(max(from, 0), len(chain))
+		to = max(min(to, len(chain)), from)
+		return chain[from:to], len(chain)
+	}
+	blocks, total, err := cr.GetAccountChainRange(account, from, to)
+	if err != nil {
+		storeReadErrors.Add(1)
+		log.Printf("ERROR: GetChainRange: store read for %s failed: %v — surfacing as no chain, NOT a genuine miss", shortAddr(account), err)
+		return nil, 0
+	}
+	return blocks, total
+}
+
 var storeReadErrors atomic.Uint64
 
 func StoreReadErrors() uint64 {
@@ -2412,44 +2561,151 @@ func (l *Ledger) GetAllPending() []*PendingSend {
 	return result
 }
 
-func (l *Ledger) GetRecentBlocks(limit int) []*Block {
+func (l *Ledger) GetPendingPage(ctx context.Context, offset, limit int) ([]*PendingSend, error) {
+	var page []*PendingSend
+	var err error
+	if pp, ok := l.store.(PendingPager); ok {
+		page, err = pp.GetPendingPage(ctx, offset, limit)
+	} else if page, err = l.store.GetAllPending(); err == nil {
+		offset = min(offset, len(page))
+		page = page[offset : offset+min(limit, len(page)-offset)]
+	}
+	if err != nil && ctx.Err() == nil {
+		storeReadErrors.Add(1)
+		log.Printf("ERROR: GetPendingPage: store read failed: %v", err)
+	}
+	return page, err
+}
+
+func (l *Ledger) PendingCount() int {
+	pc, ok := l.store.(PendingCounter)
+	if !ok {
+		return len(l.GetAllPending())
+	}
+	n, err := pc.CountPending()
+	if err != nil {
+		storeReadErrors.Add(1)
+		log.Printf("ERROR: PendingCount: store read failed: %v — surfacing as no pending, NOT a genuine empty", err)
+		return 0
+	}
+	return n
+}
+
+func (l *Ledger) PendingTotals() (totals map[string]PendingTotal, ok bool) {
+	pt, ok := l.store.(PendingTotaler)
+	if !ok {
+		return nil, false
+	}
+	totals, err := pt.PendingTotals()
+	if err != nil {
+		storeReadErrors.Add(1)
+		log.Printf("ERROR: PendingTotals: store read failed: %v", err)
+		return nil, false
+	}
+	return totals, true
+}
+
+type frontierTime struct {
+	hash string
+	ts   int64
+}
+
+type newestFirst []*Block
+
+func (h newestFirst) Len() int { return len(h) }
+func (h newestFirst) Less(i, j int) bool {
+	if h[i].Timestamp != h[j].Timestamp {
+		return h[i].Timestamp > h[j].Timestamp
+	}
+	return h[i].Hash < h[j].Hash
+}
+func (h newestFirst) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *newestFirst) Push(x any)   { *h = append(*h, x.(*Block)) }
+func (h *newestFirst) Pop() any {
+	old := *h
+	b := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return b
+}
+
+func (l *Ledger) GetRecentBlocks(ctx context.Context, limit int) ([]*Block, error) {
 	if limit <= 0 {
-		return []*Block{}
+		return []*Block{}, nil
 	}
-	frontiers := l.Frontiers()
+	heads, err := l.newestFrontiers(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	h := make(newestFirst, 0, len(heads))
+	for _, hash := range heads {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if b := l.GetBlock(hash); b != nil {
+			h = append(h, b)
+		}
+	}
+	heap.Init(&h)
 	result := make([]*Block, 0, limit)
-
-	var minTs int64
-	for acc := range frontiers {
-		chain := l.GetChain(acc)
-
-		start := len(chain) - limit
-		if start < 0 {
-			start = 0
+	for h.Len() > 0 {
+		b := heap.Pop(&h).(*Block)
+		result = append(result, b)
+		if len(result) == limit {
+			break
 		}
-		for i := len(chain) - 1; i >= start; i-- {
-			b := chain[i]
-			if len(result) >= limit && b.Timestamp <= minTs {
-				break
-			}
-			result = append(result, b)
+		if b.Previous == "0" {
+			continue
 		}
-
-		if len(result) > limit {
-			sort.Slice(result, func(i, j int) bool {
-				return result[i].Timestamp > result[j].Timestamp
-			})
-			result = result[:limit]
-			minTs = result[limit-1].Timestamp
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if prev := l.GetBlock(b.Previous); prev != nil {
+			heap.Push(&h, prev)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Timestamp > result[j].Timestamp
+	return result, nil
+}
+
+func (l *Ledger) newestFrontiers(ctx context.Context, limit int) ([]string, error) {
+	frontiers := l.Frontiers()
+	l.recentMu.Lock()
+	defer l.recentMu.Unlock()
+	if l.recentFrontiers == nil {
+		l.recentFrontiers = make(map[string]frontierTime, len(frontiers))
+	}
+	for acc, hash := range frontiers {
+		if ft, ok := l.recentFrontiers[acc]; ok && ft.hash == hash {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		b := l.GetBlock(hash)
+		if b == nil {
+			delete(l.recentFrontiers, acc)
+			continue
+		}
+		l.recentFrontiers[acc] = frontierTime{hash: hash, ts: b.Timestamp}
+	}
+	newest := make([]frontierTime, 0, len(l.recentFrontiers))
+	for acc, ft := range l.recentFrontiers {
+		if frontiers[acc] != ft.hash {
+			delete(l.recentFrontiers, acc)
+			continue
+		}
+		newest = append(newest, ft)
+	}
+	sort.Slice(newest, func(i, j int) bool {
+		if newest[i].ts != newest[j].ts {
+			return newest[i].ts > newest[j].ts
+		}
+		return newest[i].hash < newest[j].hash
 	})
-	if len(result) > limit {
-		result = result[:limit]
+	hashes := make([]string, 0, min(limit, len(newest)))
+	for _, ft := range newest[:min(limit, len(newest))] {
+		hashes = append(hashes, ft.hash)
 	}
-	return result
+	return hashes, nil
 }
 
 func (l *Ledger) GetBlock(hash string) *Block {
@@ -2561,6 +2817,12 @@ func (l *Ledger) Frontiers() map[string]string {
 		return fl.AllFrontiers()
 	}
 	return map[string]string{}
+}
+
+func (l *Ledger) AccountCount() int {
+	l.assetBalMu.RLock()
+	defer l.assetBalMu.RUnlock()
+	return len(l.assetBalances)
 }
 
 func (l *Ledger) LocksCount() int {
@@ -2760,6 +3022,9 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged receive: GetPendingSend: %w", err)
 		}
 		if pending == nil {
+			pending = l.pendingConsumedAboveSlot(b)
+		}
+		if pending == nil {
 			return fmt.Errorf("staged receive: source send not pending: %s", shortHash(b.Source))
 		}
 		if pending.Destination != b.Account {
@@ -2830,6 +3095,21 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		if b.Balance != expectedBal {
 			return fmt.Errorf("staged lease_force_settle: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
+	case BlockLeaseRenew:
+
+		pending, err := l.store.GetPendingSend(b.Source)
+		if err != nil {
+			return fmt.Errorf("staged lease_renew: GetPendingSend: %w", err)
+		}
+		if pending == nil {
+			return fmt.Errorf("staged lease_renew: no pending escrow for lease")
+		}
+		if b.Amount > parentBalance {
+			return fmt.Errorf("staged lease_renew: insufficient balance: have %d, need %d", parentBalance, b.Amount)
+		}
+		if b.Balance != parentBalance-b.Amount {
+			return fmt.Errorf("staged lease_renew: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
+		}
 	case BlockMultisigOpen:
 		return fmt.Errorf("staged multisig_open: conflicting account opens are invalid")
 	case BlockMultisigUpdate:
@@ -2851,8 +3131,8 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		}
 	case BlockMint:
 
-		if b.Asset != "XUSD" {
-			return fmt.Errorf("staged mint: restricted to XUSD")
+		if b.Asset != "XCU" {
+			return fmt.Errorf("staged mint: restricted to XCU")
 		}
 		if !l.isMinter(b.Account) {
 			return fmt.Errorf("staged mint: account %s is not an authorized minter", shortAddr(b.Account))
@@ -2873,6 +3153,37 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 	return nil
 }
 
+func (l *Ledger) pendingConsumedAboveSlot(b *Block) *PendingSend {
+	src := l.GetBlock(b.Source)
+	if src == nil || src.Type != BlockSend {
+		return nil
+	}
+	chain, err := l.store.GetAccountChain(b.Account)
+	if err != nil || chain == nil {
+		return nil
+	}
+	above := b.Previous == "0"
+	for _, cb := range chain.Blocks {
+		if above && cb.Type == BlockReceive && cb.Source == b.Source {
+			asset := src.Asset
+			if asset == "" {
+				asset = "XE"
+			}
+			return &PendingSend{
+				SendHash:    src.Hash,
+				Source:      src.Account,
+				Destination: src.Destination,
+				Amount:      src.Amount,
+				Asset:       asset,
+			}
+		}
+		if cb.Hash == b.Previous {
+			above = true
+		}
+	}
+	return nil
+}
+
 func (l *Ledger) SwapBlock(account string, oldHash, newHash string, newBlock *Block) error {
 	if err := VerifyBlock(newBlock); err != nil {
 		return fmt.Errorf("SwapBlock: verify replacement: %w", err)
@@ -2887,67 +3198,10 @@ func (l *Ledger) SwapBlock(account string, oldHash, newHash string, newBlock *Bl
 var ErrWinnerFullValidation = errors.New("winner failed full validation")
 
 func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlock *Block) error {
-	chain, err := l.store.GetAccountChain(account)
+	plan, err := l.planSwap(account, oldHash)
 	if err != nil {
-		return fmt.Errorf("SwapBlock: GetAccountChain: %w", err)
+		return err
 	}
-	if chain == nil {
-		return fmt.Errorf("SwapBlock: account %s not found", shortAddr(account))
-	}
-
-	idx := -1
-	var oldBlock *Block
-	for i, b := range chain.Blocks {
-		if b.Hash == oldHash {
-			idx = i
-			oldBlock = b
-			break
-		}
-	}
-	if idx == -1 {
-		return fmt.Errorf("SwapBlock: block %s not found in chain", shortHash(oldHash))
-	}
-
-	if l.finalStore != nil {
-		fh, _ := l.finalStore.GetFinalHeight(account)
-		if uint64(idx+1) <= fh {
-			return fmt.Errorf("SwapBlock: refusing to replace finalized block %s at height %d (final height %d)",
-				shortHash(oldHash), idx+1, fh)
-		}
-	}
-
-	planned := map[string]bool{}
-	var plan []cascadeStep
-	for i := len(chain.Blocks) - 1; i > idx; i-- {
-		b := chain.Blocks[i]
-		if planned[b.Hash] {
-			continue
-		}
-		switch b.Type {
-		case BlockSend, BlockReceive, BlockBurn, BlockMint:
-
-		default:
-			return fmt.Errorf("SwapBlock: cannot unwind descendant %q (%s) of the replaced block — reversing its side-effects is not yet implemented", b.Type, shortHash(b.Hash))
-		}
-		planned[b.Hash] = true
-		if b.Type == BlockSend {
-			if ps, _ := l.store.GetPendingSend(b.Hash); ps == nil {
-				if err := l.planRollbackOfSend(b.Hash, planned, &plan); err != nil {
-					return fmt.Errorf("SwapBlock: %w", err)
-				}
-			}
-		}
-		plan = append(plan, cascadeStep{account: account, b: b})
-	}
-	if oldBlock.Type == BlockSend {
-		oldPlan, perr := l.planCascade(oldBlock.Hash, planned)
-		if perr != nil {
-			return fmt.Errorf("SwapBlock: %w", perr)
-		}
-		plan = append(plan, oldPlan...)
-	}
-
-	plan = append(plan, cascadeStep{account: account, b: oldBlock})
 
 	type heldLock struct {
 		acc   string
@@ -2973,28 +3227,9 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 		}
 	}()
 
-	cascade := newCascadeBuild(newHash)
-	snapshots := map[string]*AccountChain{}
-	for _, st := range plan {
-		snap, ok := snapshots[st.account]
-		if !ok {
-			s, serr := l.store.GetAccountChain(st.account)
-			if serr != nil {
-				return fmt.Errorf("SwapBlock: GetAccountChain(%s): %w", shortAddr(st.account), serr)
-			}
-			if s == nil {
-				return fmt.Errorf("SwapBlock: account %s vanished under the cascade", shortAddr(st.account))
-			}
-			snap = s
-			snapshots[st.account] = snap
-		}
-		undo, apply, berr := l.buildBlockUndo(st.account, st.b, snap)
-		if berr != nil {
-			return fmt.Errorf("SwapBlock: build undo for %s: %w", shortHash(st.b.Hash), berr)
-		}
-		cascade.addUndo(undo, apply)
-
-		snapshots[st.account] = undo.Chain
+	cascade, err := l.buildSwapCascade(newHash, plan)
+	if err != nil {
+		return err
 	}
 
 	if err := l.activateCascade(cascade); err != nil {
@@ -3011,13 +3246,114 @@ func (l *Ledger) swapBlockLocked(account string, oldHash, newHash string, newBlo
 	return nil
 }
 
+func (l *Ledger) swapPreflight(account, oldHash string) error {
+	plan, err := l.planSwap(account, oldHash)
+	if err != nil {
+		return err
+	}
+	_, err = l.buildSwapCascade("", plan)
+	return err
+}
+
+func (l *Ledger) planSwap(account, oldHash string) ([]cascadeStep, error) {
+	chain, err := l.store.GetAccountChain(account)
+	if err != nil {
+		return nil, fmt.Errorf("SwapBlock: GetAccountChain: %w", err)
+	}
+	if chain == nil {
+		return nil, fmt.Errorf("SwapBlock: account %s not found", shortAddr(account))
+	}
+
+	idx := -1
+	var oldBlock *Block
+	for i, b := range chain.Blocks {
+		if b.Hash == oldHash {
+			idx = i
+			oldBlock = b
+			break
+		}
+	}
+	if idx == -1 {
+		return nil, fmt.Errorf("SwapBlock: block %s not found in chain", shortHash(oldHash))
+	}
+
+	if l.finalStore != nil {
+		fh, _ := l.finalStore.GetFinalHeight(account)
+		if uint64(idx+1) <= fh {
+			return nil, fmt.Errorf("SwapBlock: refusing to replace finalized block %s at height %d (final height %d)",
+				shortHash(oldHash), idx+1, fh)
+		}
+	}
+
+	planned := map[string]bool{}
+	var plan []cascadeStep
+	for i := len(chain.Blocks) - 1; i > idx; i-- {
+		b := chain.Blocks[i]
+		if planned[b.Hash] {
+			continue
+		}
+		switch b.Type {
+		case BlockSend, BlockReceive, BlockBurn, BlockMint:
+
+		default:
+			return nil, fmt.Errorf("SwapBlock: cannot unwind descendant %q (%s) of the replaced block — reversing its side-effects is not yet implemented", b.Type, shortHash(b.Hash))
+		}
+		planned[b.Hash] = true
+		if b.Type == BlockSend {
+			if ps, _ := l.store.GetPendingSend(b.Hash); ps == nil {
+				if err := l.planRollbackOfSend(b.Hash, planned, &plan); err != nil {
+					return nil, fmt.Errorf("SwapBlock: %w", err)
+				}
+			}
+		}
+		plan = append(plan, cascadeStep{account: account, b: b})
+	}
+	if oldBlock.Type == BlockSend {
+		oldPlan, perr := l.planCascade(oldBlock.Hash, planned)
+		if perr != nil {
+			return nil, fmt.Errorf("SwapBlock: %w", perr)
+		}
+		plan = append(plan, oldPlan...)
+	}
+
+	plan = append(plan, cascadeStep{account: account, b: oldBlock})
+	return plan, nil
+}
+
+func (l *Ledger) buildSwapCascade(newHash string, plan []cascadeStep) (*cascadeBuild, error) {
+	cascade := newCascadeBuild(newHash)
+	snapshots := map[string]*AccountChain{}
+	for _, st := range plan {
+		snap, ok := snapshots[st.account]
+		if !ok {
+			s, serr := l.store.GetAccountChain(st.account)
+			if serr != nil {
+				return nil, fmt.Errorf("SwapBlock: GetAccountChain(%s): %w", shortAddr(st.account), serr)
+			}
+			if s == nil {
+				return nil, fmt.Errorf("SwapBlock: account %s vanished under the cascade", shortAddr(st.account))
+			}
+			snap = s
+			snapshots[st.account] = snap
+		}
+		undo, apply, berr := l.buildBlockUndo(st.account, st.b, snap)
+		if berr != nil {
+			return nil, fmt.Errorf("SwapBlock: build undo for %s: %w", shortHash(st.b.Hash), berr)
+		}
+		cascade.addUndo(undo, apply)
+
+		snapshots[st.account] = undo.Chain
+	}
+	return cascade, nil
+}
+
 func (l *Ledger) GetAssetBalanceAtBlock(account, asset, blockHash string) uint64 {
 	chain, err := l.store.GetAccountChain(account)
 	if err != nil || chain == nil {
 		return 0
 	}
 	ls, hasLeases := l.store.(LeaseStore)
-	xusd := asset == "XUSD"
+	xcu := asset == "XCU"
 	var bal uint64
 	for _, b := range chain.Blocks {
 		a := b.Asset
@@ -3027,7 +3363,7 @@ func (l *Ledger) GetAssetBalanceAtBlock(account, asset, blockHash string) uint64
 		if a == asset {
 			bal = b.Balance
 		}
-		if xusd && b.Type == BlockLeaseSettle && hasLeases {
+		if xcu && b.Type == BlockLeaseSettle && hasLeases {
 			if lease, lerr := ls.GetLease(b.Source); lerr == nil && lease != nil {
 				bal += lease.Stake
 			}
@@ -3040,19 +3376,47 @@ func (l *Ledger) GetAssetBalanceAtBlock(account, asset, blockHash string) uint64
 }
 
 func (l *Ledger) GetBlockHeight(account, blockHash string) (uint64, error) {
-	chain, err := l.store.GetAccountChain(account)
+	hashes, err := l.chainHashes(account)
 	if err != nil {
 		return 0, fmt.Errorf("GetBlockHeight: GetAccountChain: %w", err)
 	}
-	if chain == nil {
+	if hashes == nil {
 		return 0, fmt.Errorf("GetBlockHeight: account %s not found", shortAddr(account))
 	}
-	for i, b := range chain.Blocks {
-		if b.Hash == blockHash {
+	for i, h := range hashes {
+		if h == blockHash {
 			return uint64(i + 1), nil
 		}
 	}
 	return 0, fmt.Errorf("GetBlockHeight: block %s not found in account %s", shortHash(blockHash), shortAddr(account))
+}
+
+func (l *Ledger) ChainTail(account string) (string, int) {
+	hashes, err := l.chainHashes(account)
+	if err != nil {
+		storeReadErrors.Add(1)
+		log.Printf("ERROR: ChainTail: store read for %s failed: %v — surfacing as no chain, NOT a genuine miss", shortAddr(account), err)
+		return "", 0
+	}
+	if len(hashes) == 0 {
+		return "", 0
+	}
+	return hashes[len(hashes)-1], len(hashes)
+}
+
+func (l *Ledger) chainHashes(account string) ([]string, error) {
+	if hl, ok := l.store.(ChainHashLister); ok {
+		return hl.GetAccountChainHashes(account)
+	}
+	chain, err := l.store.GetAccountChain(account)
+	if err != nil || chain == nil {
+		return nil, err
+	}
+	hashes := make([]string, len(chain.Blocks))
+	for i, b := range chain.Blocks {
+		hashes[i] = b.Hash
+	}
+	return hashes, nil
 }
 
 func (l *Ledger) FinalHeight(account string) uint64 {
@@ -3075,19 +3439,27 @@ func (l *Ledger) IsFinalized(account, blockHash string) bool {
 }
 
 func (l *Ledger) FinalizedChildHash(account, prev string) string {
-	chain, err := l.store.GetAccountChain(account)
-	if err != nil || chain == nil {
+	h, height := l.chainChild(account, prev)
+	if h == "" || height > l.FinalHeight(account) {
 		return ""
 	}
-	open := prev == "" || prev == "0"
-	fh := l.FinalHeight(account)
-	for i, b := range chain.Blocks {
-		if b.Previous == prev || (open && i == 0) {
-			if uint64(i+1) <= fh {
-				return b.Hash
-			}
-			return ""
+	return h
+}
+
+func (l *Ledger) chainChild(account, prev string) (string, uint64) {
+	hashes, err := l.chainHashes(account)
+	if err != nil || hashes == nil {
+		return "", 0
+	}
+	i := 0
+	if prev != "" && prev != "0" {
+		i = slices.Index(hashes, prev) + 1
+		if i == 0 {
+			return "", 0
 		}
 	}
-	return ""
+	if i >= len(hashes) {
+		return "", 0
+	}
+	return hashes[i], uint64(i + 1)
 }

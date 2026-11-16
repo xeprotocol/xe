@@ -26,8 +26,8 @@ func (l *Ledger) isMinter(account string) bool {
 }
 
 func (l *Ledger) validateAndAddMint(b *Block) error {
-	if b.Asset != "XUSD" {
-		return fmt.Errorf("mint: restricted to XUSD")
+	if b.Asset != "XCU" {
+		return fmt.Errorf("mint: restricted to XCU")
 	}
 	if !l.isMinter(b.Account) {
 		return fmt.Errorf("mint: account %s is not an authorized minter", shortAddr(b.Account))

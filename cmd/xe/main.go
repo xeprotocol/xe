@@ -68,7 +68,7 @@ func main() {
 		}
 	case "send":
 		if len(args) < 2 {
-			fatal("usage: xe send <address> <amount> [--asset XUSD]")
+			fatal("usage: xe send <address> <amount> [--asset XCU]")
 		}
 		cmdSend(args)
 	case "receive":
@@ -167,11 +167,11 @@ Wallet:
   wallet balance          Show wallet balance
 
 Transactions:
-  send <addr> <amount> [--asset XE|XUSD] [--memo "text"]
+  send <addr> <amount> [--asset XE|XCU] [--memo "text"]
                           Send funds; --memo attaches up to 64 bytes of UTF-8
   receive                 Receive all pending sends
-  faucet                  Request testnet XUSD from the faucet service to your wallet
-  mint <amount>           Mint XUSD (authorized minter wallet only; ops/bootstrap)
+  faucet                  Request testnet XE from the faucet service to your wallet
+  mint <amount>           Mint XCU (authorized minter wallet only; ops/bootstrap)
   burn <amount> [--yes] [--memo "text"]
                           Permanently destroy XE from your wallet (irreversible)
 
@@ -320,8 +320,8 @@ func cmdWalletCreate(args []string) {
 
 const recoveryPhraseWarning = `Write these words down and keep them safe. The recovery phrase is your only
 backup unless you separately keep the hex seed. Anyone with the backup controls
-the wallet. XE uses standard BIP39 + SLIP-0010 ed25519, m/44'/1'/account'.
-Coin type 1 is provisional. Keep your account index with your backup.
+the wallet. XE uses standard BIP39 + SLIP-0010 ed25519, m/44'/22597'/account'.
+Keep your account index with your backup.
 If you opted into a BIP39 passphrase, you must also keep it separately: it is
 never stored. A wrong passphrase opens a different, empty account.
 Wallets made before v2 restore from their hex seed (wallet.seed).`
@@ -671,7 +671,7 @@ func cmdSend(args []string) {
 	c := apiClient()
 
 	dest := args[0]
-	asset := "XUSD"
+	asset := "XCU"
 	memo := ""
 	for i, a := range args {
 		if a == "--asset" && i+1 < len(args) {
@@ -825,7 +825,7 @@ func cmdMint(args []string) {
 	addr := kp.Address()
 	c := apiClient()
 
-	amount, err := core.ParseAmount(args[0], core.AssetXUSD)
+	amount, err := core.ParseAmount(args[0], core.AssetXCU)
 	if err != nil || amount == 0 {
 		if err != nil {
 			fatal("invalid mint amount %q: %v", args[0], err)
@@ -844,9 +844,9 @@ func cmdMint(args []string) {
 		Type:      core.BlockMint,
 		Account:   addr,
 		Previous:  prev,
-		Balance:   bals["XUSD"] + amount,
+		Balance:   bals["XCU"] + amount,
 		Timestamp: time.Now().UnixNano(),
-		Asset:     "XUSD",
+		Asset:     "XCU",
 		Amount:    amount,
 	}
 	if err := core.SignBlock(b, kp); err != nil {
@@ -858,9 +858,9 @@ func cmdMint(args []string) {
 	if err := c.SubmitBlock(b, "mint"); err != nil {
 		fatal("mint: %v", err)
 	}
-	fmt.Printf("Minted %s XUSD\n", core.FormatAmount(amount, core.AssetXUSD))
+	fmt.Printf("Minted %s XCU\n", core.FormatAmount(amount, core.AssetXCU))
 	fmt.Printf("  Hash: %s\n", b.Hash)
-	fmt.Printf("  New XUSD balance: %s\n", core.FormatAmount(bals["XUSD"]+amount, core.AssetXUSD))
+	fmt.Printf("  New XCU balance: %s\n", core.FormatAmount(bals["XCU"]+amount, core.AssetXCU))
 }
 
 func cmdBurn(args []string) {
@@ -951,7 +951,7 @@ func cmdProviders() {
 		fmt.Printf("[%d] %s\n", i+1, shortAddr(p.Account))
 		fmt.Printf("    Total: %d vCPU, %d MB, %d GB\n", p.VCPUs, p.MemoryMB, p.DiskGB)
 		fmt.Printf("    Free:  %d vCPU, %d MB, %d GB\n", freeVCPUs, freeMemMB, freeDiskGB)
-		fmt.Printf("    XUSD:  %s | Leases: %d active, %d total\n", core.FormatAmount(bals["XUSD"], core.AssetXUSD), p.Active, p.Total)
+		fmt.Printf("    XCU:   %s | Leases: %d active, %d total\n", core.FormatAmount(bals["XCU"], core.AssetXCU), p.Active, p.Total)
 		fmt.Println()
 	}
 }
@@ -1042,11 +1042,11 @@ func cmdLease(args []string) {
 	stake := core.LeaseStake(cost)
 
 	fmt.Printf("Lease: %d vCPU, %d MB, %d GB, %ds (mult=%d)\n", vcpus, memory, disk, duration, certMult)
-	fmt.Printf("Cost: %s XUSD, Stake: %s XUSD\n\n", core.FormatAmount(cost, core.AssetXUSD), core.FormatAmount(stake, core.AssetXUSD))
+	fmt.Printf("Cost: %s XCU, Stake: %s XCU\n\n", core.FormatAmount(cost, core.AssetXCU), core.FormatAmount(stake, core.AssetXCU))
 
 	bals, _ := c.GetBalances(addr)
-	if bals["XUSD"] < cost {
-		fatal("insufficient XUSD: have %s, need %s", core.FormatAmount(bals["XUSD"], core.AssetXUSD), core.FormatAmount(cost, core.AssetXUSD))
+	if bals["XCU"] < cost {
+		fatal("insufficient XCU: have %s, need %s", core.FormatAmount(bals["XCU"], core.AssetXCU), core.FormatAmount(cost, core.AssetXCU))
 	}
 
 	fmt.Printf("Provider: %s\n", shortAddr(providerAddr))
@@ -1065,9 +1065,9 @@ func cmdLease(args []string) {
 		Type:            core.BlockLease,
 		Account:         addr,
 		Previous:        prev,
-		Balance:         bals["XUSD"] - cost,
+		Balance:         bals["XCU"] - cost,
 		Timestamp:       time.Now().UnixNano(),
-		Asset:           "XUSD",
+		Asset:           "XCU",
 		Destination:     providerAddr,
 		Amount:          cost,
 		VCPUs:           vcpus,
@@ -1142,7 +1142,7 @@ func cmdLeaseRenew(hash, secsStr string) {
 	}
 	var out map[string]any
 	_ = json.Unmarshal(rb, &out)
-	fmt.Printf("Renewed lease %s: +%ss (renew block %v, cost %v XUSD)\n", shortAddr(hash), secsStr, out["renew_hash"], out["cost"])
+	fmt.Printf("Renewed lease %s: +%ss (renew block %v, cost %v XCU)\n", shortAddr(hash), secsStr, out["renew_hash"], out["cost"])
 }
 
 func cmdReputation(addr string) {
@@ -1306,8 +1306,8 @@ func cmdNode(args []string) {
 	provPriceMult := flags.Uint64("price-multiplier", 1000, "Provider price multiplier ×1000 (1000=baseline, 2500=2.5×). Sim-only; non-1000 values require anti-cheat gates before production use.")
 	provMinDur := flags.String("min-lease-duration", "", "Reject leases shorter than this (e.g. 1h, 24h). Empty = no min.")
 	provMaxDur := flags.String("max-lease-duration", "", "Reject leases longer than this (e.g. 720h = 30d). Empty = no max.")
-	provMinCost := flags.Uint64("min-lease-cost", 0, "Reject leases below this cost in whole XUSD. 0 = no min.")
-	provMaxCost := flags.Uint64("max-lease-cost", 0, "Reject leases above this cost in whole XUSD. 0 = no max.")
+	provMinCost := flags.Uint64("min-lease-cost", 0, "Reject leases below this cost in whole XCU. 0 = no min.")
+	provMaxCost := flags.Uint64("max-lease-cost", 0, "Reject leases above this cost in whole XCU. 0 = no max.")
 	provMaxConcurrent := flags.Uint64("max-concurrent-leases", 0, "Cap on active leases (running + provisioning). 0 = bounded only by resource capacity.")
 	sshPort := flags.Int("ssh-port", 0, "SSH gateway port (0 = disabled)")
 	limactlPath := flags.String("limactl-path", "", "Path to limactl binary")
@@ -1354,8 +1354,8 @@ func cmdNode(args []string) {
 	}
 
 	policy := node.LeaseAcceptPolicy{
-		MinCostXUSD:   *provMinCost,
-		MaxCostXUSD:   *provMaxCost,
+		MinCostXCU:    *provMinCost,
+		MaxCostXCU:    *provMaxCost,
 		MaxConcurrent: *provMaxConcurrent,
 	}
 	if *provMinDur != "" {
@@ -1723,16 +1723,16 @@ func pickProvider(c *client.Client, vcpus, memoryMB, diskGB, stake uint64) strin
 	}
 
 	var best *client.ProviderInfo
-	var bestXUSD uint64
+	var bestXCU uint64
 	for i := range providers {
 		p := &providers[i]
 		if !providerFits(p, vcpus, memoryMB, diskGB) {
 			continue
 		}
 		bals, _ := c.GetBalances(p.Account)
-		if bals["XUSD"] >= stake && bals["XUSD"] > bestXUSD {
+		if bals["XCU"] >= stake && bals["XCU"] > bestXCU {
 			best = p
-			bestXUSD = bals["XUSD"]
+			bestXCU = bals["XCU"]
 		}
 	}
 	if best == nil {

@@ -42,8 +42,8 @@ const (
 )
 
 var validAssets = map[string]bool{
-	"XE":   true,
-	"XUSD": true,
+	"XE":  true,
+	"XCU": true,
 }
 
 func IsValidAsset(asset string) bool {

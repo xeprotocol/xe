@@ -3,7 +3,7 @@
 How to obtain, verify and run an XE node.
 
 > **STATUS: work in progress.** The network values on this page are real and
-> verified against the live `testnet-0005` — a node built from this tree and
+> verified against the live `testnet-0006` — a node built from this tree and
 > started with them joins the network and syncs. What is *not* settled is
 > everything around them: no release has been tagged yet, so the "From a
 > release" section below describes a flow that has no published artifacts to
@@ -19,10 +19,10 @@ network and both are published:
 
 | Parameter | Value |
 |---|---|
-| `network_id` | `testnet-0005` |
-| statechain genesis hash | `d01aabc1a29dc64bc6bbc30031a716cd2e0ceb867e5479953cd5ad22c8f296d6` |
-| ledger genesis hash | `3ff640410d7879821b544d09545dcfb8e96fe4fc717634e8bff4e53cacd1e150` |
-| genesis bundle | [`genesis/testnet-0005/`](../genesis/testnet-0005) |
+| `network_id` | `testnet-0006` |
+| statechain genesis hash | `59b9875cd2f0e51d736c5be424012ab4abaf0ad38d69b5b22e942405132c284a` |
+| ledger genesis hash | `65d9070a304303350cfd4f6a17a23efb4831894f61bc983805011e10e1b6fc82` |
+| genesis bundle | [`genesis/testnet-0006/`](../genesis/testnet-0006) |
 | bootstrap multiaddrs | see the table below |
 
 | Node | API | p2p multiaddr |
@@ -118,14 +118,14 @@ the two binaries are byte-identical.
 ## 3. Confirm which chain the binary will start from
 
 ```sh
-./xe verify-genesis --genesis-dir ./genesis/testnet-0005
+./xe verify-genesis --genesis-dir ./genesis/testnet-0006
 ```
 
 ```
-network_id                testnet-0005
-statechain genesis hash   d01aabc1a29dc64bc6bbc30031a716cd2e0ceb867e5479953cd5ad22c8f296d6
-ledger genesis hash       3ff640410d7879821b544d09545dcfb8e96fe4fc717634e8bff4e53cacd1e150
-ledger genesis treasury   76ffbdce7d7a0b0270fd111c096cbcd9df9dc1280825237aab73ed8a74609828
+network_id                testnet-0006
+statechain genesis hash   59b9875cd2f0e51d736c5be424012ab4abaf0ad38d69b5b22e942405132c284a
+ledger genesis hash       65d9070a304303350cfd4f6a17a23efb4831894f61bc983805011e10e1b6fc82
+ledger genesis treasury   26065e94862df490fedf6b6832bbf586ec86a662b8a9218e07cda55e492b19fe
 genesis representative    set
 source                    runtime (--genesis-dir/--genesis)
 ```
@@ -138,9 +138,9 @@ it deliberately, and it is why `--genesis-dir` exists.
 Machine-checkable form, for scripts and CI:
 
 ```sh
-./xe verify-genesis --genesis-dir ./genesis/testnet-0005 \
-  --expect-network-id testnet-0005 \
-  --expect-statechain-hash d01aabc1a29dc64bc6bbc30031a716cd2e0ceb867e5479953cd5ad22c8f296d6
+./xe verify-genesis --genesis-dir ./genesis/testnet-0006 \
+  --expect-network-id testnet-0006 \
+  --expect-statechain-hash 59b9875cd2f0e51d736c5be424012ab4abaf0ad38d69b5b22e942405132c284a
 echo $?   # non-zero on any mismatch
 ```
 
@@ -148,7 +148,7 @@ echo $?   # non-zero on any mismatch
 
 ```sh
 mkdir -p /var/lib/xe/data /etc/xe/genesis
-cp genesis/testnet-0005/*.json /etc/xe/genesis/
+cp genesis/testnet-0006/*.json /etc/xe/genesis/
 
 ./xe node \
   --data /var/lib/xe/data \

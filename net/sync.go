@@ -1,9 +1,14 @@
 package net
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"runtime/debug"
 	"strings"
 	"sync"
 	sync2 "sync/atomic"
@@ -26,13 +31,17 @@ const (
 
 	syncCooldown = 5 * time.Second
 
+	maxConcurrentSyncRounds = 4
+
 	periodicSyncInterval = 10 * time.Second
 
-	maxSyncRequestBytes = 1 << 20
+	maxSyncRequestBytes = 8 << 20
 
 	maxSyncResponseBytes = 10 << 20
 
-	maxFrontiers = 10000
+	maxSyncSessionBytes = 32 << 20
+
+	maxFrontiers = 50000
 
 	maxServerBlocks = 10000
 
@@ -67,6 +76,45 @@ func (rl *syncRateLimiter) allow(pid peer.ID) bool {
 	return true
 }
 
+type syncRounds struct {
+	mu      sync.Mutex
+	running map[peer.ID]struct{}
+	slots   chan struct{}
+}
+
+func newSyncRounds() *syncRounds {
+	return &syncRounds{
+		running: make(map[peer.ID]struct{}),
+		slots:   make(chan struct{}, maxConcurrentSyncRounds),
+	}
+}
+
+func (r *syncRounds) start(ctx context.Context, pid peer.ID) bool {
+	r.mu.Lock()
+	if _, busy := r.running[pid]; busy {
+		r.mu.Unlock()
+		return false
+	}
+	r.running[pid] = struct{}{}
+	r.mu.Unlock()
+	select {
+	case r.slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		r.mu.Lock()
+		delete(r.running, pid)
+		r.mu.Unlock()
+		return false
+	}
+}
+
+func (r *syncRounds) done(pid peer.ID) {
+	<-r.slots
+	r.mu.Lock()
+	delete(r.running, pid)
+	r.mu.Unlock()
+}
+
 type syncTracker struct {
 	mu             sync.Mutex
 	lastFrontiers  map[peer.ID]map[string]string
@@ -76,6 +124,13 @@ type syncTracker struct {
 	rejections map[peer.ID]map[string]int
 
 	syncIncapable map[peer.ID]time.Time
+
+	complete map[peer.ID]completeRound
+}
+
+type completeRound struct {
+	start   time.Time
+	touched map[string]struct{}
 }
 
 const fullResyncInterval = 60 * time.Second
@@ -87,7 +142,36 @@ func newSyncTracker() *syncTracker {
 		lastFullResync: time.Time{},
 		rejections:     make(map[peer.ID]map[string]int),
 		syncIncapable:  make(map[peer.ID]time.Time),
+		complete:       make(map[peer.ID]completeRound),
 	}
+}
+
+func (st *syncTracker) recordCompleteRound(pid peer.ID, start time.Time, touched map[string]struct{}) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.complete[pid] = completeRound{start: start, touched: touched}
+}
+
+func (st *syncTracker) QuietRoundSince(since time.Time, peers []peer.ID, accounts ...string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	n := 0
+	for _, pid := range peers {
+		if t, ok := st.syncIncapable[pid]; ok && time.Since(t) < syncReprobeInterval {
+			continue
+		}
+		r, ok := st.complete[pid]
+		if !ok || !r.start.After(since) {
+			return false
+		}
+		for _, a := range accounts {
+			if _, ok := r.touched[a]; ok {
+				return false
+			}
+		}
+		n++
+	}
+	return n > 0
 }
 
 func (st *syncTracker) MarkDirty() {
@@ -148,6 +232,7 @@ func (st *syncTracker) removePeer(pid peer.ID) {
 	delete(st.lastFrontiers, pid)
 	delete(st.rejections, pid)
 	delete(st.syncIncapable, pid)
+	delete(st.complete, pid)
 }
 
 func (st *syncTracker) markSyncIncapable(pid peer.ID) {
@@ -286,6 +371,12 @@ func (q *blockQuarantine) len() int {
 	return len(q.hashes)
 }
 
+func quarantineKey(b *core.Block) string {
+	data, _ := json.Marshal(b)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func frontiersEqual(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false
@@ -306,6 +397,7 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 	tracker := newSyncTracker()
 	quarantine := newBlockQuarantine()
 	gate := &spawnGate{}
+	rounds := newSyncRounds()
 
 	h.SetStreamHandler(syncProtocol, func(s network.Stream) {
 		defer func() { _ = s.Close() }()
@@ -323,7 +415,12 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 				if !outboundRL.allow(pid) {
 					return
 				}
-				if err := requestSync(h, pid, ledger, quarantine, tracker); err != nil {
+				if !rounds.start(ctx, pid) {
+					return
+				}
+				defer rounds.done(pid)
+				err := runSyncRound(pid, func() error { return requestSync(h, pid, ledger, quarantine, tracker) })
+				if err != nil {
 					metrics.RecordSyncRound(false)
 					if isProtocolNotSupported(err) {
 						tracker.markSyncIncapable(pid)
@@ -363,7 +460,12 @@ func SetupSync(ctx context.Context, h host.Host, ledger *core.Ledger) (*SyncTrac
 				synced = true
 				p := pid
 				gate.spawn(func() {
-					if err := requestSync(h, p, ledger, quarantine, tracker); err != nil {
+					if !rounds.start(ctx, p) {
+						return
+					}
+					defer rounds.done(p)
+					err := runSyncRound(p, func() error { return requestSync(h, p, ledger, quarantine, tracker) })
+					if err != nil {
 						metrics.RecordSyncRound(false)
 						if isProtocolNotSupported(err) {
 							tracker.markSyncIncapable(p)
@@ -425,6 +527,16 @@ func runPeriodicResync(ctx context.Context, tick <-chan time.Time, round func())
 	}
 }
 
+func runSyncRound(pid peer.ID, round func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Errorf("sync: round with %s panicked: %v\n%s", pid.ShortString(), r, debug.Stack())
+			err = fmt.Errorf("round panicked: %v", r)
+		}
+	}()
+	return round()
+}
+
 func handleSyncStream(s network.Stream, ledger *core.Ledger, tracker *syncTracker) {
 	var req SyncRequest
 	dec := json.NewDecoder(io.LimitReader(s, maxSyncRequestBytes))
@@ -477,28 +589,22 @@ func handleSyncStream(s network.Stream, ledger *core.Ledger, tracker *syncTracke
 
 func frontiersWhereServerIsBehind(remoteFrontiers map[string]string, ledger *core.Ledger) map[string]struct{} {
 	behind := make(map[string]struct{})
+
+	ourFrontiers := ledger.Frontiers()
 	for account, remoteFrontier := range remoteFrontiers {
 		if remoteFrontier == "" {
 			continue
 		}
-		chain := ledger.GetChain(account)
-		if len(chain) == 0 {
+		ourFrontier, ok := ourFrontiers[account]
+		if !ok {
 
 			continue
 		}
-		ourFrontier := chain[len(chain)-1].Hash
 		if remoteFrontier == ourFrontier {
 			continue
 		}
 
-		ahead := false
-		for _, b := range chain {
-			if b.Hash == remoteFrontier {
-				ahead = true
-				break
-			}
-		}
-		if ahead {
+		if _, err := ledger.GetBlockHeight(account, remoteFrontier); err == nil {
 			continue
 		}
 
@@ -526,8 +632,69 @@ func streamPages(enc pageEncoder, ch <-chan SyncResponse) (int, error) {
 	return total, encErr
 }
 
+type syncPage struct {
+	Blocks   syncPageBlocks   `json:"blocks"`
+	HasMore  bool             `json:"has_more"`
+	Rejected syncPageRejected `json:"rejected,omitempty"`
+}
+
+type syncPageRejected []string
+
+func (r *syncPageRejected) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil {
+		return nil
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return fmt.Errorf("sync page: rejected is not an array")
+	}
+	for dec.More() {
+		if len(*r) == maxFrontiers {
+			return fmt.Errorf("sync page: more than %d rejected accounts", maxFrontiers)
+		}
+		var a string
+		if err := dec.Decode(&a); err != nil {
+			return err
+		}
+		*r = append(*r, a)
+	}
+	return nil
+}
+
+type syncPageBlocks []*core.Block
+
+func (p *syncPageBlocks) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil {
+		return nil
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return fmt.Errorf("sync page: blocks is not an array")
+	}
+	for dec.More() {
+		if len(*p) == maxPageSize {
+			return fmt.Errorf("sync page: more than %d blocks", maxPageSize)
+		}
+		var b *core.Block
+		if err := dec.Decode(&b); err != nil {
+			return err
+		}
+		*p = append(*p, b)
+	}
+	return nil
+}
+
 func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *blockQuarantine, tracker *syncTracker) error {
 
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	s, err := h.NewStream(ctx, pid, syncProtocol)
@@ -553,47 +720,104 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 		return err
 	}
 
-	lr := &io.LimitedReader{R: s, N: maxSyncResponseBytes}
+	sess := &io.LimitedReader{R: s, N: maxSyncSessionBytes}
+	lr := &io.LimitedReader{R: sess, N: maxSyncResponseBytes}
 	dec := json.NewDecoder(lr)
 	var allBlocks []*core.Block
 	var rejectedAccounts []string
 	gotTerminal := false
+	nulls := 0
+
+	complete := false
+	more := false
 
 	for {
 		lr.N = maxSyncResponseBytes
-		var resp SyncResponse
+		var resp syncPage
 		if err := dec.Decode(&resp); err != nil {
 			if err == io.EOF {
+				complete = !more
+				break
+			}
+			if sess.N == 0 {
+
+				logging.Warnf("sync: hit session byte limit (%d) with %s, stopping", maxSyncSessionBytes, pid.ShortString())
 				break
 			}
 			return err
 		}
-		allBlocks = append(allBlocks, resp.Blocks...)
+		more = resp.HasMore
+
+		for _, b := range resp.Blocks {
+			if b == nil {
+				nulls++
+				continue
+			}
+			if len(allBlocks) == maxTotalBlocks {
+				break
+			}
+			allBlocks = append(allBlocks, b)
+		}
 		logging.Debugf("sync: received page from %s: %d blocks (total: %d, hasMore: %v)", pid.ShortString(), len(resp.Blocks), len(allBlocks), resp.HasMore)
 		if !resp.HasMore {
-			rejectedAccounts = resp.Rejected
+
+			for _, a := range resp.Rejected {
+				if _, sent := frontiers[a]; sent {
+					rejectedAccounts = append(rejectedAccounts, a)
+				}
+			}
 			gotTerminal = true
 		}
 		if len(allBlocks) >= maxTotalBlocks {
+
 			logging.Warnf("sync: hit maxTotalBlocks cap (%d), stopping", maxTotalBlocks)
 			break
 		}
 		if !resp.HasMore {
+			complete = true
 			break
 		}
+	}
+	if nulls > 0 {
+		logging.Warnf("sync: dropped %d null block(s) from %s", nulls, pid.ShortString())
 	}
 	if tracker != nil && gotTerminal {
 		tracker.recordRejections(pid, rejectedAccounts)
 	}
 
+	if tracker != nil && complete {
+		touched := make(map[string]struct{}, len(rejectedAccounts))
+		for _, b := range allBlocks {
+			touched[strings.ToLower(b.Account)] = struct{}{}
+		}
+		for _, a := range rejectedAccounts {
+			touched[a] = struct{}{}
+		}
+		tracker.recordCompleteRound(pid, start, touched)
+	}
+
+	unreachable := make(map[string]struct{})
+
 	filtered := allBlocks[:0]
 	skipped := 0
 	for _, b := range allBlocks {
-		if quarantine.contains(b.Hash) {
+		if quarantine.contains(quarantineKey(b)) {
 			skipped++
+			unreachable[b.Hash] = struct{}{}
 		} else {
 			filtered = append(filtered, b)
 		}
+	}
+
+	skipUnreachable := func(b *core.Block) bool {
+		if _, dead := unreachable[b.Previous]; !dead {
+			return false
+		}
+		if ledger.GetBlock(b.Previous) != nil {
+			return false
+		}
+		unreachable[b.Hash] = struct{}{}
+		return true
 	}
 
 	added := 0
@@ -604,13 +828,17 @@ func requestSync(h host.Host, pid peer.ID, ledger *core.Ledger, quarantine *bloc
 	for retry := 0; retry < maxRetries && len(pending) > 0; retry++ {
 		var retryable []*core.Block
 		for _, b := range pending {
+			if skipUnreachable(b) {
+				continue
+			}
 			err := ledger.AddSyncedBlock(b)
 			if err != nil {
 				if isRetryableError(err) {
 					retryable = append(retryable, b)
 				} else {
 					rejected++
-					quarantine.add(b.Hash)
+					quarantine.add(quarantineKey(b))
+					unreachable[b.Hash] = struct{}{}
 					if rejected <= 3 {
 						logging.Warnf("sync: block %s rejected (quarantined): %v", shortHash(b.Hash), err)
 					}

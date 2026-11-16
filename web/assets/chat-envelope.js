@@ -7,9 +7,12 @@ function appendField(parts, bytes) {
   parts.push(lenBuf, bytes);
 }
 
-export function envelopeCanonical(from, pubKey, to, message, timestampNs) {
+const ENVELOPE_DOMAIN_TAG = 'xe/chat-envelope/v1\0';
+
+export function envelopeCanonical(networkId, from, pubKey, to, message, timestampNs) {
   const enc = new TextEncoder();
-  const parts = [];
+  const parts = [enc.encode(ENVELOPE_DOMAIN_TAG)];
+  appendField(parts, enc.encode(networkId));
   appendField(parts, enc.encode(from));
   appendField(parts, enc.encode(pubKey));
   appendField(parts, enc.encode(to));
@@ -25,16 +28,16 @@ export function envelopeCanonical(from, pubKey, to, message, timestampNs) {
   return out;
 }
 
-export async function computeEnvelopeID(from, pubKey, to, message, timestampNs) {
-  const data = envelopeCanonical(from, pubKey, to, message, timestampNs);
+export async function computeEnvelopeID(networkId, from, pubKey, to, message, timestampNs) {
+  const data = envelopeCanonical(networkId, from, pubKey, to, message, timestampNs);
   const digest = await crypto.subtle.digest('SHA-256', data);
   return bytesToHex(new Uint8Array(digest));
 }
 
-export async function buildEnvelope(keyPair, to, message, onProgress) {
+export async function buildEnvelope(keyPair, networkId, to, message, onProgress) {
   const ts = BigInt(Date.now()) * 1_000_000n;
   const pubKey = keyPair.pubKeyHex;
-  const id = await computeEnvelopeID(keyPair.addressHex, pubKey, to, message, ts);
+  const id = await computeEnvelopeID(networkId, keyPair.addressHex, pubKey, to, message, ts);
   const idBytes = hexToBytes(id, 32);
   const sigBytes = await keyPair.sign(idBytes);
   const { chat: difficulty } = await getDifficulties();

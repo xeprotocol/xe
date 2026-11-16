@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -27,15 +28,31 @@ type sshGatewayBackend interface {
 	OpenTunnel(ctx context.Context, providerPeer peer.ID, leaseHash string) (io.ReadWriteCloser, error)
 }
 
-const maxSSHConnections = 100
+const (
+	maxSSHConnections = 100
+
+	maxSessionsPerIP = 10
+
+	sshHandshakeDeadline = 10 * time.Second
+
+	maxPreAuthPerIP = 3
+
+	maxPreAuthConnections = 100
+)
 
 type SSHGateway struct {
-	listener net.Listener
-	hostKey  ssh.Signer
-	backend  sshGatewayBackend
-	wg       sync.WaitGroup
-	done     chan struct{}
-	connSem  chan struct{}
+	listener          net.Listener
+	hostKey           ssh.Signer
+	backend           sshGatewayBackend
+	wg                sync.WaitGroup
+	done              chan struct{}
+	handshakeDeadline time.Duration
+
+	mu           sync.Mutex
+	preAuth      map[string]int
+	preAuthTotal int
+	sessions     map[string]int
+	sessionTotal int
 }
 
 func NewSSHGateway(listenAddr string, dataDir string, backend sshGatewayBackend) (*SSHGateway, error) {
@@ -54,7 +71,10 @@ func NewSSHGateway(listenAddr string, dataDir string, backend sshGatewayBackend)
 		hostKey:  hostKey,
 		backend:  backend,
 		done:     make(chan struct{}),
-		connSem:  make(chan struct{}, maxSSHConnections),
+
+		handshakeDeadline: sshHandshakeDeadline,
+		preAuth:           make(map[string]int),
+		sessions:          make(map[string]int),
 	}
 	return gw, nil
 }
@@ -78,18 +98,16 @@ func (gw *SSHGateway) Start() {
 					continue
 				}
 			}
-			select {
-			case gw.connSem <- struct{}{}:
-			default:
-				logging.Warnf("ssh: connection limit reached (%d), rejecting", maxSSHConnections)
+			ip := remoteIP(conn)
+			if reason := gw.acquirePreAuth(ip); reason != "" {
+				logging.Warnf("ssh: %s, rejecting %s", reason, ip)
 				_ = conn.Close()
 				continue
 			}
 			gw.wg.Add(1)
 			go func() {
 				defer gw.wg.Done()
-				defer func() { <-gw.connSem }()
-				gw.handleConnection(conn)
+				gw.handleConnection(conn, ip)
 			}()
 		}
 	}()
@@ -101,7 +119,68 @@ func (gw *SSHGateway) Stop() {
 	gw.wg.Wait()
 }
 
-func (gw *SSHGateway) handleConnection(conn net.Conn) {
+func remoteIP(conn net.Conn) string {
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return conn.RemoteAddr().String()
+	}
+	return host
+}
+
+func (gw *SSHGateway) acquirePreAuth(ip string) string {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	if gw.preAuthTotal >= maxPreAuthConnections {
+		return fmt.Sprintf("pre-auth limit reached (%d)", maxPreAuthConnections)
+	}
+	if gw.preAuth[ip] >= maxPreAuthPerIP {
+		return fmt.Sprintf("pre-auth limit reached for this IP (%d)", maxPreAuthPerIP)
+	}
+	gw.preAuth[ip]++
+	gw.preAuthTotal++
+	return ""
+}
+
+func (gw *SSHGateway) releasePreAuthLocked(ip string) {
+	gw.preAuthTotal--
+	gw.preAuth[ip]--
+	if gw.preAuth[ip] <= 0 {
+		delete(gw.preAuth, ip)
+	}
+}
+
+func (gw *SSHGateway) releasePreAuth(ip string) {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	gw.releasePreAuthLocked(ip)
+}
+
+func (gw *SSHGateway) promoteToSession(ip string) string {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	gw.releasePreAuthLocked(ip)
+	if gw.sessionTotal >= maxSSHConnections {
+		return fmt.Sprintf("connection limit reached (%d)", maxSSHConnections)
+	}
+	if gw.sessions[ip] >= maxSessionsPerIP {
+		return fmt.Sprintf("session limit reached for this IP (%d)", maxSessionsPerIP)
+	}
+	gw.sessions[ip]++
+	gw.sessionTotal++
+	return ""
+}
+
+func (gw *SSHGateway) releaseSession(ip string) {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	gw.sessionTotal--
+	gw.sessions[ip]--
+	if gw.sessions[ip] <= 0 {
+		delete(gw.sessions, ip)
+	}
+}
+
+func (gw *SSHGateway) handleConnection(conn net.Conn, ip string) {
 	defer func() { _ = conn.Close() }()
 
 	var authenticatedLease *core.Lease
@@ -146,11 +225,19 @@ func (gw *SSHGateway) handleConnection(conn net.Conn) {
 	}
 	config.AddHostKey(gw.hostKey)
 
+	_ = conn.SetDeadline(time.Now().Add(gw.handshakeDeadline))
 	serverConn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
+		gw.releasePreAuth(ip)
 		return
 	}
 	defer func() { _ = serverConn.Close() }()
+	if reason := gw.promoteToSession(ip); reason != "" {
+		logging.Warnf("ssh: %s, closing session from %s", reason, ip)
+		return
+	}
+	defer gw.releaseSession(ip)
+	_ = conn.SetDeadline(time.Time{})
 
 	go ssh.DiscardRequests(reqs)
 

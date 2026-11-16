@@ -17,7 +17,7 @@ import (
 
 const RecoveryPhraseWords = 24
 
-const RecoveryPhraseCoinType uint32 = 1
+const RecoveryPhraseCoinType uint32 = 22597
 
 //go:embed wordlist_english.txt
 var wordlistEnglish string

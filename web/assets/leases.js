@@ -102,8 +102,8 @@ function listRow(l) {
   tr.appendChild(blockLinkTd(l.lease_hash));
   tr.appendChild(accountLinkTd(l.consumer));
   tr.appendChild(accountLinkTd(l.provider));
-  tr.appendChild(td(formatAmount(l.cost, 'XUSD')));
-  tr.appendChild(td(formatAmount(l.stake, 'XUSD')));
+  tr.appendChild(td(formatAmount(l.cost, 'XCU')));
+  tr.appendChild(td(formatAmount(l.stake, 'XCU')));
   tr.appendChild(td(resourceSummary(l)));
   tr.appendChild(td(l.state || (l.settled ? 'settled' : 'accepted')));
   if (l.lease_hash) {
@@ -141,8 +141,8 @@ async function loadDetail(hash) {
           ['effective duration', text(durationString((lease.duration || 0) + lease.renewals.reduce((a, r) => a + (r.duration || 0), 0)))],
         ]
       : []),
-    ['cost (XUSD)', text(formatAmount(lease.cost, 'XUSD'))],
-    ['stake (XUSD)', text(formatAmount(lease.stake, 'XUSD'))],
+    ['cost (XCU)', text(formatAmount(lease.cost, 'XCU'))],
+    ['stake (XCU)', text(formatAmount(lease.stake, 'XCU'))],
     ['start time', text(lease.start_time ? `${timeOfDay(lease.start_time)} · ${relativeTime(lease.start_time)}` : '–')],
     ['state', text(lease.state || (lease.settled ? 'settled' : 'accepted'))],
   ];

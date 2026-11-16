@@ -1,8 +1,10 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -93,6 +95,37 @@ func (m *MemStore) GetAccountChain(account string) (*core.AccountChain, error) {
 	return copyChain(chain), nil
 }
 
+func (m *MemStore) GetAccountChainHashes(account string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	chain, ok := m.chains[account]
+	if !ok {
+		return nil, nil
+	}
+	hashes := make([]string, len(chain.Blocks))
+	for i, b := range chain.Blocks {
+		hashes[i] = b.Hash
+	}
+	return hashes, nil
+}
+
+func (m *MemStore) GetAccountChainRange(account string, from, to int) ([]*core.Block, int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	chain, ok := m.chains[account]
+	if !ok {
+		return nil, 0, nil
+	}
+	total := len(chain.Blocks)
+	from = min(max(from, 0), total)
+	to = max(min(to, total), from)
+	blocks := make([]*core.Block, 0, to-from)
+	for _, b := range chain.Blocks[from:to] {
+		blocks = append(blocks, copyBlock(b))
+	}
+	return blocks, total, nil
+}
+
 func (m *MemStore) PutAccountChain(account string, chain *core.AccountChain) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -162,6 +195,25 @@ func (m *MemStore) GetAllPending() ([]*core.PendingSend, error) {
 	out := make([]*core.PendingSend, 0, len(m.pending))
 	for _, ps := range m.pending {
 		cp := *ps
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
+func (m *MemStore) GetPendingPage(ctx context.Context, offset, limit int) ([]*core.PendingSend, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	hashes := make([]string, 0, len(m.pending))
+	for h := range m.pending {
+		hashes = append(hashes, h)
+	}
+	sort.Strings(hashes)
+	out := make([]*core.PendingSend, 0)
+	for i := offset; i < len(hashes) && len(out) < limit; i++ {
+		cp := *m.pending[hashes[i]]
 		out = append(out, &cp)
 	}
 	return out, nil
@@ -258,6 +310,11 @@ func (m *MemStore) applyUndoLocked(u *core.BlockUndo) error {
 	}
 	if u.DeleteKeysetAccount != "" {
 		delete(m.keysets, u.DeleteKeysetAccount)
+	}
+	if u.RestoreKeyset != nil {
+		ks := *u.RestoreKeyset
+		ks.Keys = append([]string(nil), u.RestoreKeyset.Keys...)
+		m.keysets[u.Account] = &ks
 	}
 	if u.DeleteAccountKeyAccount != "" {
 		delete(m.accountKeys, u.DeleteAccountKeyAccount)
@@ -698,6 +755,29 @@ func (m *MemStore) PutLease(lease *core.Lease) error {
 	defer m.mu.Unlock()
 	cp := *lease
 	m.leases[lease.LeaseHash] = &cp
+	return nil
+}
+
+func (m *MemStore) ArchiveLease(lease *core.Lease) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.leases[lease.LeaseHash]
+	if !ok || cur.State != core.LeaseAccepted || cur.Settled || cur.EffectiveExpiry() != lease.EffectiveExpiry() {
+		return fmt.Errorf("ArchiveLease: %w: lease %s changed", core.ErrLeaseStateConflict, shortStr(lease.LeaseHash))
+	}
+	if ps, ok := m.pending[lease.LeaseHash]; ok {
+		delete(m.pending, lease.LeaseHash)
+		if destMap := m.pendingByDest[ps.Destination]; destMap != nil {
+			delete(destMap, lease.LeaseHash)
+			if len(destMap) == 0 {
+				delete(m.pendingByDest, ps.Destination)
+			}
+		}
+	}
+	archived := *cur
+	archived.State = core.LeaseExpired
+	archived.Settled = true
+	m.leases[archived.LeaseHash] = &archived
 	return nil
 }
 

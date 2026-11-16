@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 )
@@ -48,6 +49,11 @@ const DefaultMaxAttestationSkew = int64(10 * time.Minute)
 
 var MaxAttestationSkew = DefaultMaxAttestationSkew
 
+type TimekeeperEra struct {
+	Since  int64
+	Config *TimekeeperConfig
+}
+
 const MaxAttestationsPerBlock = 20
 
 func ValidateAttestations(attestations []TimekeeperAttestation, leaseHash string, config *TimekeeperConfig, skipSkew bool) (int64, error) {
@@ -66,17 +72,23 @@ func ValidateAttestations(attestations []TimekeeperAttestation, leaseHash string
 
 	trusted := make(map[string]bool, len(config.Keys))
 	for _, k := range config.Keys {
-		trusted[k] = true
+		if kb, err := hex.DecodeString(k); err == nil {
+			trusted[string(kb)] = true
+		}
 	}
 
 	now := Now().UnixNano()
 	seen := make(map[string]bool)
 	var validTimestamps []int64
 	for _, a := range attestations {
-		if !trusted[a.PublicKey] {
+		pk, err := hex.DecodeString(a.PublicKey)
+		if err != nil {
 			continue
 		}
-		if seen[a.PublicKey] {
+		if !trusted[string(pk)] {
+			continue
+		}
+		if seen[string(pk)] {
 			continue
 		}
 		if err := VerifyAttestation(&a, leaseHash); err != nil {
@@ -92,7 +104,7 @@ func ValidateAttestations(attestations []TimekeeperAttestation, leaseHash string
 				continue
 			}
 		}
-		seen[a.PublicKey] = true
+		seen[string(pk)] = true
 		validTimestamps = append(validTimestamps, a.Timestamp)
 	}
 
@@ -104,4 +116,48 @@ func ValidateAttestations(attestations []TimekeeperAttestation, leaseHash string
 
 	median := validTimestamps[(len(validTimestamps)-1)/2]
 	return median, nil
+}
+
+func ValidateAttestationsAt(attestations []TimekeeperAttestation, leaseHash string, eras []TimekeeperEra, skipSkew bool) (int64, error) {
+	if len(eras) == 0 {
+		return 0, fmt.Errorf("no timekeeper config")
+	}
+	if len(attestations) > MaxAttestationsPerBlock {
+		return 0, fmt.Errorf("too many attestations: %d exceeds max %d", len(attestations), MaxAttestationsPerBlock)
+	}
+	byEra := make([][]TimekeeperAttestation, len(eras))
+	for _, a := range attestations {
+		i := max(sort.Search(len(eras), func(i int) bool { return eras[i].Since > a.Timestamp })-1, 0)
+		byEra[i] = append(byEra[i], a)
+	}
+
+	last := len(eras) - 1
+	var firstErr error
+	for i := last; i >= 0; i-- {
+		if i != last && len(byEra[i]) == 0 {
+			continue
+		}
+		median, err := ValidateAttestations(byEra[i], leaseHash, eras[i].Config, skipSkew)
+		if err == nil {
+			return median, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	for _, a := range byEra[last] {
+		if !eraListsKey(eras, a.PublicKey) && VerifyAttestation(&a, leaseHash) == nil {
+			return 0, fmt.Errorf("%w (signer %s is in no timekeeper set held here: retry after statechain syncs)", firstErr, shortHash(a.PublicKey))
+		}
+	}
+	return 0, firstErr
+}
+
+func eraListsKey(eras []TimekeeperEra, key string) bool {
+	for _, e := range eras {
+		if e.Config != nil && slices.Contains(e.Config.Keys, key) {
+			return true
+		}
+	}
+	return false
 }

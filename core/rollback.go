@@ -125,7 +125,7 @@ func (l *Ledger) escrowPendingOf(leaseHash string) *PendingSend {
 		Source:      lb.Account,
 		Destination: lb.Destination,
 		Amount:      amount,
-		Asset:       "XUSD",
+		Asset:       "XCU",
 	}
 }
 
@@ -160,7 +160,7 @@ func assetBalanceOnChain(chain *AccountChain, asset string) uint64 {
 	return bal
 }
 
-func (l *Ledger) xusdBalanceOnChain(chain *AccountChain) uint64 {
+func (l *Ledger) xcuBalanceOnChain(chain *AccountChain) uint64 {
 	if chain == nil {
 		return 0
 	}
@@ -171,7 +171,7 @@ func (l *Ledger) xusdBalanceOnChain(chain *AccountChain) uint64 {
 		if a == "" {
 			a = "XE"
 		}
-		if a == "XUSD" {
+		if a == "XCU" {
 			bal = b.Balance
 		}
 		if b.Type == BlockLeaseSettle && hasLeases {
@@ -198,6 +198,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 	var reducePendingID string
 	var reducePendingAmount uint64
 	var restoreLease *Lease
+	var restoreKeyset *Keyset
 	var assetDebit *AssetDelta
 	switch b.Type {
 	case BlockSend:
@@ -230,7 +231,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		addPending = l.escrowPendingOf(b.Source)
 
 		if b.Type == BlockLeaseSettle && restoreLease != nil {
-			assetDebit = &AssetDelta{Account: b.Account, Asset: "XUSD", Amount: restoreLease.Stake}
+			assetDebit = &AssetDelta{Account: b.Account, Asset: "XCU", Amount: restoreLease.Stake}
 		}
 	case BlockLeaseCancel:
 
@@ -245,7 +246,10 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		deleteKeysetAccount = b.Account
 	case BlockMultisigUpdate:
 
-		return nil, nil, fmt.Errorf("undo: reversing a multisig_update is not supported (prior keyset unrecoverable): %s", shortHash(b.Hash))
+		restoreKeyset = lastKeyset(chain.Blocks[:len(chain.Blocks)-1])
+		if restoreKeyset == nil {
+			return nil, nil, fmt.Errorf("undo: no keyset below multisig_update %s", shortHash(b.Hash))
+		}
 	case BlockBurn, BlockMint:
 
 	}
@@ -278,8 +282,8 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 	if b.Previous != "0" {
 		parentBal = assetBalanceOnChain(newChain, asset)
 
-		if asset == "XUSD" {
-			parentBal = l.xusdBalanceOnChain(newChain)
+		if asset == "XCU" {
+			parentBal = l.xcuBalanceOnChain(newChain)
 		}
 	}
 	xeAfter := assetBalanceOnChain(newChain, "XE")
@@ -314,6 +318,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		ReducePendingID:         reducePendingID,
 		ReducePendingAmount:     reducePendingAmount,
 		DeleteKeysetAccount:     deleteKeysetAccount,
+		RestoreKeyset:           restoreKeyset,
 		DeleteAccountKeyAccount: deleteAccountKeyAccount,
 		AssetDebit:              assetDebit,
 	}
@@ -324,6 +329,9 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 			l.keysetMu.Lock()
 			delete(l.keysets, deleteKeysetAccount)
 			l.keysetMu.Unlock()
+		}
+		if restoreKeyset != nil {
+			l.setKeyset(account, restoreKeyset)
 		}
 
 		if deleteAccountKeyAccount != "" {

@@ -90,17 +90,20 @@ func VerifyMultisig(hash string, sigs []BlockSignature, ks *Keyset) error {
 
 	for _, sig := range sigs {
 		pk := sig.PublicKey
+		if _, err := DecodePublicKey(pk); err != nil {
+			return fmt.Errorf("signer %s: %w", shortHash(pk), err)
+		}
 		if seen[pk] {
-			return fmt.Errorf("duplicate signer: %s", pk[:12])
+			return fmt.Errorf("duplicate signer: %s", shortHash(pk))
 		}
 		seen[pk] = true
 
 		if !keysetMap[pk] {
-			return fmt.Errorf("signer %s not in keyset", pk[:12])
+			return fmt.Errorf("signer %s not in keyset", shortHash(pk))
 		}
 
 		if err := VerifyHexSignature(pk, sig.Sig, hashBytes); err != nil {
-			return fmt.Errorf("sig from %s: %w", pk[:12], err)
+			return fmt.Errorf("sig from %s: %w", shortHash(pk), err)
 		}
 		validCount++
 	}

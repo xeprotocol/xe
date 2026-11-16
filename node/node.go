@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"sync"
@@ -86,6 +87,8 @@ type Node struct {
 	acceptInFlightMu sync.Mutex
 	acceptAttestHook func(leaseHash string) ([]core.TimekeeperAttestation, error)
 	acceptSched      acceptSchedule
+	archiveDue       archiveDue
+	standalone       atomic.Bool
 	pullSem          chan struct{}
 	ctx              context.Context
 	cancel           context.CancelFunc
@@ -239,7 +242,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, err
 	}
 
-	var timekeeperConfigFn func() *core.TimekeeperConfig
+	var timekeeperErasFn func() []core.TimekeeperEra
 
 	var minterConfigFn func() *core.MinterConfig
 
@@ -256,7 +259,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	ledger := core.NewLedger(s, core.LedgerConfig{
 		Difficulty:          cfg.Difficulty,
 		TimestampWindow:     core.DefaultTimestampWindow,
-		TimekeeperConfigFn:  func() *core.TimekeeperConfig { return timekeeperConfigFn() },
+		TimekeeperErasFn:    func() []core.TimekeeperEra { return timekeeperErasFn() },
 		MinterConfigFn:      func() *core.MinterConfig { return minterConfigFn() },
 		CertificateLookupFn: func(hash string) *core.CertificateInfo { return certLookupFn(hash) },
 		EpochRFn:            func() uint64 { return epochRFn() },
@@ -340,20 +343,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		}
 	}
 
-	timekeeperConfigFn = func() *core.TimekeeperConfig {
-		raw, ok := sc.GetKV("sys.timekeepers")
-		if !ok {
-			return nil
-		}
-		var config core.TimekeeperConfig
-		if err := json.Unmarshal(raw, &config); err != nil {
-			return nil
-		}
-		if config.Threshold == 0 || len(config.Keys) == 0 {
-			return nil
-		}
-		return &config
-	}
+	timekeeperErasFn = func() []core.TimekeeperEra { return timekeeperEras(sc) }
 
 	minterConfigFn = func() *core.MinterConfig {
 		raw, ok := sc.GetKV("sys.minter")
@@ -541,9 +531,9 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 			log.Printf("Provider mode (lima): %d vCPUs, %d MB memory, %d GB disk", n.providerVCPUs, n.providerMemoryMB, n.providerDiskGB)
 		}
 		if !n.acceptPolicy.IsZero() {
-			log.Printf("Provider auto-accept policy: duration=[%ds, %ds] cost=[%d, %d] XUSD max_concurrent=%d (0=unset)",
+			log.Printf("Provider auto-accept policy: duration=[%ds, %ds] cost=[%d, %d] XCU max_concurrent=%d (0=unset)",
 				n.acceptPolicy.MinDurationSec, n.acceptPolicy.MaxDurationSec,
-				n.acceptPolicy.MinCostXUSD, n.acceptPolicy.MaxCostXUSD,
+				n.acceptPolicy.MinCostXCU, n.acceptPolicy.MaxCostXCU,
 				n.acceptPolicy.MaxConcurrent)
 		}
 		xenet.SetupTunnelHandler(h, n, n.tunnelRegistry)
@@ -567,15 +557,24 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	n.selfRegister()
 
 	n.wg.Add(9)
-	go func() { defer n.wg.Done(); n.handleIncoming(gossip.Subscribe(ctx)) }()
-	go func() { defer n.wg.Done(); n.handleIncomingVotes(voteGossip.Subscribe(ctx)) }()
-	go func() { defer n.wg.Done(); n.handleMarketplace(marketGossip.Subscribe(ctx)) }()
+	go func() { defer n.wg.Done(); runGossipHandler("blocks", gossip.Subscribe(ctx), n.handleIncoming) }()
+	go func() { defer n.wg.Done(); runGossipHandler("votes", voteGossip.Subscribe(ctx), n.handleIncomingVotes) }()
+	go func() {
+		defer n.wg.Done()
+		runGossipHandler("marketplace", marketGossip.Subscribe(ctx), n.handleMarketplace)
+	}()
 	go func() { defer n.wg.Done(); n.settleLoop() }()
-	go func() { defer n.wg.Done(); n.handleStateChain(scGossip.Subscribe(ctx)) }()
-	go func() { defer n.wg.Done(); n.handleDirectoryGossip(dirGossip.Subscribe(ctx)) }()
+	go func() { defer n.wg.Done(); runGossipHandler("statechain", scGossip.Subscribe(ctx), n.handleStateChain) }()
+	go func() {
+		defer n.wg.Done()
+		runGossipHandler("directory", dirGossip.Subscribe(ctx), n.handleDirectoryGossip)
+	}()
 	go func() { defer n.wg.Done(); n.directoryPruneLoop() }()
 	go func() { defer n.wg.Done(); n.directoryReRegisterLoop() }()
-	go func() { defer n.wg.Done(); n.handleCertificateGossip(certGossip.Subscribe(ctx)) }()
+	go func() {
+		defer n.wg.Done()
+		runGossipHandler("certificates", certGossip.Subscribe(ctx), n.handleCertificateGossip)
+	}()
 
 	n.loadPersistedCertificates()
 	xenet.SetupCertSync(ctx, n.Host, n.Msg, n.collectCertificates, n.ingestCertificate)
@@ -642,6 +641,25 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	return n, nil
 }
 
+func parseTimekeeperConfig(raw json.RawMessage) *core.TimekeeperConfig {
+	var config core.TimekeeperConfig
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return nil
+	}
+	if config.Threshold == 0 || len(config.Keys) == 0 {
+		return nil
+	}
+	return &config
+}
+
+func timekeeperEras(sc *statechain.Chain) []core.TimekeeperEra {
+	var eras []core.TimekeeperEra
+	for _, v := range sc.KVHistory("sys.timekeepers") {
+		eras = append(eras, core.TimekeeperEra{Since: v.Timestamp, Config: parseTimekeeperConfig(v.Value)})
+	}
+	return eras
+}
+
 func (n *Node) bootstrapWithRetry(addrs []string) {
 	var targets []peer.AddrInfo
 	for _, addr := range addrs {
@@ -700,6 +718,24 @@ func (n *Node) bootstrapWithRetry(addrs []string) {
 			}
 		}
 	}()
+}
+
+func runGossipHandler[T any](topic string, msgs <-chan T, handle func(<-chan T)) {
+	for {
+		panicked := false
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					panicked = true
+					logging.Errorf("gossip %s: handler panic: %v\n%s", topic, r, debug.Stack())
+				}
+			}()
+			handle(msgs)
+		}()
+		if !panicked {
+			return
+		}
+	}
 }
 
 func (n *Node) handleIncoming(blocks <-chan *core.Block) {
@@ -880,6 +916,10 @@ func (n *Node) GetChain(account string) []*core.Block {
 	return n.Ledger.GetChain(account)
 }
 
+func (n *Node) GetChainRange(account string, from, to int) ([]*core.Block, int) {
+	return n.Ledger.GetChainRange(account, from, to)
+}
+
 func (n *Node) GetBlock(hash string) *core.Block {
 	return n.Ledger.GetBlock(hash)
 }
@@ -965,18 +1005,22 @@ type FrontierInfo struct {
 	Representative string `json:"representative,omitempty"`
 }
 
-func (n *Node) GetFrontiersDetailed() []FrontierInfo {
-	frontiers := n.Ledger.Frontiers()
-	out := make([]FrontierInfo, 0, len(frontiers))
-	for account, hash := range frontiers {
-		info := FrontierInfo{Account: account, Frontier: hash}
-		if b := n.Ledger.GetBlock(hash); b != nil {
-			info.BlockType = string(b.Type)
-			info.Timestamp = b.Timestamp
-			info.Representative = b.Representative
-		}
-		info.BlockCount = len(n.Ledger.GetChain(account))
-		out = append(out, info)
+func (n *Node) GetFrontiersPage(offset, limit int) []FrontierInfo {
+	all := n.Ledger.AccountsByAddress()
+	if offset >= len(all) {
+		return []FrontierInfo{}
+	}
+	end := min(offset+limit, len(all))
+	out := make([]FrontierInfo, 0, end-offset)
+	for _, s := range all[offset:end] {
+		out = append(out, FrontierInfo{
+			Account:        s.Account,
+			Frontier:       s.Frontier,
+			BlockType:      string(s.FrontierType),
+			Timestamp:      s.FrontierTimestamp,
+			BlockCount:     s.BlockCount,
+			Representative: s.FrontierRep,
+		})
 	}
 	return out
 }
@@ -990,33 +1034,28 @@ type AccountSummary struct {
 	LastBlockTimestamp int64             `json:"last_block_timestamp"`
 }
 
-func (n *Node) GetAllAccounts() []AccountSummary {
-	frontiers := n.Ledger.Frontiers()
-	out := make([]AccountSummary, 0, len(frontiers))
-	for account, hash := range frontiers {
-		chain := n.Ledger.GetChain(account)
-		var balance uint64
-		if len(chain) > 0 {
-			balance = chain[len(chain)-1].Balance
-		}
-		var ts int64
-		if len(chain) > 0 {
-			ts = chain[len(chain)-1].Timestamp
-		}
+func (n *Node) GetAccountsPage(offset, limit int) []AccountSummary {
+	all := n.Ledger.AccountsByXEBalance()
+	if offset >= len(all) {
+		return []AccountSummary{}
+	}
+	end := min(offset+limit, len(all))
+	out := make([]AccountSummary, 0, end-offset)
+	for _, s := range all[offset:end] {
 		out = append(out, AccountSummary{
-			Address:            account,
-			Balance:            balance,
-			Balances:           n.Ledger.GetAssetBalances(account),
-			BlockCount:         len(chain),
-			Frontier:           hash,
-			LastBlockTimestamp: ts,
+			Address:            s.Account,
+			Balance:            s.LastBalance,
+			Balances:           s.Balances,
+			BlockCount:         s.BlockCount,
+			Frontier:           s.Frontier,
+			LastBlockTimestamp: s.LastTimestamp,
 		})
 	}
 	return out
 }
 
-func (n *Node) GetAllPending() []*core.PendingSend {
-	return n.Ledger.GetAllPending()
+func (n *Node) GetPendingPage(ctx context.Context, offset, limit int) ([]*core.PendingSend, error) {
+	return n.Ledger.GetPendingPage(ctx, offset, limit)
 }
 
 func (n *Node) GetSupply() *core.SupplyReport {
@@ -1024,8 +1063,8 @@ func (n *Node) GetSupply() *core.SupplyReport {
 	return n.supplyAuditor.Report()
 }
 
-func (n *Node) GetRecentBlocks(limit int) []*core.Block {
-	return n.Ledger.GetRecentBlocks(limit)
+func (n *Node) GetRecentBlocks(ctx context.Context, limit int) ([]*core.Block, error) {
+	return n.Ledger.GetRecentBlocks(ctx, limit)
 }
 
 func (n *Node) advertiseResources() {
@@ -1162,6 +1201,8 @@ type NodeInfo struct {
 	Accounts   int        `json:"accounts"`
 	BlockCount int        `json:"block_count"`
 
+	PendingSends int `json:"pending_sends"`
+
 	DroppedBlocks uint64 `json:"dropped_blocks"`
 
 	DelegationUnderflows uint64 `json:"delegation_underflows"`
@@ -1240,7 +1281,7 @@ func (n *Node) GetNodeInfo() *NodeInfo {
 		NetworkID:            core.GetNetworkID(),
 		Peers:                peerInfos,
 		PeerCount:            len(peers),
-		Accounts:             len(n.Ledger.Frontiers()),
+		Accounts:             n.Ledger.AccountCount(),
 		BlockCount:           n.Ledger.BlockCount(),
 		DroppedBlocks:        xenet.DroppedBlocks(),
 		DelegationUnderflows: n.Ledger.DelegationUnderflows(),
@@ -1348,7 +1389,7 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 					availVCPUs, availMemMB, availDiskGB)
 				continue
 			}
-			xusdBal := n.Ledger.GetAssetBalances(n.KeyPair.Address())["XUSD"]
+			xcuBal := n.Ledger.GetAssetBalances(n.KeyPair.Address())["XCU"]
 
 			cert := n.quotableCertificate()
 			if cert == nil {
@@ -1361,9 +1402,9 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 				continue
 			}
 			stake := core.LeaseStake(totalCost)
-			if xusdBal < stake {
-				log.Printf("Skipping request %s: insufficient XUSD for stake (%d < %d)",
-					shortHash(req.RequestID), xusdBal, stake)
+			if xcuBal < stake {
+				log.Printf("Skipping request %s: insufficient XCU for stake (%d < %d)",
+					shortHash(req.RequestID), xcuBal, stake)
 				continue
 			}
 			offer := &xenet.ResourceOffer{
@@ -1482,8 +1523,8 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	myAddr := n.KeyPair.Address()
 	stake := core.LeaseStake(leaseBlock.Amount)
 
-	if stake > n.Ledger.GetAssetBalances(myAddr)["XUSD"] {
-		log.Printf("Cannot auto-accept lease %s: insufficient XUSD for stake", shortHash(leaseBlock.Hash))
+	if stake > n.Ledger.GetAssetBalances(myAddr)["XCU"] {
+		log.Printf("Cannot auto-accept lease %s: insufficient XCU for stake", shortHash(leaseBlock.Hash))
 		return
 	}
 
@@ -1508,10 +1549,10 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 
 	n.blockCreateMu.Lock()
 
-	xusdBal := n.Ledger.GetAssetBalances(myAddr)["XUSD"]
-	if stake > xusdBal {
+	xcuBal := n.Ledger.GetAssetBalances(myAddr)["XCU"]
+	if stake > xcuBal {
 		n.blockCreateMu.Unlock()
-		log.Printf("Cannot auto-accept lease %s: insufficient XUSD for stake (have %d, need %d)", shortHash(leaseBlock.Hash), xusdBal, stake)
+		log.Printf("Cannot auto-accept lease %s: insufficient XCU for stake (have %d, need %d)", shortHash(leaseBlock.Hash), xcuBal, stake)
 		return
 	}
 
@@ -1575,11 +1616,11 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	if len(chain) > 0 {
 		prev = chain[len(chain)-1].Hash
 	}
-	xusdBal = n.Ledger.GetAssetBalances(myAddr)["XUSD"]
-	if stake > xusdBal {
+	xcuBal = n.Ledger.GetAssetBalances(myAddr)["XCU"]
+	if stake > xcuBal {
 		n.blockCreateMu.Unlock()
-		log.Printf("Lease %s: XUSD balance changed during provisioning (have %d, need %d), tearing down",
-			shortHash(leaseBlock.Hash), xusdBal, stake)
+		log.Printf("Lease %s: XCU balance changed during provisioning (have %d, need %d), tearing down",
+			shortHash(leaseBlock.Hash), xcuBal, stake)
 		n.teardownVM(&core.Lease{LeaseHash: leaseBlock.Hash})
 		return
 	}
@@ -1589,9 +1630,9 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 		Type:            core.BlockLeaseAccept,
 		Account:         myAddr,
 		Previous:        prev,
-		Balance:         xusdBal - stake,
+		Balance:         xcuBal - stake,
 		Timestamp:       core.Now().UnixNano(),
-		Asset:           "XUSD",
+		Asset:           "XCU",
 		Source:          leaseBlock.Hash,
 		Amount:          stake,
 		Attestations:    attestations,
@@ -1627,7 +1668,7 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 		return
 	}
 	n.syncTracker.MarkDirty()
-	log.Printf("Auto-accepted lease %s (stake=%d XUSD)", shortHash(leaseBlock.Hash), stake)
+	log.Printf("Auto-accepted lease %s (stake=%d XCU)", shortHash(leaseBlock.Hash), stake)
 }
 
 var (
@@ -1870,31 +1911,62 @@ func (n *Node) tryArchiveExpiredLeases() {
 		return
 	}
 	now := core.Now().UnixNano()
+	seenAt := time.Now()
+	due := make(map[string]bool)
 	for _, lease := range leases {
 		if !shouldArchiveExpiredLease(lease, now) {
 			continue
 		}
+		due[lease.LeaseHash] = true
+		if !n.archiveSynced(lease, n.archiveDue.seen(lease.LeaseHash, seenAt)) {
+			continue
+		}
 		n.archiveExpiredLease(lease)
+	}
+	n.archiveDue.prune(due)
+}
+
+func (n *Node) archiveSynced(lease *core.Lease, since time.Time) bool {
+	if n.syncTracker == nil || (n.standalone.Load() && len(n.Host.Network().Peers()) == 0) {
+		return true
+	}
+	return n.syncTracker.QuietRoundSince(since, n.Host.Network().Peers(), lease.Consumer, lease.Provider)
+}
+
+type archiveDue struct {
+	mu    sync.Mutex
+	since map[string]time.Time
+}
+
+func (d *archiveDue) seen(leaseHash string, now time.Time) time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.since == nil {
+		d.since = make(map[string]time.Time)
+	}
+	if t, ok := d.since[leaseHash]; ok {
+		return t
+	}
+	d.since[leaseHash] = now
+	return now
+}
+
+func (d *archiveDue) prune(due map[string]bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for h := range d.since {
+		if !due[h] {
+			delete(d.since, h)
+		}
 	}
 }
 
 func (n *Node) archiveExpiredLease(lease *core.Lease) {
-	ls, ok := n.store.(core.LeaseStore)
-	if !ok {
+	if err := n.Ledger.ArchiveExpiredLease(lease); err != nil {
+		log.Printf("archive: %s: %v", shortHash(lease.LeaseHash), err)
 		return
 	}
-	if err := n.store.DeletePendingSend(lease.LeaseHash); err != nil {
-		log.Printf("archive: DeletePendingSend %s: %v", shortHash(lease.LeaseHash), err)
-		return
-	}
-	updated := *lease
-	updated.State = core.LeaseExpired
-	updated.Settled = true
-	if err := ls.PutLease(&updated); err != nil {
-		log.Printf("archive: PutLease %s: %v", shortHash(lease.LeaseHash), err)
-		return
-	}
-	log.Printf("Archived expired lease %s: burned %d µXUSD escrow (both parties offline)",
+	log.Printf("Archived expired lease %s: burned %d µXCU escrow (both parties offline)",
 		shortHash(lease.LeaseHash), lease.Cost+lease.Stake)
 }
 
@@ -1925,15 +1997,15 @@ func (n *Node) forceSettleLease(lease *core.Lease) {
 		return
 	}
 	prev := chain[len(chain)-1].Hash
-	oldXUSD := n.Ledger.GetAssetBalances(myAddr)["XUSD"]
+	oldXCU := n.Ledger.GetAssetBalances(myAddr)["XCU"]
 
 	b := &core.Block{
 		Type:         core.BlockLeaseForceSettle,
 		Account:      myAddr,
 		Previous:     prev,
-		Balance:      oldXUSD + lease.Cost,
+		Balance:      oldXCU + lease.Cost,
 		Timestamp:    core.Now().UnixNano(),
-		Asset:        "XUSD",
+		Asset:        "XCU",
 		Source:       lease.LeaseHash,
 		Amount:       lease.Cost,
 		Attestations: attestations,
@@ -1952,7 +2024,7 @@ func (n *Node) forceSettleLease(lease *core.Lease) {
 		log.Printf("Failed to publish lease_force_settle: %v", err)
 		return
 	}
-	log.Printf("Force-settled stale lease %s (refunded %d XUSD; provider stake burned)", shortHash(lease.LeaseHash), lease.Cost)
+	log.Printf("Force-settled stale lease %s (refunded %d XCU; provider stake burned)", shortHash(lease.LeaseHash), lease.Cost)
 }
 
 func (n *Node) leaseSettleAmount(lease *core.Lease) uint64 {
@@ -2092,18 +2164,18 @@ func (n *Node) CreateLeaseBlock(provider string, vcpus, memoryMB, diskGB, durati
 		return fmt.Errorf("account not open")
 	}
 	prev := chain[len(chain)-1].Hash
-	xusdBal := n.Ledger.GetAssetBalances(myAddr)["XUSD"]
-	if cost > xusdBal {
-		return fmt.Errorf("insufficient XUSD: have %d, need %d", xusdBal, cost)
+	xcuBal := n.Ledger.GetAssetBalances(myAddr)["XCU"]
+	if cost > xcuBal {
+		return fmt.Errorf("insufficient XCU: have %d, need %d", xcuBal, cost)
 	}
 
 	b := &core.Block{
 		Type:            core.BlockLease,
 		Account:         myAddr,
 		Previous:        prev,
-		Balance:         xusdBal - cost,
+		Balance:         xcuBal - cost,
 		Timestamp:       core.Now().UnixNano(),
-		Asset:           "XUSD",
+		Asset:           "XCU",
 		Destination:     provider,
 		Amount:          cost,
 		VCPUs:           vcpus,
@@ -2216,6 +2288,10 @@ func (n *Node) OpenTunnelForLease(ctx context.Context, leaseHash string) (io.Rea
 }
 
 func (n *Node) RequestAttestation(source, identifier string) (*core.TimekeeperAttestation, error) {
+	return n.requestAttestation(source, identifier, "")
+}
+
+func (n *Node) requestAttestation(source, identifier string, from peer.ID) (*core.TimekeeperAttestation, error) {
 
 	if len(identifier) != 64 {
 		return nil, fmt.Errorf("invalid attestation identifier length: %d", len(identifier))
@@ -2223,7 +2299,7 @@ func (n *Node) RequestAttestation(source, identifier string) (*core.TimekeeperAt
 	if err := n.allowAttestation(source, identifier); err != nil {
 		return nil, err
 	}
-	if err := n.canAttest(identifier); err != nil {
+	if err := n.canAttest(identifier, from); err != nil {
 
 		logging.Warnf("Attestation request from %s rejected: %v", source, err)
 		return nil, err
@@ -2378,7 +2454,7 @@ func (n *Node) handleDirectoryGossip(regs <-chan *directory.Registration) {
 		if err := n.Directory.Register(reg); err != nil {
 			logging.Warnf("directory: rejected registration for %s: %v", shortAddr(reg.Account), err)
 		} else {
-			logging.Debugf("directory: accepted registration for %s on %s", shortAddr(reg.Account), reg.NodePeer[:12])
+			logging.Debugf("directory: accepted registration for %s on %s", shortAddr(reg.Account), shortHash(reg.NodePeer))
 		}
 	}
 }
@@ -2457,6 +2533,10 @@ func (n *Node) registerChatHandler() {
 		var env chat.Envelope
 		if err := json.Unmarshal(payload, &env); err != nil {
 			return nil, fmt.Errorf("invalid chat envelope: %w", err)
+		}
+
+		if n.PeerForAccount(env.To) != n.Host.ID() {
+			return nil, fmt.Errorf("recipient not hosted on this node")
 		}
 		if err := n.validateChatEnvelope(&env); err != nil {
 			return nil, fmt.Errorf("envelope verification failed: %w", err)

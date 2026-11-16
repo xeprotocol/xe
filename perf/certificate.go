@@ -171,8 +171,22 @@ func VerifyCertificateContent(c *Certificate) error {
 		return fmt.Errorf("certificate signature: %w", err)
 	}
 
-	if c.Score <= 0 {
-		return fmt.Errorf("certificate score must be positive, got %f", c.Score)
+	if math.IsNaN(c.Score) || math.IsInf(c.Score, 0) || c.Score <= 0 {
+		return fmt.Errorf("certificate score must be finite and positive, got %v", c.Score)
+	}
+	elapsedSecs := float64(c.EndMedian-c.StartMedian) / 1e9
+	if elapsedSecs <= 0 {
+		return fmt.Errorf("certificate end_median %d not after start_median %d", c.EndMedian, c.StartMedian)
+	}
+	if want := 1.0 / elapsedSecs; c.Score != want {
+		return fmt.Errorf("certificate score %v does not match attested elapsed time (want %v)", c.Score, want)
+	}
+	pubKey, err := hex.DecodeString(c.ProviderPubKey)
+	if err != nil {
+		return fmt.Errorf("invalid provider_pub_key hex")
+	}
+	if want := SeedHex(DeriveSeed(c.StartMedian, pubKey)); c.Seed != want {
+		return fmt.Errorf("certificate seed %q is not derived from start_median and provider key", c.Seed)
 	}
 
 	if !IsAcceptedWorkloadVersion(c.WorkloadVersion) {

@@ -1,9 +1,12 @@
 package statechain
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -23,6 +26,8 @@ const (
 	syncStreamDeadline  = 60 * time.Second
 	syncMaxRequestSize  = 1024
 	syncMaxResponseSize = 10 << 20
+
+	syncMaxRoundBlocks = syncMaxBlocks - 1 + syncPageSize
 )
 
 type syncRateLimiter struct {
@@ -59,6 +64,38 @@ type syncResponse struct {
 	HasMore bool     `json:"has_more"`
 }
 
+type syncPage struct {
+	Blocks  syncPageBlocks `json:"blocks"`
+	HasMore bool           `json:"has_more"`
+}
+
+type syncPageBlocks []*Block
+
+func (p *syncPageBlocks) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil {
+		return nil
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return fmt.Errorf("sync page: blocks is not an array")
+	}
+	for dec.More() {
+		if len(*p) == syncPageSize {
+			return fmt.Errorf("sync page: more than %d blocks", syncPageSize)
+		}
+		var b *Block
+		if err := dec.Decode(&b); err != nil {
+			return err
+		}
+		*p = append(*p, b)
+	}
+	return nil
+}
+
 func SetupSync(h host.Host, chain *Chain) {
 	inboundRL := newSyncRateLimiter()
 	outboundRL := newSyncRateLimiter()
@@ -79,12 +116,22 @@ func SetupSync(h host.Host, chain *Chain) {
 				if !outboundRL.allow(pid) {
 					return
 				}
-				if err := requestSync(h, pid, chain); err != nil {
+				if err := runSyncRound(pid, func() error { return requestSync(h, pid, chain) }); err != nil {
 					logging.Warnf("statechain sync with %s failed: %v", pid.ShortString(), err)
 				}
 			}()
 		},
 	})
+}
+
+func runSyncRound(pid peer.ID, round func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Errorf("statechain sync: round with %s panicked: %v\n%s", pid.ShortString(), r, debug.Stack())
+			err = fmt.Errorf("round panicked: %v", r)
+		}
+	}()
+	return round()
 }
 
 func handleSyncStream(s network.Stream, chain *Chain) {
@@ -167,8 +214,10 @@ func requestSync(h host.Host, pid peer.ID, chain *Chain) error {
 
 	dec := json.NewDecoder(io.LimitReader(s, syncMaxResponseSize))
 	added := 0
+	received := 0
+	nulls := 0
 	for {
-		var resp syncResponse
+		var resp syncPage
 		if err := dec.Decode(&resp); err != nil {
 			if err == io.EOF {
 				break
@@ -176,11 +225,24 @@ func requestSync(h host.Host, pid peer.ID, chain *Chain) error {
 			return err
 		}
 		for _, b := range resp.Blocks {
+			if received == syncMaxRoundBlocks {
+				break
+			}
+			received++
+
+			if b == nil {
+				nulls++
+				continue
+			}
 			if err := chain.AddBlock(b); err != nil {
 				logging.Warnf("statechain sync: block %d: %v", b.Index, err)
 			} else {
 				added++
 			}
+		}
+		if received >= syncMaxRoundBlocks {
+			logging.Warnf("statechain sync: hit round block cap (%d) with %s, stopping", syncMaxRoundBlocks, pid.ShortString())
+			break
 		}
 		if !resp.HasMore {
 			break
@@ -190,6 +252,9 @@ func requestSync(h host.Host, pid peer.ID, chain *Chain) error {
 		}
 	}
 
+	if nulls > 0 {
+		logging.Warnf("statechain sync: dropped %d null block(s) from %s", nulls, pid.ShortString())
+	}
 	if added > 0 {
 		logging.Debugf("statechain sync: synced %d block(s) from %s", added, pid.ShortString())
 	}
@@ -217,7 +282,7 @@ func ResyncOnGap(h host.Host, chain *Chain) {
 			if i >= 3 {
 				return
 			}
-			if err := requestSync(h, pid, chain); err != nil {
+			if err := runSyncRound(pid, func() error { return requestSync(h, pid, chain) }); err != nil {
 				logging.Warnf("statechain gap-resync with %s failed: %v", pid.ShortString(), err)
 				continue
 			}

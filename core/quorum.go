@@ -70,7 +70,7 @@ type QuorumManager struct {
 func NewQuorumManager(store QuorumStore, conflictStore ConflictStore, voteStore VoteStore, ledger *Ledger) *QuorumManager {
 	return &QuorumManager{
 		conflictMgr:      conflictStore,
-		voteMgr:          voteStore,
+		voteMgr:          validVoteStore{voteStore},
 		ledger:           ledger,
 		store:            store,
 		failedPromotions: make(map[string]time.Time),
@@ -109,16 +109,17 @@ func (qm *QuorumManager) finalTally(account, previous string) (*quorumResult, er
 	weightByBlock := make(map[string]*big.Int)
 	candidateSet := make(map[string]bool)
 	for _, v := range votes {
-		candidateSet[v.BlockHash] = true
-		if !v.Final {
-			continue
-		}
 
 		if qm.ledger == nil {
 			continue
 		}
 		b := qm.ledger.GetBlockOrStaged(v.BlockHash)
 		if b == nil || b.Account != account || b.Previous != previous {
+			continue
+		}
+
+		candidateSet[v.BlockHash] = true
+		if !v.Final {
 			continue
 		}
 		if weightByBlock[v.BlockHash] == nil {
@@ -257,7 +258,14 @@ func (qm *QuorumManager) promotable(account, previous, hash string) bool {
 	if previous != "0" {
 		parentBalance = qm.ledger.GetAssetBalanceAtBlock(account, asset, previous)
 	}
-	return qm.ledger.ValidateStagedBlock(staged, parentBalance) == nil
+	if qm.ledger.ValidateStagedBlock(staged, parentBalance) != nil {
+		return false
+	}
+
+	if incumbent, _ := qm.ledger.chainChild(account, previous); incumbent != "" {
+		return qm.ledger.swapPreflight(account, incumbent) == nil
+	}
+	return true
 }
 
 func (qm *QuorumManager) confirmConflict(result *quorumResult) error {
@@ -352,6 +360,8 @@ func (qm *QuorumManager) confirmConflict(result *quorumResult) error {
 			}
 
 			qm.ledger.recordFinalityAdvance()
+
+			qm.ledger.advanceFinalSnapshot(result.ConflictAccount, height)
 
 			observeFinalityAdvance(height-cur, qm.ledger.GetBlockOrStaged(result.WinnerHash))
 		}

@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/ed25519"
 	"log"
+	"math"
 	"math/big"
 	"strings"
 	"time"
@@ -104,6 +105,10 @@ func (vm *VoteManager) castVoteLocked(account, prev string, seed ...string) {
 			vm.lastRevoteNanos[key] = Now().UnixNano()
 			vm.lastRevoteMu.Unlock()
 
+			if vm.quorumMgr != nil {
+				vm.quorumMgr.Retally(account, prev)
+			}
+
 			if fresh := vm.buildVote(account, prev, existing.BlockHash, true); fresh != nil {
 				vm.VoteEmitter(fresh)
 			}
@@ -123,16 +128,21 @@ func (vm *VoteManager) castVoteLocked(account, prev string, seed ...string) {
 		return
 	}
 
-	vm.noteHeldCandidatesLocked(account, prev, candidates)
-
 	conflict := vm.ledger.GetConflict(account, prev)
 	eligible := candidates[:0]
 	for _, h := range candidates {
-		if vm.ledger.GetBlockOrStaged(h) != nil ||
-			(conflict != nil && containsConflictHash(conflict.BlockHashes, h)) {
+		if b := vm.ledger.GetBlockOrStaged(h); b != nil {
+			if b.Account == account && b.Previous == prev {
+				eligible = append(eligible, h)
+			}
+			continue
+		}
+		if conflict != nil && containsConflictHash(conflict.BlockHashes, h) {
 			eligible = append(eligible, h)
 		}
 	}
+
+	vm.noteHeldCandidatesLocked(account, prev, eligible)
 	if len(eligible) == 0 {
 		return
 	}
@@ -416,13 +426,13 @@ func (vm *VoteManager) sweepFrontiersOnce() {
 	vm.evictStalePullStamps()
 	for account := range vm.ledger.Frontiers() {
 		fh := vm.ledger.FinalHeight(account)
-		chain := vm.ledger.GetChain(account)
+
+		unfinalized, _ := vm.ledger.GetChainRange(account, int(fh), math.MaxInt)
 		if pullOnly {
-			vm.pullChainVotes(account, chain, int(fh))
+			vm.pullChainVotes(account, unfinalized, 0)
 			continue
 		}
-		for i := int(fh); i < len(chain); i++ {
-			b := chain[i]
+		for _, b := range unfinalized {
 			if b == nil || b.Type == BlockGenesis {
 				continue
 			}
@@ -541,17 +551,5 @@ func (vm *VoteManager) VotesForPosition(account, prev string) []*Vote {
 }
 
 func (vm *VoteManager) finalizedChildAt(account, prev string) string {
-	open := prev == "" || prev == "0"
-	chain := vm.ledger.GetChain(account)
-	for i, b := range chain {
-		match := b.Previous == prev || (open && i == 0)
-		if !match {
-			continue
-		}
-		if vm.ledger.FinalHeight(account) >= uint64(i+1) {
-			return b.Hash
-		}
-		return ""
-	}
-	return ""
+	return vm.ledger.FinalizedChildHash(account, prev)
 }

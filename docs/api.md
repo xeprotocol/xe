@@ -17,12 +17,12 @@ fields you see against your own node will differ.
 
 - **Base URL.** Local node: `http://127.0.0.1:8080` (flags `--api`, `--api-port 8080`, `--api-bind 127.0.0.1`). Testnet (behind Caddy/TLS): `https://ldn.core.test.network`, `ffm.core.test.network`, `nyc.core.test.network`.
 - **Content type.** Requests and responses are `application/json` unless noted (the chat SSE stream is `text/event-stream`; the TCP tunnel hijacks the connection).
-- **Amounts.** `uint64` **micro-units**: `1 XE = 1_000_000 mXE`, same for XUSD. Wire format is a plain JSON number.
+- **Amounts.** `uint64` **micro-units**: `1 XE = 1_000_000 mXE`, same for XCU. Wire format is a plain JSON number.
 - **Timestamps.** `int64` Unix **nanoseconds**.
 - **Hashes / accounts / keys.** Lowercase hex, 32 bytes / 64 hex throughout. An **account address** and an **ed25519 public key** are both 64 hex but are **different values** — see [Addresses vs. keys](#addresses-vs-keys). Block/lease hashes are 64 hex (SHA-256). `"0"` denotes the open/genesis predecessor.
-- **Pagination.** List endpoints take `?offset=N&limit=M` (default `limit=100`, max `1000`). `GET /statechain/blocks` uses `?start=N&limit=M` instead. Paging is stable only where the handler sorts before slicing (`/frontiers`, `/reputation`, `/directory`, `/statechain/kv` sort by account/key); `/accounts` pages an unsorted map and `/pending` is unordered on the in-memory store, so consecutive pages there can overlap or skip entries — prefer a single large `limit` over deep paging.
+- **Pagination.** List endpoints take `?offset=N&limit=M` (default `limit=100`, max `1000`). `GET /statechain/blocks` uses `?start=N&limit=M` instead. Paging is stable only where the handler sorts before slicing (`/frontiers`, `/reputation`, `/directory`, `/statechain/kv` sort by account/key, `/pending` by send hash); `/accounts` pages an unsorted map, so consecutive pages there can overlap or skip entries — prefer a single large `limit` over deep paging.
 - **Errors.** Non-2xx responses are `{"error":"<message>"}`. Common: `400` bad input, `404` not found, `429` rate limited, `503` busy.
-- **Rate limit.** Per-IP token buckets, split by request class → `429 {"error":"rate limit exceeded"}`: **reads** (any GET) 200 req/s sustained, burst 1000; **writes** (POST block/state submit, chat, directory register) 10 req/s, burst 50; **probes** (`GET /health`, `GET /ready`) 20 req/s, burst 100 in a bucket of their own, so browsing traffic can never 429 a supervisor's probe into killing a healthy node. Behind the local reverse proxy the real client IP is taken from the rightmost `X-Forwarded-For` hop. Clients doing bulk reads must handle `429` and back off — a plain sequential sweep of the public `*.core.test.network` URLs can trip the limiter because external clients behind Caddy/NAT share an egress bucket.
+- **Rate limit.** Per-IP token buckets, split by request class → `429 {"error":"rate limit exceeded"}`: **reads** (any GET) 200 req/s sustained, burst 1000; **writes** (POST block/state submit, chat, directory register) 10 req/s, burst 50; **probes** (`GET /health`, `GET /ready`) 20 req/s, burst 100 in a bucket of their own, so browsing traffic can never 429 a supervisor's probe into killing a healthy node. Behind the local reverse proxy the real client IP is taken from the rightmost `X-Forwarded-For` hop. A client is one IPv4 address or one IPv6 /64 (an IPv4-mapped IPv6 address counts as its IPv4 address); the in-flight caps on `/accounts` and `/pending` use the same key. Each class keeps at most 100,000 clients; a new client on a full table replaces the least recently seen one. Clients doing bulk reads must handle `429` and back off — a plain sequential sweep of the public `*.core.test.network` URLs can trip the limiter because external clients behind Caddy/NAT share an egress bucket.
 - **Body cap.** POST bodies are capped at **1 MiB** → `400`.
 - **CORS.** `Access-Control-Allow-Methods: GET, POST, OPTIONS`; allowed origin is configurable (default `http://localhost:3000`). `OPTIONS` preflight returns `204`.
 - **Auth.** The public API is unauthenticated **except** operator-only endpoints (`POST /lease/request`, `POST /lease/{hash}/renew`, the unfiltered `GET /chat/events` firehose, and the node-wide `GET /chat/contacts` list), which require `Authorization: Bearer <token>` where the token is set via `XE_API_ADMIN_TOKEN`. If no token is configured the endpoint returns `403`.
@@ -101,7 +101,7 @@ key delivered alongside the address:
 | POST | `/blocks/multisig_open` | Submit a signed multisig_open block |
 | POST | `/blocks/multisig_update` | Submit a signed multisig_update block |
 | POST | `/blocks/burn` | Submit a signed burn block (XE only) |
-| POST | `/blocks/mint` | Submit a signed XUSD mint block (authorized minter only) |
+| POST | `/blocks/mint` | Submit a signed XCU mint block (authorized minter only) |
 | GET | `/conflicts` | All open conflicts (paginated) |
 | GET | `/conflicts/{account}` | Open conflicts for one account |
 | GET | `/delegation` | Representative vote weights (micro-XE) |
@@ -172,6 +172,7 @@ curl https://ldn.core.test.network/node
   "peer_count": 4,
   "accounts": 295,
   "block_count": 2929,
+  "pending_sends": 41,
   "total_delegated_weight": 42000000000000,
   "representatives": 5,
   "finality_advances": 1847,
@@ -193,6 +194,8 @@ curl https://ldn.core.test.network/node
   }
 }
 ```
+> `pending_sends` is the number of unreceived sends across all accounts, from the node's observability sampler (refreshed every 15 s; 0 before the first sample). Read it instead of walking `GET /pending` to count.
+>
 > `address` is the node's ledger **account address**; `public_key` is its ed25519 **verifying key**. Both are published because the key is not recoverable from the address: use `address` to send to or query the node's account, and `public_key` to configure the node as a timekeeper (`sys.timekeepers` holds keys) or to check a vote it signed. `GET /` reports `address` only.
 >
 > `total_delegated_weight` (micro-XE), `representatives`, `finality_advances` and `last_finality_ns` are the consensus liveness signals. **Health gates must assert both halves.** Zero total delegated weight is silent finality death: blocks commit and gossip, nothing ever finalizes, every balance is unspendable — and nothing else on this endpoint changes. But non-zero weight is not sufficient either: weight delegated to an address no key controls (e.g. a public key mistakenly used as an account address) reads as perfectly healthy weight and finalizes nothing. So assert `total_delegated_weight > 0` **and** that `finality_advances` is rising. `finality_advances` counts final-height watermark advances since process start; genesis, which is final on every node by construction, is deliberately not counted, so a network that has finalized nothing since block 0 reports `0` rather than looking like progress. `last_finality_ns` is 0 until the first advance.
@@ -438,7 +441,7 @@ file are committed under `deploy/monitoring/`.
 ## Accounts
 
 ### GET /accounts
-All known accounts. Query: `?offset=N&limit=M`. Returns an array of account summaries.
+All known accounts. Query: `?offset=N&limit=M`. Returns an array of account summaries. Each client (the IP the rate limiter keys on) may have at most 2 `/accounts` requests in flight; its next one gets `429` with `Retry-After: 1`.
 ```bash
 curl "https://ldn.core.test.network/accounts?limit=2"
 ```
@@ -447,7 +450,7 @@ curl "https://ldn.core.test.network/accounts?limit=2"
   {
     "address": "dcb8ed55384fca757b4d70aa46f472014a581ddff941671cf6a679a04caa8df8",
     "balance": 181469175,
-    "balances": { "XE": 300000000, "XUSD": 181469175 },
+    "balances": { "XE": 300000000, "XCU": 181469175 },
     "block_count": 7,
     "frontier": "915f95f2f5cbc698ddc03e0736ef678c329bf510d2237f6180d384d78ae8e474",
     "last_block_timestamp": 1781799124233261067
@@ -464,8 +467,8 @@ curl https://ldn.core.test.network/accounts/0813c29...a33f/balance
 ```json
 {
   "address": "dcb8ed55384fca757b4d70aa46f472014a581ddff941671cf6a679a04caa8df8",
-  "balances":  { "XE": 300000000, "XUSD": 181469175 },
-  "spendable": { "XE": 300000000, "XUSD": 181469175 },
+  "balances":  { "XE": 300000000, "XCU": 181469175 },
+  "spendable": { "XE": 300000000, "XCU": 181469175 },
   "final_height": 7
 }
 ```
@@ -489,7 +492,7 @@ curl "https://ldn.core.test.network/accounts/0813c29...a33f/chain?limit=1"
       "pub_key": "c388b82f...9566",
       "balance": 100000000,
       "timestamp": 1781799001430387098,
-      "asset": "XUSD",
+      "asset": "XCU",
       "representative": "e04689f4...c11d",
       "source": "050b7ff5...96963",
       "signature": "cb42918d...4b60b",
@@ -576,10 +579,10 @@ balances + in_flight + locked_stake + burned + escrow_burned + stake_forfeited
 ```
 
 XE is created only by the genesis block and by `lease_settle` emission, and destroyed
-only by `burn` blocks. XUSD is created only by an authorized `mint`, and destroyed only
+only by `burn` blocks. XCU is created only by an authorized `mint`, and destroyed only
 when a lease's escrow is burnt (at settle, or at escrow expiry) or a provider's
 stake is forfeited by absence. Everything else — send, receive, `lease_cancel`,
-`lease_force_settle`, `lease_renew`, `multisig_*` — is supply-neutral (a renewal moves consumer XUSD into the lease escrow, which settle burns or force-settle refunds). `locked_stake` is the one term a
+`lease_force_settle`, `lease_renew`, `multisig_*` — is supply-neutral (a renewal moves consumer XCU into the lease escrow, which settle burns or force-settle refunds). `locked_stake` is the one term a
 naive `balances + pending` sum misses: a provider's stake leaves balances at
 `lease_accept` and is held on the lease record until settle, invisible to both.
 
@@ -597,7 +600,7 @@ curl https://ldn.core.test.network/supply
       "balances": 41999999996993, "in_flight": 3006, "observed": 41999999999999,
       "accounted": 42000000000000, "discrepancy": 0, "conserved": true
     },
-    "XUSD": { "genesis": 0, "minted": 3625000000, "...": "..." }
+    "XCU": { "genesis": 0, "minted": 3625000000, "...": "..." }
   },
   "accounts": 56, "blocks": 433, "leases": 0, "pending": 3,
   "conserved": true, "notes": [],
@@ -625,7 +628,7 @@ The walk is cached briefly, so `computed_at` may trail the request by a second o
 ## Pending sends
 
 ### GET /pending
-All pending (sent but not yet received) sends across accounts. Query: `?offset=N&limit=M`. Each entry is enriched with the send block's `Timestamp`.
+All pending (sent but not yet received) sends across accounts, ordered by `SendHash`. Query: `?offset=N&limit=M`. Each entry is enriched with the send block's `Timestamp`. The node reads only the requested page from its store, so a page costs the same at any size of the pending set; a request whose client goes away stops its read. Each client (the IP the rate limiter keys on) may have at most 2 `/pending` requests in flight; its next one gets `429` with `Retry-After: 1`.
 ```bash
 curl "https://ldn.core.test.network/pending?limit=2"
 ```
@@ -636,7 +639,7 @@ curl "https://ldn.core.test.network/pending?limit=2"
     "Source": "5a598c38...b56d",
     "Destination": "334457d5...e80f",
     "Amount": 411203,
-    "Asset": "XUSD",
+    "Asset": "XCU",
     "Timestamp": 1781794221361820882
   }
 ]
@@ -648,7 +651,7 @@ Pending sends destined for one account. Path: `address`. (Entries here are raw `
 {
   "address": "334457d5...e80f",
   "pending": [
-    { "SendHash": "0099bb98...5d99", "Source": "5a598c38...b56d", "Destination": "334457d5...e80f", "Amount": 411203, "Asset": "XUSD" }
+    { "SendHash": "0099bb98...5d99", "Source": "5a598c38...b56d", "Destination": "334457d5...e80f", "Amount": 411203, "Asset": "XCU" }
   ]
 }
 ```
@@ -672,7 +675,7 @@ The node rebuilds this list at most once per second and serves all callers from 
 ### GET /blocks/{hash}
 Block by hash. Path: `hash` (64 hex). Returns the block plus a `"finalized"` boolean.
 ```json
-{ "type": "send", "account": "f6c78b...bb04", "previous": "3f560e...ec0b", "balance": 96088705, "timestamp": 1781801279942067170, "asset": "XUSD", "destination": "47815b...6f77", "amount": 1, "signature": "36a5c9...1001", "hash": "a1d201...2a13", "pow_nonce": 10051993738983095315, "finalized": false }
+{ "type": "send", "account": "f6c78b...bb04", "previous": "3f560e...ec0b", "balance": 96088705, "timestamp": 1781801279942067170, "asset": "XCU", "destination": "47815b...6f77", "amount": 1, "signature": "36a5c9...1001", "hash": "a1d201...2a13", "pow_nonce": 10051993738983095315, "finalized": false }
 ```
 > Errors: `400 missing hash`, `404 block not found`.
 
@@ -689,7 +692,7 @@ curl -X POST https://ldn.core.test.network/blocks/send \
     "previous": "0099bb98...5d99",
     "balance": 99000000,
     "timestamp": 1781802000000000000,
-    "asset": "XUSD",
+    "asset": "XCU",
     "destination": "334457d5...e80f",
     "amount": 1000000,
     "representative": "e04689f4...c11d",
@@ -711,7 +714,7 @@ curl -X POST https://ldn.core.test.network/blocks/receive \
     "pub_key": "<64 hex ed25519 public key deriving the account above>",
     "balance": 100000000,
     "timestamp": 1781802000000000000,
-    "asset": "XUSD",
+    "asset": "XCU",
     "source": "0099bb98...5d99",
     "signature": "<hex sig>",
     "hash": "<64 hex>",
@@ -758,10 +761,10 @@ Reference implementations: `core.MarshalBlockAux` (Go),
 - `lease` — consumer-signed; `vcpus`, `memory_mb`, `disk_gb`, `duration` (secs), `access_pub_key`.
 - `lease_accept` — provider-signed; carries `certificate_hash`, `attestations`, and the locked emission params `locked_r` / `locked_payout_cap` / `locked_twap_milli`.
 - `lease_settle` / `lease_force_settle` — carry `attestations`.
-- `lease_renew` — consumer-signed; extends an accepted lease in place. Carries `source` (the lease hash), `amount` (additional XUSD escrowed at the provider's current rate), `duration` (additional secs), `certificate_hash` (the provider's current cert), the locked emission params `locked_r` / `locked_payout_cap` / `locked_twap_milli` (from the epoch at the attested renewal time), and `attestations`. It grows the single lease escrow in place; settle then sums emission over the base plus every renewal, each at its own locked R. **Gated on the `lease_renew` activation** (`sys.activations`): before activation the block is rejected retryably as "not yet activated"; a node that does not know the type ignores it.
+- `lease_renew` — consumer-signed; extends an accepted lease in place. Carries `source` (the lease hash), `amount` (additional XCU escrowed at the provider's current rate), `duration` (additional secs), `certificate_hash` (the provider's current cert), the locked emission params `locked_r` / `locked_payout_cap` / `locked_twap_milli` (from the epoch at the attested renewal time), and `attestations`. It grows the single lease escrow in place; settle then sums emission over the base plus every renewal, each at its own locked R. **Gated on the `lease_renew` activation** (`sys.activations`): before activation the block is rejected retryably as "not yet activated"; a node that does not know the type ignores it.
 - `multisig_open` / `multisig_update` — carry `keyset` and `signatures` (one per signer).
 - `burn` — **XE only** (enforced by the ledger validator); optional `memo`.
-- `mint` — **XUSD, authorized minter only** (`sys.minter`); rejected otherwise. `sys.minter.keys` holds account **addresses**, matched against the block's `account` (unlike `sys.timekeepers` / `sys.oracle` / `sys.dao_keyset`, which hold verifying keys matched against signatures).
+- `mint` — **XCU, authorized minter only** (`sys.minter`); rejected otherwise. `sys.minter.keys` holds account **addresses**, matched against the block's `account` (unlike `sys.timekeepers` / `sys.oracle` / `sys.dao_keyset`, which hold verifying keys matched against signatures).
 
 ### Block object reference (the POST `/blocks/*` body)
 | Field | Type | Notes |
@@ -772,7 +775,7 @@ Reference implementations: `core.MarshalBlockAux` (Go),
 | `pub_key` | string | account's ed25519 **public key**, 64 hex. **Required** iff `previous == "0"` on a single-key chain; **forbidden** on every other block and on all multisig blocks |
 | `balance` | uint64 | balance **after** this block (micro-units) |
 | `timestamp` | int64 | unix nanos |
-| `asset` | string | `"XE"` / `"XUSD"` |
+| `asset` | string | `"XE"` / `"XCU"` |
 | `representative` | string | delegate **address** (optional) — vote weight is keyed by address, not key |
 | `destination`,`amount` | string,uint64 | send |
 | `source` | string | receive (send hash) |
@@ -1026,7 +1029,9 @@ Submit a signed state-chain block. Body: a state-chain Block (`index`, `prev_has
 ## Attestation
 
 ### POST /attestation/request
-Ask this node (as a timekeeper) to attest a lease's timing.
+Ask this node (as a timekeeper) to attest a lease's timing. The route signs
+live lease hashes only (a lease in state `created` or `accepted`). Providers
+gather the attestations for their performance certificates over p2p.
 ```bash
 curl -X POST https://ldn.core.test.network/attestation/request \
   -H 'Content-Type: application/json' -d '{"lease_hash":"<hash>"}'
@@ -1104,7 +1109,7 @@ curl -X POST https://ldn.core.test.network/chat/send \
   -H 'Content-Type: application/json' \
   -d '{"from":"<address>","pub_key":"<64 hex>","to":"<address>","message":"hello","timestamp":1781800000000000000,"signature":"<hex>","pow_nonce":123}'
 ```
-Body fields: `from` (required, an **address**), `pub_key` (required, the sender's ed25519 **public key**), `to` (required, an **address**), `message`, `timestamp` (nanos), `signature` (required, over the envelope id), `pow_nonce` (required when the node's `chat_pow_difficulty` > 0 — solved over the envelope `id` at that difficulty, see the PoW section). The envelope `timestamp` must be within ±5 minutes of the node's clock, and each envelope `id` is accepted at most once (replay dedup). Response `200 {"ok":true}`. Errors: `400 missing 'to' field`, `400 chat send requires a signed envelope (from + signature)`, `400 invalid request body`, `400 invalid envelope: missing required fields`, `400 invalid envelope: insufficient proof of work`, `400 invalid envelope: envelope timestamp outside freshness window`, `400 duplicate envelope`.
+Body fields: `from` (required, an **address**), `pub_key` (required, the sender's ed25519 **public key**), `to` (required, an **address**), `message`, `timestamp` (nanos), `signature` (required, over the envelope id), `pow_nonce` (required when the node's `chat_pow_difficulty` > 0 — solved over the envelope `id` at that difficulty, see the PoW section). The envelope `timestamp` must be within ±5 minutes of the node's clock, and each envelope `id` is accepted at most once (replay dedup). Response `200 {"ok":true}`. Errors: `400 missing 'to' field`, `400 chat send requires a signed envelope (from + signature)`, `400 invalid request body`, `400 invalid envelope: missing required fields`, `400 invalid envelope: recipient is not an account address` (`to` must be 64 lowercase hex), `400 invalid envelope: recipient is the sender`, `400 invalid envelope: insufficient proof of work`, `400 invalid envelope: envelope timestamp outside freshness window`, `400 duplicate envelope`.
 
 `pub_key` is **required**, for the same reason as on a directory
 registration: `from` is an address and chat ingress is stateless. The node checks
@@ -1114,9 +1119,12 @@ the signed message and the PoW target — so the declared key is covered by the
 signature *and* by the work:
 
 ```
-id = sha256( f(from) || f(pub_key) || f(to) || f(message) || u64be(timestamp) )
+id = sha256( "xe/chat-envelope/v1\0" || f(network_id) || f(from) || f(pub_key)
+             || f(to) || f(message) || u64be(timestamp) )
 ```
-where `f(x)` is a 4-byte big-endian length followed by the UTF-8 bytes of `x`.
+where `f(x)` is a 4-byte big-endian length followed by the UTF-8 bytes of `x`,
+and `network_id` is the `network_id` on `GET /node`. The domain tag and the
+network id bind an envelope to one network: it does not verify on another.
 Reference implementations: `chat.ComputeEnvelopeID` (Go),
 `web/assets/chat-envelope.js` `computeEnvelopeID` (JS).
 

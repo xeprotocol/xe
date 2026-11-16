@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"math"
 	"sort"
 	"sync"
 
@@ -8,6 +9,8 @@ import (
 )
 
 const maxSeenIDs = 100_000
+
+const maxAccounts = 10_000
 
 type ChatStore struct {
 	mu            sync.RWMutex
@@ -70,7 +73,10 @@ func (s *ChatStore) pruneSeenLocked() {
 }
 
 func (s *ChatStore) storeFor(account string, env *Envelope) {
-	msgs := s.messages[account]
+	msgs, ok := s.messages[account]
+	if !ok && len(s.messages) >= maxAccounts {
+		s.evictStalestLocked(env)
+	}
 	if len(msgs) >= s.maxPerAccount {
 
 		newMsgs := make([]*Envelope, s.maxPerAccount)
@@ -80,6 +86,19 @@ func (s *ChatStore) storeFor(account string, env *Envelope) {
 	} else {
 		s.messages[account] = append(msgs, env)
 	}
+}
+
+func (s *ChatStore) evictStalestLocked(env *Envelope) {
+	stalest, oldest := "", int64(math.MaxInt64)
+	for account, msgs := range s.messages {
+		if account == env.To || account == env.From {
+			continue
+		}
+		if ts := msgs[len(msgs)-1].Timestamp; ts < oldest {
+			stalest, oldest = account, ts
+		}
+	}
+	delete(s.messages, stalest)
 }
 
 func (s *ChatStore) Messages(account string, since int64) []*Envelope {

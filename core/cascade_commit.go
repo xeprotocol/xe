@@ -154,8 +154,8 @@ func (l *Ledger) getAssetBalanceOverlay(account, asset string) uint64 {
 			asset = "XE"
 		}
 
-		if asset == "XUSD" {
-			return l.xusdBalanceOnChain(ch)
+		if asset == "XCU" {
+			return l.xcuBalanceOnChain(ch)
 		}
 		return assetBalanceOnChain(ch, asset)
 	}

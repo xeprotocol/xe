@@ -53,7 +53,7 @@ func (vm *VoteManager) conflictLock(account, prev string) *sync.Mutex {
 
 func NewVoteManager(store VoteStore, keyPair *KeyPair, ledger *Ledger) *VoteManager {
 	return &VoteManager{
-		store:                   store,
+		store:                   validVoteStore{store},
 		keyPair:                 keyPair,
 		ledger:                  ledger,
 		pendingVotes:            make(map[string][]*Vote),
@@ -160,6 +160,47 @@ func (vm *VoteManager) receiveVoteInner(v *Vote) error {
 	vm.lastRevoteMu.Unlock()
 	if vm.quorumMgr != nil {
 		vm.quorumMgr.OnVote(v)
+	}
+	return nil
+}
+
+func validVoteText(v *Vote) bool {
+	_, err := voteSigningBytes(v)
+	return err == nil
+}
+
+type validVoteStore struct{ VoteStore }
+
+func (s validVoteStore) GetVote(account, previous, repPubKey string) (*Vote, error) {
+	v, err := s.VoteStore.GetVote(account, previous, repPubKey)
+	if err != nil || v == nil || !validVoteText(v) {
+		return nil, err
+	}
+	return v, nil
+}
+
+func (s validVoteStore) GetVotesByConflict(account, previous string) ([]*Vote, error) {
+	votes, err := s.VoteStore.GetVotesByConflict(account, previous)
+	if err != nil || votes == nil {
+		return votes, err
+	}
+	valid := make([]*Vote, 0, len(votes))
+	for _, v := range votes {
+		if validVoteText(v) {
+			valid = append(valid, v)
+		}
+	}
+	return valid, nil
+}
+
+func (s validVoteStore) HasVoted(account, previous, repPubKey string) (bool, error) {
+	v, err := s.GetVote(account, previous, repPubKey)
+	return v != nil, err
+}
+
+func (s validVoteStore) Sync() error {
+	if sy, ok := s.VoteStore.(Syncer); ok {
+		return sy.Sync()
 	}
 	return nil
 }

@@ -78,6 +78,12 @@ func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 			return pubsub.ValidationReject
 		}
 
+		for _, s := range b.Signatures {
+			if !isHex64(s.PublicKey) {
+				return pubsub.ValidationReject
+			}
+		}
+
 		expected, err := core.HashBlock(b)
 		if err != nil || expected != b.Hash {
 			return pubsub.ValidationIgnore

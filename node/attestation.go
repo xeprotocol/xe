@@ -29,7 +29,7 @@ type AttestationResponse struct {
 	Attestation *core.TimekeeperAttestation `json:"attestation"`
 }
 
-func (n *Node) canAttest(identifier string) error {
+func (n *Node) canAttest(identifier string, from peer.ID) error {
 	if lease := n.GetLease(identifier); lease != nil {
 		switch lease.State {
 		case core.LeaseCreated, core.LeaseAccepted:
@@ -37,21 +37,24 @@ func (n *Node) canAttest(identifier string) error {
 		}
 		return fmt.Errorf("lease %s is %s: no attestation-gated transitions remain", shortHash(identifier), lease.State)
 	}
+	if from == "" {
+		return fmt.Errorf("unknown attestation identifier %s: not a live lease", shortHash(identifier))
+	}
 	if n.Directory != nil && len(identifier) == 64 {
-		if _, ok := n.Directory.Lookup(identifier); ok {
+		if _, ok := n.Directory.Lookup(identifier); ok && n.PeerForAccount(identifier) == from {
 			return nil
 		}
 		const zeroMid = "0000000000000000"
 		if identifier[32:48] == zeroMid {
 			for _, reg := range n.Directory.List() {
 				a := reg.Account
-				if len(a) == 64 && a[:32] == identifier[:32] && a[48:] == identifier[48:] {
+				if len(a) == 64 && a[:32] == identifier[:32] && a[48:] == identifier[48:] && n.PeerForAccount(a) == from {
 					return nil
 				}
 			}
 		}
 	}
-	return fmt.Errorf("unknown attestation identifier %s: not a live lease or a registered provider", shortHash(identifier))
+	return fmt.Errorf("unknown attestation identifier %s: not a live lease or a provider registered on the requesting peer", shortHash(identifier))
 }
 
 func (n *Node) registerAttestationHandler() {
@@ -68,7 +71,7 @@ func (n *Node) handleAttestationRequest(from peer.ID, payload json.RawMessage) (
 		return nil, fmt.Errorf("lease_hash required")
 	}
 
-	att, err := n.RequestAttestation(from.String(), req.LeaseHash)
+	att, err := n.requestAttestation(from.String(), req.LeaseHash, from)
 	if err != nil {
 		return nil, err
 	}
@@ -215,15 +218,7 @@ func (n *Node) getTimekeeperConfig() *core.TimekeeperConfig {
 	if !ok {
 		return nil
 	}
-	var config core.TimekeeperConfig
-	if err := json.Unmarshal(raw, &config); err != nil {
-		log.Printf("Failed to unmarshal sys.timekeepers: %v", err)
-		return nil
-	}
-	if config.Threshold == 0 || len(config.Keys) == 0 {
-		return nil
-	}
-	return &config
+	return parseTimekeeperConfig(raw)
 }
 
 func (n *Node) acceptAttestations(leaseHash string) ([]core.TimekeeperAttestation, error) {

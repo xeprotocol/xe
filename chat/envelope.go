@@ -30,10 +30,15 @@ type Envelope struct {
 	PoWNonce  uint64 `json:"pow_nonce"`
 }
 
+const envelopeDomainTag = "xe/chat-envelope/v1\x00"
+
 func envelopeCanonical(from, pubKey, to, message string, timestamp int64) []byte {
 
-	size := 4 + len(from) + 4 + len(pubKey) + 4 + len(to) + 4 + len(message) + 8
+	networkID := core.GetNetworkID()
+	size := len(envelopeDomainTag) + 4 + len(networkID) + 4 + len(from) + 4 + len(pubKey) + 4 + len(to) + 4 + len(message) + 8
 	buf := make([]byte, 0, size)
+	buf = append(buf, envelopeDomainTag...)
+	buf = appendField(buf, []byte(networkID))
 	buf = appendField(buf, []byte(from))
 	buf = appendField(buf, []byte(pubKey))
 	buf = appendField(buf, []byte(to))
@@ -49,6 +54,11 @@ func appendField(buf, data []byte) []byte {
 	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
 	buf = append(buf, lenBuf[:]...)
 	return append(buf, data...)
+}
+
+func isAddress(s string) bool {
+	b, err := hex.DecodeString(s)
+	return err == nil && len(b) == 32 && hex.EncodeToString(b) == s
 }
 
 func ComputeEnvelopeID(from, pubKey, to, message string, timestamp int64) string {
@@ -84,6 +94,13 @@ func NewEnvelope(from, to, message string, kp *core.KeyPair, difficulty uint64) 
 func (e *Envelope) VerifyFull(difficulty uint64) error {
 	if e.From == "" || e.PubKey == "" || e.To == "" || e.Message == "" || e.Timestamp == 0 || e.Signature == "" {
 		return fmt.Errorf("missing required fields")
+	}
+
+	if !isAddress(e.To) {
+		return fmt.Errorf("recipient is not an account address")
+	}
+	if e.To == e.From {
+		return fmt.Errorf("recipient is the sender")
 	}
 	if len(e.Message) > MaxMessageBytes {
 		return fmt.Errorf("message exceeds maximum length of %d bytes", MaxMessageBytes)

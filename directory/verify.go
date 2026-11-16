@@ -8,11 +8,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"time"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/xeprotocol/xe/core"
 )
 
 const registrationDomainTag = "xe/directory-registration/v1\x00"
+
+const MaxRegistrationSkew = 5 * time.Minute
 
 func canonicalBytes(account, pubKey, nodePeer string, timestamp int64) []byte {
 	var b bytes.Buffer
@@ -26,6 +31,8 @@ func canonicalBytes(account, pubKey, nodePeer string, timestamp int64) []byte {
 	return b.Bytes()
 }
 
+const nodePeerLen = 52
+
 func VerifyRegistration(reg *Registration) error {
 	if reg.Account == "" {
 		return fmt.Errorf("missing account")
@@ -36,11 +43,36 @@ func VerifyRegistration(reg *Registration) error {
 	if reg.NodePeer == "" {
 		return fmt.Errorf("missing node_peer")
 	}
+
+	if len(reg.NodePeer) > nodePeerLen {
+		return fmt.Errorf("invalid node_peer: longer than %d characters", nodePeerLen)
+	}
 	if reg.Timestamp == 0 {
 		return fmt.Errorf("missing timestamp")
 	}
+
+	if reg.Timestamp > clock().UnixNano()+int64(MaxRegistrationSkew) {
+		return fmt.Errorf("timestamp in the future")
+	}
 	if reg.Signature == "" {
 		return fmt.Errorf("missing signature")
+	}
+
+	id, err := peer.Decode(reg.NodePeer)
+	if err != nil {
+		return fmt.Errorf("invalid node_peer: %w", err)
+	}
+	pk, err := id.ExtractPublicKey()
+	if err != nil {
+		return fmt.Errorf("invalid node_peer: %w", err)
+	}
+
+	canonical, err := peer.IDFromPublicKey(pk)
+	if err != nil {
+		return fmt.Errorf("invalid node_peer: %w", err)
+	}
+	if canonical.String() != reg.NodePeer {
+		return fmt.Errorf("invalid node_peer: not the canonical peer ID of its key")
 	}
 
 	if err := core.VerifyPayloadKey(reg.PubKey, reg.Account); err != nil {

@@ -101,12 +101,20 @@ type observer struct {
 
 	startedAt time.Time
 
+	chainLens map[string]chainLen
+
 	peersFn    func() int
 	lastSyncFn func() time.Time
 }
 
+type chainLen struct {
+	tail string
+	n    int
+}
+
 func (n *Node) StartObservability(cfg ObsConfig) *Observer {
 	cfg = cfg.Defaults()
+	n.standalone.Store(cfg.MinPeers == 0)
 	o := &observer{cfg: cfg, node: n, startedAt: core.Now()}
 
 	core.SetFinalityObserver(func(blocks uint64, winner *core.Block) {
@@ -192,25 +200,38 @@ func (o *observer) sample() {
 		}
 	}()
 
-	accounts := o.node.GetAllAccounts()
-	s.Accounts = len(accounts)
+	frontiers := o.node.Ledger.Frontiers()
+	s.Accounts = len(frontiers)
 
-	lines := make([]string, 0, len(accounts))
-	for _, a := range accounts {
-		s.Blocks += a.BlockCount
-		fh := o.node.Ledger.FinalHeight(a.Address)
+	if o.chainLens == nil {
+		o.chainLens = make(map[string]chainLen, len(frontiers))
+	}
+	lines := make([]string, 0, len(frontiers))
+	for account, frontier := range frontiers {
+		c, ok := o.chainLens[account]
+		if !ok || c.tail != frontier {
+			c.tail, c.n = o.node.Ledger.ChainTail(account)
+			o.chainLens[account] = c
+		}
+		s.Blocks += c.n
+		fh := o.node.Ledger.FinalHeight(account)
 		s.FinalHeightSum += fh
-		if uint64(a.BlockCount) > fh {
+		if uint64(c.n) > fh {
 			s.UnfinalizedPositions++
 		}
-		lines = append(lines, a.Address+":"+a.Frontier+":"+strconv.Itoa(a.BlockCount))
+		lines = append(lines, account+":"+frontier+":"+strconv.Itoa(c.n))
+	}
+	for account := range o.chainLens {
+		if _, ok := frontiers[account]; !ok {
+			delete(o.chainLens, account)
+		}
 	}
 
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	s.FrontierFingerprint = hex.EncodeToString(sum[:])[:16]
 
-	s.PendingSends = len(o.node.Ledger.GetAllPending())
+	s.PendingSends = o.node.Ledger.PendingCount()
 
 	for asset, a := range o.node.GetSupply().Assets {
 		if a == nil {

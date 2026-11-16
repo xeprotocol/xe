@@ -32,6 +32,7 @@ const (
 	leaseTailSize       = 104
 	leaseAcceptTailSize = 64
 	leaseSettleTailSize = 40
+	leaseRenewTailSize  = 72
 	burnTailSize        = 8
 	mintTailSize        = 8
 	representativeSize  = 32
@@ -395,6 +396,9 @@ func unmarshalBlock(data []byte) (*Block, error) {
 	case typeByteLeaseForceSettle:
 		blockType = BlockLeaseForceSettle
 		minLen = fixedHeaderSize + receiveTailSize + representativeSize
+	case typeByteLeaseRenew:
+		blockType = BlockLeaseRenew
+		minLen = fixedHeaderSize + leaseRenewTailSize + representativeSize
 	case typeByteBurn:
 		blockType = BlockBurn
 
@@ -471,6 +475,15 @@ func unmarshalBlock(data []byte) (*Block, error) {
 		b.LockedPayoutCap = binary.BigEndian.Uint64(data[138:146])
 		b.LockedTWAP = binary.BigEndian.Uint64(data[146:154])
 		repOffset = 154
+	case BlockLeaseRenew:
+		b.Source = hex.EncodeToString(data[90:122])
+		b.Amount = binary.BigEndian.Uint64(data[122:130])
+
+		b.Duration = binary.BigEndian.Uint64(data[130:138])
+		b.LockedR = binary.BigEndian.Uint64(data[138:146])
+		b.LockedPayoutCap = binary.BigEndian.Uint64(data[146:154])
+		b.LockedTWAP = binary.BigEndian.Uint64(data[154:162])
+		repOffset = 162
 	case BlockMultisigOpen, BlockMultisigUpdate:
 		ks, ksLen, err := unmarshalKeysetCanonical(data[90:])
 		if err != nil {
@@ -597,6 +610,9 @@ func voteSigningBytes(v *Vote) ([]byte, error) {
 	if len(repBytes) != 32 {
 		return nil, fmt.Errorf("voteSigningBytes: RepPubKey must be 32 bytes, got %d", len(repBytes))
 	}
+	if hex.EncodeToString(repBytes) != v.RepPubKey {
+		return nil, fmt.Errorf("voteSigningBytes: RepPubKey must be lowercase hex")
+	}
 
 	blockHashBytes, err := hex.DecodeString(v.BlockHash)
 	if err != nil {
@@ -605,6 +621,9 @@ func voteSigningBytes(v *Vote) ([]byte, error) {
 	if len(blockHashBytes) != 32 {
 		return nil, fmt.Errorf("voteSigningBytes: BlockHash must be 32 bytes, got %d", len(blockHashBytes))
 	}
+	if hex.EncodeToString(blockHashBytes) != v.BlockHash {
+		return nil, fmt.Errorf("voteSigningBytes: BlockHash must be lowercase hex")
+	}
 
 	conflictAccountBytes, err := hex.DecodeString(v.ConflictAccount)
 	if err != nil {
@@ -612,6 +631,9 @@ func voteSigningBytes(v *Vote) ([]byte, error) {
 	}
 	if len(conflictAccountBytes) != 32 {
 		return nil, fmt.Errorf("voteSigningBytes: ConflictAccount must be 32 bytes, got %d", len(conflictAccountBytes))
+	}
+	if hex.EncodeToString(conflictAccountBytes) != v.ConflictAccount {
+		return nil, fmt.Errorf("voteSigningBytes: ConflictAccount must be lowercase hex")
 	}
 
 	var conflictPrevBytes []byte
@@ -624,6 +646,12 @@ func voteSigningBytes(v *Vote) ([]byte, error) {
 		}
 		if len(conflictPrevBytes) != 32 {
 			return nil, fmt.Errorf("voteSigningBytes: ConflictPrev must be 32 bytes, got %d", len(conflictPrevBytes))
+		}
+		if allZero(conflictPrevBytes) {
+			return nil, fmt.Errorf(`voteSigningBytes: an all-zero ConflictPrev must be written "0"`)
+		}
+		if hex.EncodeToString(conflictPrevBytes) != v.ConflictPrev {
+			return nil, fmt.Errorf("voteSigningBytes: ConflictPrev must be lowercase hex")
 		}
 	}
 

@@ -2,7 +2,13 @@ const BASE = '/api';
 const PAGE_LIMIT = 1000;
 
 export async function api(path) {
-  const res = await fetch(BASE + path);
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    res = await fetch(BASE + path);
+    const wait = Number(res.headers.get('Retry-After'));
+    if (res.status !== 429 || !(wait > 0) || attempt >= 3) break;
+    await new Promise(r => setTimeout(r, wait * 1000));
+  }
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
     try {

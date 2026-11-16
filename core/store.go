@@ -1,6 +1,10 @@
 package core
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"math/big"
+)
 
 type Store interface {
 	GetBlock(hash string) (*Block, error)
@@ -51,6 +55,31 @@ type FrontierLister interface {
 	AllFrontiers() map[string]string
 }
 
+type ChainHashLister interface {
+	GetAccountChainHashes(account string) ([]string, error)
+}
+
+type PendingCounter interface {
+	CountPending() (int, error)
+}
+
+type PendingTotal struct {
+	Count  int
+	Amount *big.Int
+}
+
+type PendingTotaler interface {
+	PendingTotals() (map[string]PendingTotal, error)
+}
+
+type PendingPager interface {
+	GetPendingPage(ctx context.Context, offset, limit int) ([]*PendingSend, error)
+}
+
+type ChainRangeReader interface {
+	GetAccountChainRange(account string, from, to int) ([]*Block, int, error)
+}
+
 type CertificateStore interface {
 	PutCertificate(hash string, data []byte) error
 	CertificateByHash(hash string) ([]byte, error)
@@ -64,6 +93,10 @@ type LeaseStore interface {
 	GetLeasesByProvider(provider string) ([]*Lease, error)
 	GetLeasesByState(state LeaseState) ([]*Lease, error)
 	GetAllLeases() ([]*Lease, error)
+}
+
+type LeaseArchiveStore interface {
+	ArchiveLease(lease *Lease) error
 }
 
 type ReputationStore interface {
@@ -143,6 +176,7 @@ type BlockUndo struct {
 	RestoreLease        *Lease
 	DeleteLeaseHash     string
 	DeleteKeysetAccount string
+	RestoreKeyset       *Keyset
 
 	DeleteAccountKeyAccount string
 

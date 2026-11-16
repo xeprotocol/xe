@@ -1,6 +1,7 @@
 package statechain
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,8 @@ type Chain struct {
 	onBlock      func(*Block)
 	forkCallback func(existing, incoming *Block)
 
+	history map[string][]KVVersion
+
 	gapSyncMu   sync.Mutex
 	lastGapSync time.Time
 }
@@ -32,10 +35,10 @@ func NewChain(store StateChainStore, genesis *Block) (*Chain, error) {
 		store:   store,
 		kv:      NewKVStore(),
 		genesis: genesis,
+		history: make(map[string][]KVVersion),
 	}
 
-	c.kv.ApplyOps(genesis.Ops)
-	c.tip = genesis
+	c.applyValidated(genesis)
 
 	if err := c.replay(); err != nil {
 		return nil, fmt.Errorf("NewChain: replay: %w", err)
@@ -74,9 +77,7 @@ func (c *Chain) replay() error {
 		if err := c.verifyBlockSignatures(b); err != nil {
 			return fmt.Errorf("block %d: %w", b.Index, err)
 		}
-		if err := c.applyValidated(b); err != nil {
-			return fmt.Errorf("block %d: %w", b.Index, err)
-		}
+		c.applyValidated(b)
 		expected++
 	}
 	if expected-1 != count {
@@ -97,10 +98,14 @@ func (c *Chain) verifyBlockSignatures(b *Block) error {
 	return verifyMultisig(b, keyset)
 }
 
-func (c *Chain) applyValidated(b *Block) error {
+func (c *Chain) applyValidated(b *Block) {
 	c.kv.ApplyOps(b.Ops)
+	for _, op := range b.Ops {
+		if op.Action == ActionSet && strings.HasPrefix(op.Key, "sys.") {
+			c.history[op.Key] = append(c.history[op.Key], KVVersion{Value: append(json.RawMessage(nil), lowercaseKeys(op.Key, op.Value)...), Timestamp: b.Timestamp})
+		}
+	}
 	c.tip = b
-	return nil
 }
 
 func (c *Chain) AddBlock(b *Block) error {
@@ -159,29 +164,34 @@ func (c *Chain) AddBlock(b *Block) error {
 	if len(blockJSON) > MaxBlockSize {
 		return fmt.Errorf("block size %d exceeds limit %d", len(blockJSON), MaxBlockSize)
 	}
+
+	oracleConfig, _ := c.kv.OracleConfig()
+	oracleBlock := oracleConfig != nil && opsMatchPrefix(b.Ops, oracleConfig.AllowedPrefix)
+
+	next := c.kv.clone()
 	for _, op := range b.Ops {
 		if err := ValidateOp(op); err != nil {
 			return err
 		}
-		if err := validateTransition(c.kv, c.tip, b, op); err != nil {
+		if err := validateTransition(next, c.tip, b, op); err != nil {
 			return err
 		}
-	}
+		if oracleBlock {
 
-	oracleConfig, _ := c.kv.OracleConfig()
-	if oracleConfig != nil && opsMatchPrefix(b.Ops, oracleConfig.AllowedPrefix) {
-
-		for _, op := range b.Ops {
 			if op.Action == ActionSet {
-				if err := validateEpochValue(op.Value, c.kv); err != nil {
+				if err := validateEpochValue(op.Value, next); err != nil {
 					return fmt.Errorf("epoch validation: %w", err)
 				}
 			}
 
-			if _, exists := c.kv.Get(op.Key); exists {
+			if _, exists := next.Get(op.Key); exists {
 				return fmt.Errorf("epoch key %q already exists (write-once)", op.Key)
 			}
 		}
+		next.ApplyOps([]Op{op})
+	}
+
+	if oracleBlock {
 		if err := verifyOracleMultisig(b, oracleConfig); err != nil {
 			return err
 		}
@@ -207,8 +217,7 @@ func (c *Chain) AddBlock(b *Block) error {
 	if err := c.store.PutStateBlock(b); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
-	c.kv.ApplyOps(b.Ops)
-	c.tip = b
+	c.applyValidated(b)
 
 	if c.onBlock != nil {
 		c.onBlock(b)
@@ -231,19 +240,25 @@ func verifyMultisig(b *Block, keyset *DAOKeyset) error {
 
 	keysetMap := make(map[string]bool, len(keyset.Keys))
 	for _, k := range keyset.Keys {
-		keysetMap[k] = true
+		if kb, err := hex.DecodeString(k); err == nil {
+			keysetMap[string(kb)] = true
+		}
 	}
 
 	seen := make(map[string]bool, len(b.Signatures))
 	validCount := 0
 
 	for _, sig := range b.Signatures {
-		if seen[sig.PublicKey] {
+		pk, err := hex.DecodeString(sig.PublicKey)
+		if err != nil {
+			return fmt.Errorf("signer %s: invalid public key hex", shortKey(sig.PublicKey))
+		}
+		if seen[string(pk)] {
 			return fmt.Errorf("duplicate signer: %s", shortKey(sig.PublicKey))
 		}
-		seen[sig.PublicKey] = true
+		seen[string(pk)] = true
 
-		if !keysetMap[sig.PublicKey] {
+		if !keysetMap[string(pk)] {
 			return fmt.Errorf("signer %s not in keyset", shortKey(sig.PublicKey))
 		}
 
@@ -308,6 +323,17 @@ func (c *Chain) GetKV(key string) (json.RawMessage, bool) {
 	return c.kv.Get(key)
 }
 
+type KVVersion struct {
+	Value     json.RawMessage
+	Timestamp int64
+}
+
+func (c *Chain) KVHistory(key string) []KVVersion {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]KVVersion(nil), c.history[key]...)
+}
+
 func (c *Chain) GetKVByPrefix(prefix string) map[string]json.RawMessage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -365,19 +391,25 @@ func verifyOracleMultisig(b *Block, config *OracleConfig) error {
 
 	keysetMap := make(map[string]bool, len(config.Keys))
 	for _, k := range config.Keys {
-		keysetMap[k] = true
+		if kb, err := hex.DecodeString(k); err == nil {
+			keysetMap[string(kb)] = true
+		}
 	}
 
 	seen := make(map[string]bool, len(b.Signatures))
 	validCount := 0
 
 	for _, sig := range b.Signatures {
-		if seen[sig.PublicKey] {
+		pk, err := hex.DecodeString(sig.PublicKey)
+		if err != nil {
+			return fmt.Errorf("signer %s: invalid public key hex", shortKey(sig.PublicKey))
+		}
+		if seen[string(pk)] {
 			return fmt.Errorf("duplicate signer: %s", shortKey(sig.PublicKey))
 		}
-		seen[sig.PublicKey] = true
+		seen[string(pk)] = true
 
-		if !keysetMap[sig.PublicKey] {
+		if !keysetMap[string(pk)] {
 			return fmt.Errorf("signer %s not in oracle keyset", shortKey(sig.PublicKey))
 		}
 

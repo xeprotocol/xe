@@ -43,7 +43,19 @@ function hydrateFromCache() {
   }
 }
 
+let refreshing = false;
+
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    await refreshOnce();
+  } finally {
+    refreshing = false;
+  }
+}
+
+async function refreshOnce() {
   const errors = [];
   const sample = { ts: Date.now() };
 
@@ -79,21 +91,20 @@ async function refreshIdentityAndStats(sample) {
   sample.peers    = Number(node.peer_count) || 0;
   sample.accounts = Number(node.accounts) || 0;
   sample.blocks   = Number(node.block_count) || 0;
+  sample.pending  = Number(node.pending_sends) || 0;
   setStat('peers',    sample.peers);
   setStat('accounts', sample.accounts);
   setStat('blocks',   sample.blocks);
+  setStat('pending',  sample.pending);
 }
 
 async function refreshSecondaryStats(sample) {
-  const [pending, leases, providers] = await Promise.all([
-    fetchAllPages('/pending').catch(() => []),
+  const [leases, providers] = await Promise.all([
     fetchAllPages('/leases').catch(() => []),
     api('/providers').catch(() => []),
   ]);
-  sample.pending   = countOf(pending);
   sample.leases    = countOf(leases);
   sample.providers = countOf(providers);
-  setStat('pending',   sample.pending);
   setStat('leases',    sample.leases);
   setStat('providers', sample.providers);
 }

@@ -68,7 +68,6 @@ type chainTerms struct {
 
 func termsFromChain(blocks []*Block) *chainTerms {
 	c := &chainTerms{
-		blockCount:     len(blocks),
 		genesis:        map[string]uint64{},
 		minted:         map[string]uint64{},
 		burned:         map[string]uint64{},
@@ -76,6 +75,12 @@ func termsFromChain(blocks []*Block) *chainTerms {
 		acceptStake:    map[string]uint64{},
 		settleEmission: map[string]uint64{},
 	}
+	c.fold(blocks)
+	return c
+}
+
+func (c *chainTerms) fold(blocks []*Block) {
+	c.blockCount += len(blocks)
 	if len(blocks) > 0 {
 		c.frontier = blocks[len(blocks)-1].Hash
 	}
@@ -102,7 +107,6 @@ func termsFromChain(blocks []*Block) *chainTerms {
 
 		}
 	}
-	return c
 }
 
 const (
@@ -192,8 +196,7 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 	for account, frontier := range before {
 		c := s.cache[account]
 		if c == nil || c.frontier != frontier {
-			chain := s.l.GetChain(account)
-			c = termsFromChain(chain)
+			c = s.termsFor(account, c)
 
 			if c.frontier != frontier {
 				rep.Stable = false
@@ -229,21 +232,32 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 		}
 	}
 
-	for _, p := range s.l.GetAllPending() {
-		rep.Pending++
-		if !IsValidAsset(p.Asset) {
-			rep.Notes = append(rep.Notes, fmt.Sprintf("pending send %s carries an unsupported asset %q", shortHash(p.SendHash), p.Asset))
-			rep.Conserved = false
-			continue
+	if totals, ok := s.pendingTotals(); ok {
+		for asset, t := range totals {
+			rep.Pending += t.Count
+			if !t.Amount.IsUint64() {
+				overflow = true
+				continue
+			}
+			add(&get(asset).InFlight, t.Amount.Uint64())
 		}
-		add(&get(p.Asset).InFlight, p.Amount)
+	} else {
+		for _, p := range s.l.GetAllPending() {
+			rep.Pending++
+			if !IsValidAsset(p.Asset) {
+				rep.Notes = append(rep.Notes, fmt.Sprintf("pending send %s carries an unsupported asset %q", shortHash(p.SendHash), p.Asset))
+				rep.Conserved = false
+				continue
+			}
+			add(&get(p.Asset).InFlight, p.Amount)
+		}
 	}
 
 	for h, em := range emissions {
 		add(&get(AssetXE.Symbol).Emitted, em)
 
 		if cost, ok := costs[h]; ok {
-			add(&get(AssetXUSD.Symbol).EscrowBurned, cost)
+			add(&get(AssetXCU.Symbol).EscrowBurned, cost)
 		} else {
 			rep.Notes = append(rep.Notes, fmt.Sprintf("settle for lease %s has no lease block in the census; escrow unaccounted", shortHash(h)))
 			rep.Conserved = false
@@ -267,9 +281,9 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 			unplaceable = append(unplaceable, shortHash(h))
 			rep.Conserved = false
 		case lease.State == LeaseAccepted && !lease.Settled:
-			add(&get(AssetXUSD.Symbol).LockedStake, st)
+			add(&get(AssetXCU.Symbol).LockedStake, st)
 		default:
-			add(&get(AssetXUSD.Symbol).StakeForfeited, st)
+			add(&get(AssetXCU.Symbol).StakeForfeited, st)
 		}
 	}
 	if len(unplaceable) > 0 {
@@ -279,7 +293,7 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 
 	for _, l := range leases {
 		if l.State == LeaseExpired {
-			add(&get(AssetXUSD.Symbol).EscrowBurned, l.Cost)
+			add(&get(AssetXCU.Symbol).EscrowBurned, l.Cost)
 		}
 	}
 
@@ -316,6 +330,30 @@ func (s *SupplyAuditor) walk() *SupplyReport {
 		rep.Notes = append(rep.Notes, "frontier set moved during the walk; the snapshot is torn and the identity was not evaluated")
 	}
 	return rep
+}
+
+func (s *SupplyAuditor) termsFor(account string, cached *chainTerms) *chainTerms {
+	if cached != nil && cached.blockCount > 0 {
+		blocks, total := s.l.GetChainRange(account, cached.blockCount-1, math.MaxInt)
+		if len(blocks) > 0 && blocks[0].Hash == cached.frontier && total == cached.blockCount-1+len(blocks) {
+			cached.fold(blocks[1:])
+			return cached
+		}
+	}
+	return termsFromChain(s.l.GetChain(account))
+}
+
+func (s *SupplyAuditor) pendingTotals() (map[string]PendingTotal, bool) {
+	totals, ok := s.l.PendingTotals()
+	if !ok {
+		return nil, false
+	}
+	for asset := range totals {
+		if !IsValidAsset(asset) {
+			return nil, false
+		}
+	}
+	return totals, true
 }
 
 func (s *SupplyAuditor) allLeases() []*Lease {

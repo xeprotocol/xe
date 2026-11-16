@@ -11,15 +11,17 @@ hex signing seed. Anyone with that backup controls the account.
    normalize with NFKD. Validate the BIP39 English wordlist and entropy checksum.
 2. Derive the 64-byte BIP39 seed with PBKDF2-HMAC-SHA512, 2048 iterations, password
    NFKD(words), salt `mnemonic` followed by NFKD(BIP39 passphrase).
-3. Use SLIP-0010 ed25519 at `m/44'/1'/account'`. Every level is hardened. Account
+3. Use SLIP-0010 ed25519 at `m/44'/22597'/account'`. Every level is hardened. Account
    defaults to 0 and must be an integer from 0 through 2147483647.
 4. Use the 32-byte leaf key as the ed25519 signing seed. The existing address
    derivation stays `sha256("xe/account/v1" || public_key)`.
 
-Coin type **1 is provisional**. It is defined by one constant in each
-implementation, and the vectors mark `coin_type_provisional: true`. No XE
-SLIP-0044 registration is included. This path must be settled before non-testnet
-use; changing its coin type changes the resulting accounts.
+The coin type is **22597** (`0x5845`, the bytes "XE") on every XE network. It is
+defined by one constant in each implementation, and the vectors record
+`coin_type: 22597` and `coin_type_provisional: false`. Changing the coin type
+changes the resulting accounts. A phrase made while the coin type was 1 (before
+testnet-0006) derives a different, empty account on this path; such a wallet
+restores from its hex seed.
 
 A phrase cannot be computed from a signing seed. A hex-only wallet therefore has
 no phrase. BIP39 compatibility does not make an XE account an Ethereum account;

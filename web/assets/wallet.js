@@ -792,7 +792,7 @@ function renderSendAssets() {
   const current = sel.value;
   sel.innerHTML = '';
   const assets = Object.keys(state.balances).sort();
-  if (assets.length === 0) assets.push('XUSD');
+  if (assets.length === 0) assets.push('XCU');
   for (const a of assets) {
     const opt = document.createElement('option');
     opt.value = a;

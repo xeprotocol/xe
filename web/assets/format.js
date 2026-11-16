@@ -38,7 +38,7 @@ export function durationString(secs) {
   return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
 }
 
-const ASSET_DECIMALS = { XE: 6, XUSD: 6 };
+const ASSET_DECIMALS = { XE: 6, XCU: 6 };
 const DEFAULT_DECIMALS = 6;
 
 export function assetDecimals(asset) {

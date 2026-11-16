@@ -18,7 +18,7 @@ PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 export CGO_ENABLED := 0
 export SOURCE_DATE_EPOCH
 
-.PHONY: all build dist clean test race vet fmt lint checksums verify-repro tools-check print-version
+.PHONY: all build dist clean test race integration vet fmt lint checksums verify-repro tools-check print-version
 
 all: build
 
@@ -52,6 +52,9 @@ test:
 
 race:
 	go test -race -shuffle=on -timeout=300s ./...
+
+integration:
+	go test -tags integration -timeout=900s ./...
 
 vet:
 	go vet ./...

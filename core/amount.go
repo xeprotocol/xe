@@ -14,16 +14,16 @@ type AssetConfig struct {
 }
 
 var (
-	AssetXE   = AssetConfig{Symbol: "XE", Decimals: 6, UnitsPerToken: 1_000_000}
-	AssetXUSD = AssetConfig{Symbol: "XUSD", Decimals: 6, UnitsPerToken: 1_000_000}
+	AssetXE  = AssetConfig{Symbol: "XE", Decimals: 6, UnitsPerToken: 1_000_000}
+	AssetXCU = AssetConfig{Symbol: "XCU", Decimals: 6, UnitsPerToken: 1_000_000}
 )
 
 func AssetByName(symbol string) (AssetConfig, bool) {
 	switch symbol {
 	case AssetXE.Symbol:
 		return AssetXE, true
-	case AssetXUSD.Symbol:
-		return AssetXUSD, true
+	case AssetXCU.Symbol:
+		return AssetXCU, true
 	}
 	return AssetConfig{}, false
 }

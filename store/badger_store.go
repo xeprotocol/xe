@@ -1,12 +1,14 @@
 package store
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +44,7 @@ type BadgerStore struct {
 	gcQuit    chan struct{}
 	gcDone    chan struct{}
 	closeOnce sync.Once
+	pending   pendingTally
 }
 
 func NewBadgerStore(dir string) (*BadgerStore, error) {
@@ -165,6 +168,112 @@ func (s *BadgerStore) GetAccountChain(account string) (*core.AccountChain, error
 	return chain, nil
 }
 
+func (s *BadgerStore) GetAccountChainHashes(account string) ([]string, error) {
+	var hashes []string
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(prefixedKey(prefixChain, account))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(val []byte) error {
+			hashes, err = decodeHashList(val)
+			return err
+		})
+	})
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if hashes == nil {
+		hashes = []string{}
+	}
+	return hashes, nil
+}
+
+func (s *BadgerStore) GetAccountChainRange(account string, from, to int) ([]*core.Block, int, error) {
+	var blocks []*core.Block
+	var total int
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(prefixedKey(prefixChain, account))
+		if err != nil {
+			return err
+		}
+		var hashes []string
+		if err := item.Value(func(val []byte) error {
+			hashes, err = decodeHashList(val)
+			return err
+		}); err != nil {
+			return err
+		}
+		total = len(hashes)
+		from = min(max(from, 0), total)
+		to = max(min(to, total), from)
+		blocks = make([]*core.Block, 0, to-from)
+		for _, h := range hashes[from:to] {
+			blockItem, err := txn.Get(prefixedKey(prefixBlock, h))
+			if err != nil {
+				return fmt.Errorf("chain references missing block %s: %w", h, err)
+			}
+			var b core.Block
+			if err := blockItem.Value(func(val []byte) error {
+				return json.Unmarshal(val, &b)
+			}); err != nil {
+				return fmt.Errorf("unmarshal block %s: %w", h, err)
+			}
+			blocks = append(blocks, &b)
+		}
+		return nil
+	})
+	if err == badger.ErrKeyNotFound {
+		return nil, 0, nil
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	return blocks, total, nil
+}
+
+func decodeHashList(val []byte) ([]string, error) {
+	if hashes, ok := splitPlainHashList(val); ok {
+		return hashes, nil
+	}
+	var hashes []string
+	err := json.Unmarshal(val, &hashes)
+	return hashes, err
+}
+
+func splitPlainHashList(val []byte) ([]string, bool) {
+	s := string(val)
+	if len(s) < 2 || s[0] != '[' || s[len(s)-1] != ']' || strings.IndexByte(s, '\\') >= 0 {
+		return nil, false
+	}
+	body := s[1 : len(s)-1]
+	hashes := make([]string, 0, strings.Count(body, ",")+1)
+	if body == "" {
+		return hashes, true
+	}
+	for {
+		if len(body) < 2 || body[0] != '"' {
+			return nil, false
+		}
+		end := strings.IndexByte(body[1:], '"') + 1
+		if end == 0 {
+			return nil, false
+		}
+		hashes = append(hashes, body[1:end])
+		body = body[end+1:]
+		if body == "" {
+			return hashes, true
+		}
+		if body[0] != ',' {
+			return nil, false
+		}
+		body = body[1:]
+	}
+}
+
 func (s *BadgerStore) PutAccountChain(account string, chain *core.AccountChain) error {
 	hashes := make([]string, len(chain.Blocks))
 	for i, b := range chain.Blocks {
@@ -205,9 +314,9 @@ func (s *BadgerStore) PutPendingSend(ps *core.PendingSend) error {
 		return err
 	}
 
-	return s.db.Update(func(txn *badger.Txn) error {
+	return s.updatePending(func(txn *badger.Txn, d pendingDelta) error {
 
-		if err := txn.Set(prefixedKey(prefixPending, ps.SendHash), psData); err != nil {
+		if err := putPendingTxn(txn, d, ps, psData); err != nil {
 			return err
 		}
 
@@ -234,58 +343,63 @@ func (s *BadgerStore) PutPendingSend(ps *core.PendingSend) error {
 }
 
 func (s *BadgerStore) DeletePendingSend(sendHash string) error {
-	return s.db.Update(func(txn *badger.Txn) error {
+	return s.updatePending(func(txn *badger.Txn, d pendingDelta) error {
+		return deletePendingTxn(txn, d, sendHash)
+	})
+}
 
-		pendingKey := prefixedKey(prefixPending, sendHash)
-		item, err := txn.Get(pendingKey)
-		if err == badger.ErrKeyNotFound {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
+func deletePendingTxn(txn *badger.Txn, d pendingDelta, sendHash string) error {
 
-		var ps core.PendingSend
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &ps)
+	pendingKey := prefixedKey(prefixPending, sendHash)
+	item, err := txn.Get(pendingKey)
+	if err == badger.ErrKeyNotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	var ps core.PendingSend
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &ps)
+	}); err != nil {
+		return err
+	}
+
+	if err := txn.Delete(pendingKey); err != nil {
+		return err
+	}
+	d.removed(&ps)
+
+	destKey := prefixedKey(prefixPendingDst, ps.Destination)
+	var hashes []string
+	item2, err := txn.Get(destKey)
+	if err != nil && err != badger.ErrKeyNotFound {
+		return err
+	}
+	if err == nil {
+		if err := item2.Value(func(val []byte) error {
+			return json.Unmarshal(val, &hashes)
 		}); err != nil {
 			return err
 		}
+	}
 
-		if err := txn.Delete(pendingKey); err != nil {
-			return err
+	filtered := hashes[:0]
+	for _, h := range hashes {
+		if h != sendHash {
+			filtered = append(filtered, h)
 		}
+	}
 
-		destKey := prefixedKey(prefixPendingDst, ps.Destination)
-		var hashes []string
-		item2, err := txn.Get(destKey)
-		if err != nil && err != badger.ErrKeyNotFound {
-			return err
-		}
-		if err == nil {
-			if err := item2.Value(func(val []byte) error {
-				return json.Unmarshal(val, &hashes)
-			}); err != nil {
-				return err
-			}
-		}
-
-		filtered := hashes[:0]
-		for _, h := range hashes {
-			if h != sendHash {
-				filtered = append(filtered, h)
-			}
-		}
-
-		if len(filtered) == 0 {
-			return txn.Delete(destKey)
-		}
-		destData, err := json.Marshal(filtered)
-		if err != nil {
-			return err
-		}
-		return txn.Set(destKey, destData)
-	})
+	if len(filtered) == 0 {
+		return txn.Delete(destKey)
+	}
+	destData, err := json.Marshal(filtered)
+	if err != nil {
+		return err
+	}
+	return txn.Set(destKey, destData)
 }
 
 func (s *BadgerStore) GetPendingByDest(account string) ([]*core.PendingSend, error) {
@@ -343,6 +457,54 @@ func (s *BadgerStore) GetAllPending() ([]*core.PendingSend, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+const pendingCtxCheck = 1024
+
+func (s *BadgerStore) GetPendingPage(ctx context.Context, offset, limit int) ([]*core.PendingSend, error) {
+	out := make([]*core.PendingSend, 0)
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte{prefixPending}
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		i := 0
+		for it.Seek(prefix); it.ValidForPrefix(prefix) && len(out) < limit; it.Next() {
+			if i%pendingCtxCheck == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+			i++
+			if i <= offset {
+				continue
+			}
+			var ps core.PendingSend
+			if err := it.Item().Value(func(val []byte) error {
+				return json.Unmarshal(val, &ps)
+			}); err != nil {
+				return err
+			}
+			out = append(out, &ps)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *BadgerStore) CountPending() (int, error) {
+	totals, err := s.PendingTotals()
+	n := 0
+	for _, t := range totals {
+		n += t.Count
+	}
+	return n, err
 }
 
 func (s *BadgerStore) PutFrontier(account string, blockHash string) error {
@@ -665,12 +827,12 @@ func (s *BadgerStore) GetWeight(representative string) (*big.Int, error) {
 }
 
 func (s *BadgerStore) CommitBlock(c *core.BlockCommit) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		return applyCommitTxn(txn, c)
+	return s.updatePending(func(txn *badger.Txn, d pendingDelta) error {
+		return applyCommitTxn(txn, d, c)
 	})
 }
 
-func addToPendingAmountTxn(txn *badger.Txn, sendHash string, delta int64) error {
+func addToPendingAmountTxn(txn *badger.Txn, d pendingDelta, sendHash string, delta int64) error {
 	pendingKey := prefixedKey(prefixPending, sendHash)
 	item, err := txn.Get(pendingKey)
 	if err == badger.ErrKeyNotFound {
@@ -695,10 +857,10 @@ func addToPendingAmountTxn(txn *badger.Txn, sendHash string, delta int64) error 
 	if err != nil {
 		return err
 	}
-	return txn.Set(pendingKey, psData)
+	return putPendingTxn(txn, d, &ps, psData)
 }
 
-func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
+func applyCommitTxn(txn *badger.Txn, d pendingDelta, c *core.BlockCommit) error {
 	blockData, err := json.Marshal(c.Block)
 	if err != nil {
 		return fmt.Errorf("CommitBlock: marshal block: %w", err)
@@ -758,7 +920,7 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 			if err != nil {
 				return err
 			}
-			if err := txn.Set(prefixedKey(prefixPending, c.AddPending.SendHash), psData); err != nil {
+			if err := putPendingTxn(txn, d, c.AddPending, psData); err != nil {
 				return err
 			}
 
@@ -864,7 +1026,7 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 		}
 
 		if c.TopUpPendingID != "" {
-			if err := addToPendingAmountTxn(txn, c.TopUpPendingID, int64(c.TopUpPendingAmount)); err != nil {
+			if err := addToPendingAmountTxn(txn, d, c.TopUpPendingID, int64(c.TopUpPendingAmount)); err != nil {
 				return err
 			}
 		}
@@ -885,6 +1047,7 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 				if err := txn.Delete(pendingKey); err != nil {
 					return err
 				}
+				d.removed(&ps)
 
 				destKey := prefixedKey(prefixPendingDst, ps.Destination)
 				var destHashes []string
@@ -951,23 +1114,17 @@ func applyCommitTxn(txn *badger.Txn, c *core.BlockCommit) error {
 }
 
 func (s *BadgerStore) CommitUndo(u *core.BlockUndo) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		return applyUndoTxn(txn, u)
+	return s.updatePending(func(txn *badger.Txn, d pendingDelta) error {
+		return applyUndoTxn(txn, d, u, true)
 	})
 }
 
-func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
-	hashes := make([]string, len(u.Chain.Blocks))
-	for i, b := range u.Chain.Blocks {
-		hashes[i] = b.Hash
-	}
-	chainData, err := json.Marshal(hashes)
-	if err != nil {
-		return fmt.Errorf("CommitUndo: marshal chain: %w", err)
-	}
-
+func applyUndoTxn(txn *badger.Txn, d pendingDelta, u *core.BlockUndo, writeChain bool) error {
 	{
-		if u.DeleteAccount {
+		switch {
+		case !writeChain:
+
+		case u.DeleteAccount:
 
 			if err := txn.Delete(prefixedKey(prefixChain, u.Account)); err != nil {
 				return err
@@ -975,7 +1132,15 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 			if err := txn.Delete(prefixedKey(prefixFrontier, u.Account)); err != nil {
 				return err
 			}
-		} else {
+		default:
+			hashes := make([]string, len(u.Chain.Blocks))
+			for i, b := range u.Chain.Blocks {
+				hashes[i] = b.Hash
+			}
+			chainData, err := json.Marshal(hashes)
+			if err != nil {
+				return fmt.Errorf("CommitUndo: marshal chain: %w", err)
+			}
 
 			if err := txn.Set(prefixedKey(prefixChain, u.Account), chainData); err != nil {
 				return err
@@ -987,7 +1152,7 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 		}
 
 		if u.ReducePendingID != "" {
-			if err := addToPendingAmountTxn(txn, u.ReducePendingID, -int64(u.ReducePendingAmount)); err != nil {
+			if err := addToPendingAmountTxn(txn, d, u.ReducePendingID, -int64(u.ReducePendingAmount)); err != nil {
 				return err
 			}
 		}
@@ -1008,6 +1173,7 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 				if err := txn.Delete(pendingKey); err != nil {
 					return err
 				}
+				d.removed(&ps)
 				destKey := prefixedKey(prefixPendingDst, ps.Destination)
 				var destHashes []string
 				if it, err := txn.Get(destKey); err == nil {
@@ -1046,7 +1212,7 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 			if err != nil {
 				return err
 			}
-			if err := txn.Set(prefixedKey(prefixPending, u.AddPending.SendHash), psData); err != nil {
+			if err := putPendingTxn(txn, d, u.AddPending, psData); err != nil {
 				return err
 			}
 			destKey := prefixedKey(prefixPendingDst, u.AddPending.Destination)
@@ -1108,6 +1274,15 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 				return err
 			}
 		}
+		if u.RestoreKeyset != nil {
+			ksJSON, err := json.Marshal(u.RestoreKeyset)
+			if err != nil {
+				return err
+			}
+			if err := txn.Set(prefixedKey(prefixKeyset, u.Account), ksJSON); err != nil {
+				return err
+			}
+		}
 		if u.DeleteAccountKeyAccount != "" {
 			if err := txn.Delete(prefixedKey(prefixAccountKey, u.DeleteAccountKeyAccount)); err != nil {
 				return err
@@ -1118,14 +1293,19 @@ func applyUndoTxn(txn *badger.Txn, u *core.BlockUndo) error {
 }
 
 func (s *BadgerStore) CommitCascade(undos []*core.BlockUndo, commit *core.BlockCommit) error {
-	err := s.db.Update(func(txn *badger.Txn) error {
+
+	last := make(map[string]int, len(undos))
+	for i, u := range undos {
+		last[u.Account] = i
+	}
+	err := s.updatePending(func(txn *badger.Txn, d pendingDelta) error {
 		for i, u := range undos {
-			if err := applyUndoTxn(txn, u); err != nil {
+			if err := applyUndoTxn(txn, d, u, last[u.Account] == i); err != nil {
 				return fmt.Errorf("undo %d/%d (%s): %w", i+1, len(undos), shortStr(u.Account), err)
 			}
 		}
 		if commit != nil {
-			if err := applyCommitTxn(txn, commit); err != nil {
+			if err := applyCommitTxn(txn, d, commit); err != nil {
 				return fmt.Errorf("winner commit: %w", err)
 			}
 		}
@@ -1205,7 +1385,9 @@ func (s *BadgerStore) GetConflictsForAccount(account string) ([]*core.Conflict, 
 	prefix := conflictAccountPrefix(account)
 	conflicts := make([]*core.Conflict, 0)
 	err := s.db.View(func(txn *badger.Txn) error {
+
 		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
@@ -1231,7 +1413,9 @@ func (s *BadgerStore) GetAllConflicts() ([]*core.Conflict, error) {
 	prefix := []byte{prefixConflict}
 	conflicts := make([]*core.Conflict, 0)
 	err := s.db.View(func(txn *badger.Txn) error {
+
 		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
@@ -1407,7 +1591,9 @@ func (s *BadgerStore) GetVotesByConflict(account, previous string) ([]*core.Vote
 
 	votes := make([]*core.Vote, 0)
 	err = s.db.View(func(txn *badger.Txn) error {
+
 		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
@@ -1566,6 +1752,33 @@ func (s *BadgerStore) PutLease(lease *core.Lease) error {
 	}
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set(prefixedKey(prefixLease, lease.LeaseHash), data)
+	})
+}
+
+func (s *BadgerStore) ArchiveLease(lease *core.Lease) error {
+	return s.updatePending(func(txn *badger.Txn, d pendingDelta) error {
+		leaseKey := prefixedKey(prefixLease, lease.LeaseHash)
+		var cur core.Lease
+		item, err := txn.Get(leaseKey)
+		if err == nil {
+			err = item.Value(func(val []byte) error { return json.Unmarshal(val, &cur) })
+		}
+		if err != nil && err != badger.ErrKeyNotFound {
+			return err
+		}
+		if err == badger.ErrKeyNotFound || cur.State != core.LeaseAccepted || cur.Settled || cur.EffectiveExpiry() != lease.EffectiveExpiry() {
+			return fmt.Errorf("ArchiveLease: %w: lease %s changed", core.ErrLeaseStateConflict, shortStr(lease.LeaseHash))
+		}
+		if err := deletePendingTxn(txn, d, lease.LeaseHash); err != nil {
+			return err
+		}
+		cur.State = core.LeaseExpired
+		cur.Settled = true
+		data, err := json.Marshal(&cur)
+		if err != nil {
+			return err
+		}
+		return txn.Set(leaseKey, data)
 	})
 }
 

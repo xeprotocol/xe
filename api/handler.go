@@ -1,12 +1,15 @@
 package api
 
 import (
+	"container/list"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"io"
+	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,15 +37,15 @@ type nodeBackend interface {
 	GetKeyset(account string) *core.Keyset
 	GetReputation(account string) *core.ReputationAggregate
 	GetAllReputations() map[string]*core.ReputationAggregate
-	GetChain(account string) []*core.Block
+	GetChainRange(account string, from, to int) ([]*core.Block, int)
 	GetBlock(hash string) *core.Block
 	GetPending(account string) []*core.PendingSend
-	GetAllPending() []*core.PendingSend
+	GetPendingPage(ctx context.Context, offset, limit int) ([]*core.PendingSend, error)
 	GetFrontiers() map[string]string
-	GetFrontiersDetailed() []node.FrontierInfo
-	GetAllAccounts() []node.AccountSummary
+	GetFrontiersPage(offset, limit int) []node.FrontierInfo
+	GetAccountsPage(offset, limit int) []node.AccountSummary
 	GetSupply() *core.SupplyReport
-	GetRecentBlocks(limit int) []*core.Block
+	GetRecentBlocks(ctx context.Context, limit int) ([]*core.Block, error)
 	SubmitBlock(b *core.Block) error
 	GetConflicts(account string) []*core.Conflict
 	GetAllConflicts() []*core.Conflict
@@ -153,7 +156,7 @@ func (h *Handler) routes() []apiRoute {
 		{"GET", "/health", "Liveness: the process is up and its internal loops are running. Says nothing about consensus", h.handleHealth},
 		{"GET", "/ready", "Readiness: synced, peered, delegated vote weight present, quorum reachable, finality advancing. 503 when not ready", h.handleReady},
 
-		{"GET", "/accounts", "All known accounts with frontier hash and block count", h.handleGetAllAccounts},
+		{"GET", "/accounts", "All known accounts with frontier hash and block count", newPerClientLimit(maxHeavyListPerClient).wrap(h.handleGetAllAccounts)},
 		{"GET", "/accounts/{address}/balance", "Per-asset balance for an account", h.handleGetBalance},
 		{"GET", "/accounts/{address}/chain", "Full block chain for an account", h.handleGetChain},
 		{"GET", "/accounts/{address}/keyset", "Multisig keyset for an account, if any", h.handleGetKeyset},
@@ -163,7 +166,7 @@ func (h *Handler) routes() []apiRoute {
 
 		{"GET", "/supply", "Aggregate supply per asset and the conservation identity", h.handleGetSupply},
 
-		{"GET", "/pending", "All pending sends across accounts", h.handleGetAllPending},
+		{"GET", "/pending", "All pending sends across accounts", newPerClientLimit(maxHeavyListPerClient).wrap(h.handleGetAllPending)},
 		{"GET", "/pending/{address}", "Pending sends to a single account", h.handleGetPending},
 
 		{"GET", "/blocks/recent", "Most recent blocks across the lattice", h.handleGetRecentBlocks},
@@ -179,7 +182,7 @@ func (h *Handler) routes() []apiRoute {
 		{"POST", "/blocks/multisig_open", "Submit a signed multisig_open block", h.handleSubmitMultisigOpen},
 		{"POST", "/blocks/multisig_update", "Submit a signed multisig_update block", h.handleSubmitMultisigUpdate},
 		{"POST", "/blocks/burn", "Submit a signed burn block (XE only)", h.handleSubmitBurn},
-		{"POST", "/blocks/mint", "Submit a signed XUSD mint block (authorized minter only)", h.handleSubmitMint},
+		{"POST", "/blocks/mint", "Submit a signed XCU mint block (authorized minter only)", h.handleSubmitMint},
 
 		{"GET", "/conflicts", "All open conflicts", h.handleGetAllConflicts},
 		{"GET", "/delegation", "Representative vote weights in micro-XE", h.handleGetDelegation},
@@ -277,12 +280,14 @@ func corsMiddleware(next http.Handler, allowedOrigin string) http.Handler {
 
 type ipRateLimiter struct {
 	mu      sync.Mutex
-	entries map[string]*rateLimiterEntry
+	entries map[string]*list.Element
+	recency *list.List
 	rate    rate.Limit
 	burst   int
 }
 
 type rateLimiterEntry struct {
+	key      string
 	limiter  *rate.Limiter
 	lastSeen time.Time
 }
@@ -323,7 +328,8 @@ func (rls *rateLimiters) pick(r *http.Request) *ipRateLimiter {
 
 func newIPRateLimiter(r rate.Limit, burst int) *ipRateLimiter {
 	rl := &ipRateLimiter{
-		entries: make(map[string]*rateLimiterEntry),
+		entries: make(map[string]*list.Element),
+		recency: list.New(),
 		rate:    r,
 		burst:   burst,
 	}
@@ -331,40 +337,46 @@ func newIPRateLimiter(r rate.Limit, burst int) *ipRateLimiter {
 	return rl
 }
 
-func (rl *ipRateLimiter) getLimiter(ip string) *rate.Limiter {
+func (rl *ipRateLimiter) getLimiter(key string) *rate.Limiter {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	e, ok := rl.entries[ip]
-	if !ok {
-
-		if len(rl.entries) >= maxRateLimiterIPs {
-			return rate.NewLimiter(0, 0)
-		}
-		e = &rateLimiterEntry{limiter: rate.NewLimiter(rl.rate, rl.burst)}
-		rl.entries[ip] = e
+	now := time.Now()
+	if el, ok := rl.entries[key]; ok {
+		e := el.Value.(*rateLimiterEntry)
+		e.lastSeen = now
+		rl.recency.MoveToFront(el)
+		return e.limiter
 	}
-	e.lastSeen = time.Now()
+
+	if len(rl.entries) >= maxRateLimiterIPs {
+		oldest := rl.recency.Back()
+		delete(rl.entries, oldest.Value.(*rateLimiterEntry).key)
+		rl.recency.Remove(oldest)
+	}
+	e := &rateLimiterEntry{key: key, limiter: rate.NewLimiter(rl.rate, rl.burst), lastSeen: now}
+	rl.entries[key] = rl.recency.PushFront(e)
 	return e.limiter
 }
 
 func (rl *ipRateLimiter) sweepLoop() {
 	ticker := time.NewTicker(rateLimiterTTL)
 	for range ticker.C {
-		rl.mu.Lock()
-		cutoff := time.Now().Add(-rateLimiterTTL)
-		for ip, e := range rl.entries {
-			if e.lastSeen.Before(cutoff) {
-				delete(rl.entries, ip)
-			}
-		}
-		rl.mu.Unlock()
+		rl.sweep(time.Now().Add(-rateLimiterTTL))
+	}
+}
+
+func (rl *ipRateLimiter) sweep(cutoff time.Time) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	for el := rl.recency.Back(); el != nil && el.Value.(*rateLimiterEntry).lastSeen.Before(cutoff); el = rl.recency.Back() {
+		delete(rl.entries, el.Value.(*rateLimiterEntry).key)
+		rl.recency.Remove(el)
 	}
 }
 
 func rateLimitMiddleware(next http.Handler, rls *rateLimiters) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
-		if !rls.pick(r).getLimiter(ip).Allow() {
+		if !rls.pick(r).getLimiter(clientKey(clientIP(r))).Allow() {
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
@@ -382,8 +394,10 @@ func clientIP(r *http.Request) string {
 	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
-			return last
+		for i := len(parts) - 1; i >= 0; i-- {
+			if hop := strings.TrimSpace(parts[i]); hop != "" && !isLoopbackHost(hop) {
+				return hop
+			}
 		}
 	}
 	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
@@ -397,6 +411,21 @@ func isLoopbackHost(host string) bool {
 		return ip.IsLoopback()
 	}
 	return host == "localhost"
+}
+
+func clientKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	if a.Is4() {
+		return ip
+	}
+	if a.Is4In6() {
+		return a.Unmap().String()
+	}
+	p, _ := a.WithZone("").Prefix(64)
+	return p.String()
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -454,12 +483,11 @@ func (h *Handler) handleGetChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing address")
 		return
 	}
-	blocks := h.node.GetChain(address)
-
-	finalHeight := h.node.FinalHeight(address)
 
 	offset, limit := parsePagination(r)
-	page := paginateSlice(blocks, offset, limit)
+	page, total := h.node.GetChainRange(address, offset, offset+min(limit, math.MaxInt-offset))
+
+	finalHeight := h.node.FinalHeight(address)
 	views := make([]blockView, 0, len(page))
 	for i, b := range page {
 		height := uint64(offset + i + 1)
@@ -472,7 +500,7 @@ func (h *Handler) handleGetChain(w http.ResponseWriter, r *http.Request) {
 		Blocks  []blockView `json:"blocks"`
 	}{
 		Address: address,
-		Total:   len(blocks),
+		Total:   total,
 		Blocks:  views,
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -533,12 +561,17 @@ func (h *Handler) handleGetPending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pending := h.node.GetPending(address)
+	entries, err := h.enrichPending(r.Context(), pending)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "request cancelled")
+		return
+	}
 	resp := struct {
 		Address string         `json:"address"`
 		Pending []pendingEntry `json:"pending"`
 	}{
 		Address: address,
-		Pending: h.enrichPending(pending),
+		Pending: entries,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -552,9 +585,12 @@ type pendingEntry struct {
 	Timestamp   int64  `json:"Timestamp"`
 }
 
-func (h *Handler) enrichPending(pending []*core.PendingSend) []pendingEntry {
+func (h *Handler) enrichPending(ctx context.Context, pending []*core.PendingSend) ([]pendingEntry, error) {
 	entries := make([]pendingEntry, 0, len(pending))
 	for _, p := range pending {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var ts int64
 		if b := h.node.GetBlock(p.SendHash); b != nil {
 			ts = b.Timestamp
@@ -568,7 +604,7 @@ func (h *Handler) enrichPending(pending []*core.PendingSend) []pendingEntry {
 			Timestamp:   ts,
 		})
 	}
-	return entries
+	return entries, nil
 }
 
 const (
@@ -619,30 +655,64 @@ func parsePagination(r *http.Request) (offset, limit int) {
 	return
 }
 
+const maxHeavyListPerClient = 2
+
+type perClientLimit struct {
+	mu       sync.Mutex
+	max      int
+	inFlight map[string]int
+}
+
+func newPerClientLimit(max int) *perClientLimit {
+	return &perClientLimit{max: max, inFlight: make(map[string]int)}
+}
+
+func (l *perClientLimit) wrap(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip := clientKey(clientIP(r))
+		l.mu.Lock()
+		if l.inFlight[ip] >= l.max {
+			l.mu.Unlock()
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests, "too many concurrent list requests from this client, retry later")
+			return
+		}
+		l.inFlight[ip]++
+		l.mu.Unlock()
+		defer func() {
+			l.mu.Lock()
+			l.inFlight[ip]--
+			if l.inFlight[ip] == 0 {
+				delete(l.inFlight, ip)
+			}
+			l.mu.Unlock()
+		}()
+		next(w, r)
+	}
+}
+
 func (h *Handler) handleGetAllPending(w http.ResponseWriter, r *http.Request) {
 	offset, limit := parsePagination(r)
-	page := paginateSlice(h.node.GetAllPending(), offset, limit)
-	writeJSON(w, http.StatusOK, h.enrichPending(page))
+	page, err := h.node.GetPendingPage(r.Context(), offset, limit)
+	if err != nil {
+		if r.Context().Err() != nil {
+			writeError(w, http.StatusServiceUnavailable, "request cancelled")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "pending read failed")
+		return
+	}
+	entries, err := h.enrichPending(r.Context(), page)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "request cancelled")
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 func (h *Handler) handleGetAllAccounts(w http.ResponseWriter, r *http.Request) {
 	offset, limit := parsePagination(r)
-	accounts := h.node.GetAllAccounts()
-	sort.Slice(accounts, func(i, j int) bool {
-		if a, b := accounts[i].Balances["XE"], accounts[j].Balances["XE"]; a != b {
-			return a > b
-		}
-		return accounts[i].Address < accounts[j].Address
-	})
-	if offset >= len(accounts) {
-		writeJSON(w, http.StatusOK, []node.AccountSummary{})
-		return
-	}
-	end := offset + limit
-	if end > len(accounts) {
-		end = len(accounts)
-	}
-	writeJSON(w, http.StatusOK, accounts[offset:end])
+	writeJSON(w, http.StatusOK, h.node.GetAccountsPage(offset, limit))
 }
 
 func (h *Handler) handleGetSupply(w http.ResponseWriter, r *http.Request) {
@@ -651,20 +721,28 @@ func (h *Handler) handleGetSupply(w http.ResponseWriter, r *http.Request) {
 
 const recentCacheTTL = time.Second
 
-func (h *Handler) cachedRecentBlocks() []*core.Block {
+func (h *Handler) cachedRecentBlocks(ctx context.Context) ([]*core.Block, error) {
 	h.recentMu.Lock()
 	defer h.recentMu.Unlock()
 	if h.recentBlocks != nil && time.Since(h.recentAt) < recentCacheTTL {
-		return h.recentBlocks
+		return h.recentBlocks, nil
 	}
-	h.recentBlocks = h.node.GetRecentBlocks(maxPageLimit)
+	blocks, err := h.node.GetRecentBlocks(ctx, maxPageLimit)
+	if err != nil {
+		return nil, err
+	}
+	h.recentBlocks = blocks
 	h.recentAt = time.Now()
-	return h.recentBlocks
+	return h.recentBlocks, nil
 }
 
 func (h *Handler) handleGetRecentBlocks(w http.ResponseWriter, r *http.Request) {
 	_, limit := parsePagination(r)
-	blocks := h.cachedRecentBlocks()
+	blocks, err := h.cachedRecentBlocks(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "request cancelled")
+		return
+	}
 	if v := r.URL.Query().Get("since"); v != "" {
 		since, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
@@ -687,10 +765,8 @@ func (h *Handler) handleGetRecentBlocks(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) handleGetFrontiers(w http.ResponseWriter, r *http.Request) {
 	offset, limit := parsePagination(r)
-	frontiers := h.node.GetFrontiersDetailed()
 
-	sort.Slice(frontiers, func(i, j int) bool { return frontiers[i].Account < frontiers[j].Account })
-	writeJSON(w, http.StatusOK, paginateSlice(frontiers, offset, limit))
+	writeJSON(w, http.StatusOK, h.node.GetFrontiersPage(offset, limit))
 }
 
 func (h *Handler) handleGetAllConflicts(w http.ResponseWriter, r *http.Request) {
@@ -721,6 +797,11 @@ func (h *Handler) handleGetAccountConflicts(w http.ResponseWriter, r *http.Reque
 
 func (h *Handler) handleGetNodeInfo(w http.ResponseWriter, r *http.Request) {
 	info := h.node.GetNodeInfo()
+	if h.observer != nil {
+		if s := h.observer.Snapshot(); s != nil {
+			info.PendingSends = s.PendingSends
+		}
+	}
 	writeJSON(w, http.StatusOK, info)
 }
 

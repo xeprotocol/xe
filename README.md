@@ -6,7 +6,7 @@
 
 <p align="center">
   A decentralized compute &amp; networking platform.<br>
-  Lease real VMs from strangers, pay with a stablecoin, settle on a ledger with no fees and no miners.
+  Lease real VMs from strangers, pay with prepaid compute credit, settle on a ledger with no fees and no miners.
 </p>
 
 <p align="center">
@@ -30,11 +30,11 @@
 >   testnet and re-bootstrapping. Your balances, accounts and history are
 >   discarded when that happens, on purpose and without warning.
 > - **XE has no monetary value.** Testnet coins are for testing.
-> - The current network is **`testnet-0005`**.
+> - The current network is **`testnet-0006`**.
 
 ## What XE is
 
-Consumers pay **XUSD** (a stablecoin) to lease real VMs from providers.
+Consumers pay **XCU** (XE Compute Unit, a prepaid compute credit) to lease real VMs from providers.
 Providers earn newly minted **XE** when a lease settles — that settlement is the
 only way XE is created after genesis. Around that sit signed peer-to-peer
 messaging, an account directory, SSH into leased VMs over the p2p network, and
@@ -48,9 +48,9 @@ commit-lock, then an irrevocable final vote at ≥67% of delegated weight.
 
 Two coins, one ledger:
 
-| | XE | XUSD |
+| | XE | XCU |
 |---|---|---|
-| Role | native coin, consensus weight, provider earnings | stablecoin, pays for compute |
+| Role | native coin, consensus weight, provider earnings | prepaid compute credit, issued 1:1 against USD deposits, pays for compute; converts to XE at the bridge, never withdrawable to dollars |
 | Supply | 42,000,000 at genesis + lease emission | permissioned mint by the `sys.minter` set (a bridge; none is deployed today) |
 | Votes | yes — delegated XE is the only vote weight | never |
 | Fees | zero | zero |
@@ -60,19 +60,19 @@ Both use 6 decimal places, and every amount on the wire is an integer count of
 
 ## What works today
 
-Honest status against the live `testnet-0005`, as of this release:
+Honest status against the live `testnet-0006`, as of this release:
 
 | Area | Status |
 |---|---|
 | Build the binary, run a node, sync the chain | ✅ works |
 | Wallets, addresses, keys (`xe wallet …`) | ✅ works |
-| Send / receive / balances, XE and XUSD | ✅ works |
+| Send / receive / balances, XE and XCU | ✅ works |
 | Burn XE | ✅ works |
 | Explorer + wallet web UI embedded in the node | ✅ works |
 | REST API and SSE streams | ✅ works |
 | Signed p2p chat | ✅ works, end-to-end payload encryption is not done |
-| **Faucet (`xe faucet`)** | ✅ works — grants **1,000 XE** per address per rolling 24 hours, from a funded wallet. |
-| **Leasing a VM, `xe lease` / `xe ssh`** | Requires XUSD and an available provider; check current provider advertisements with the command below. |
+| **Faucet (`xe faucet`)** | ✅ works — grants **1 XE** from a funded wallet, at most 5 grants per address and 5 per IP address in any 15 minutes. Claims from VPN, proxy and hosting networks are refused. |
+| **Leasing a VM, `xe lease` / `xe ssh`** | Requires XCU and an available provider; check current provider advertisements with the command below. |
 | GPU leasing | 🚧 not implemented |
 | Proof of uptime | 🚧 design stage |
 | Key rotation, dispute arbitration | 🚧 design stage |
@@ -193,8 +193,8 @@ Recovery phrase:
 The actual output contains 24 numbered BIP39 words and backup instructions.
 Write them down before using the wallet. The phrase is your only backup unless
 you keep the hex seed separately. Anyone with the backup controls the wallet.
-XE uses BIP39 + SLIP-0010 ed25519 at `m/44'/1'/account'` (default account 0;
-coin type 1 is provisional). Import accepts 12, 15, 18, 21 or 24 words.
+XE uses BIP39 + SLIP-0010 ed25519 at `m/44'/22597'/account'` (default account
+0). Import accepts 12, 15, 18, 21 or 24 words.
 
 `./xe wallet restore [--account N] [--passphrase]` reads words from stdin.
 `--passphrase` opts into a separate hidden BIP39 passphrase prompt, never argv.
@@ -223,8 +223,8 @@ printf "Bob's address: "
 read -r BOB_ADDRESS
 ```
 
-**2. Fund Alice from the faucet.** The faucet grants 1,000 XE per address per
-rolling 24 hours.
+**2. Fund Alice from the faucet.** The faucet grants 1 XE, up to 5 times per
+address every 15 minutes.
 
 ```sh
 XE_WALLET=~/.xe/alice.seed ./xe faucet
@@ -241,11 +241,11 @@ lands in your account without a block signed by you.
 XE_WALLET=~/.xe/alice.seed ./xe wallet balance
 ```
 
-**4. Send Bob 25 XE** using the address saved in step 1.
+**4. Send Bob 0.25 XE** using the address saved in step 1.
 
 ```sh
 XE_WALLET=~/.xe/alice.seed ./xe send \
-  "$BOB_ADDRESS" 25 --asset XE --memo "hello world"
+  "$BOB_ADDRESS" 0.25 --asset XE --memo "hello world"
 ```
 
 **5. Bob receives it.**
@@ -297,8 +297,8 @@ checkout embeds a placeholder genesis that no live network uses.
 before starting the node, and compare its hashes with the table below:
 
 ```sh
-./xe verify-genesis --genesis-dir ./genesis/testnet-0005 \
-  --expect-network-id testnet-0005
+./xe verify-genesis --genesis-dir ./genesis/testnet-0006 \
+  --expect-network-id testnet-0006
 ```
 
 `--data` stores persistent node state and identity. The node creates the
@@ -311,8 +311,8 @@ Start the node after verification succeeds:
 
 ```sh
 ./xe node \
-  --data "$HOME/.xe/testnet-0005" \
-  --genesis-dir ./genesis/testnet-0005 \
+  --data "$HOME/.xe/testnet-0006" \
+  --genesis-dir ./genesis/testnet-0006 \
   --dial /ip4/45.77.226.208/tcp/9000/p2p/12D3KooWJg4PQYGSfNCupBWZdEWbKj7pgdp5MmmUXbPdBcp6YDtT,/ip4/144.202.4.117/tcp/9000/p2p/12D3KooWEqv1BRZkSntgcgbrJh7bobFRSkBdRupubvNZLEx8hZLA \
   --port 9000 --api --api-port 8080
 ```
@@ -323,18 +323,18 @@ Keep it running and, from another terminal, check the local node:
 curl -fsS http://127.0.0.1:8080/node
 ```
 
-Confirm `network_id` is `testnet-0005` and `peer_count` becomes greater than
+Confirm `network_id` is `testnet-0006` and `peer_count` becomes greater than
 zero. The API listens on loopback by default; adding `--ui` also serves the
 explorer and wallet at `http://127.0.0.1:8000`.
 
-### Network parameters — `testnet-0005`
+### Network parameters — `testnet-0006`
 
 | Parameter | Value |
 |---|---|
-| `network_id` | `testnet-0005` |
-| ledger genesis hash | `3ff640410d7879821b544d09545dcfb8e96fe4fc717634e8bff4e53cacd1e150` |
-| statechain genesis hash | `d01aabc1a29dc64bc6bbc30031a716cd2e0ceb867e5479953cd5ad22c8f296d6` |
-| genesis bundle | [`genesis/testnet-0005/`](genesis/testnet-0005) |
+| `network_id` | `testnet-0006` |
+| ledger genesis hash | `65d9070a304303350cfd4f6a17a23efb4831894f61bc983805011e10e1b6fc82` |
+| statechain genesis hash | `59b9875cd2f0e51d736c5be424012ab4abaf0ad38d69b5b22e942405132c284a` |
+| genesis bundle | [`genesis/testnet-0006/`](genesis/testnet-0006) |
 | bootstrap (London) | `/ip4/45.77.226.208/tcp/9000/p2p/12D3KooWJg4PQYGSfNCupBWZdEWbKj7pgdp5MmmUXbPdBcp6YDtT` |
 | bootstrap (Frankfurt) | `/ip4/192.248.176.245/tcp/9000/p2p/12D3KooWEbQ5zDvSz6kKE5ppzwBXKRFsnZbHNjRx94QZFaPeGA4e` |
 | bootstrap (New York) | `/ip4/144.202.4.117/tcp/9000/p2p/12D3KooWEqv1BRZkSntgcgbrJh7bobFRSkBdRupubvNZLEx8hZLA` |
@@ -374,10 +374,15 @@ Please report it. There is a paid bug bounty — currently **Phase 1:
 transactions & running a node**, which is exactly the surface this README walks
 you through.
 
-- Read the scope and reward tiers: **[test.network/bounty](https://test.network/bounty)**
-- File it as an issue on this repository
-- **Critical or severe findings** — anything risking funds or the network — go
-  privately to `security@xe.network` first, not a public issue.
+- Read about the bug bounty, its scope and its reward tiers at
+  **[test.network/bounty](https://test.network/bounty)**.
+- Report the bug at **[bounty.xe.network](https://bounty.xe.network/)**. Sign in
+  with GitHub or with a key you make on the site, and the report gets its own id
+  and page at once.
+- **Critical or severe findings**, anything that risks funds or the network, go
+  through the report form at
+  **[bounty.xe.network/report](https://bounty.xe.network/report)**, which keeps
+  them private. Do not open a public issue for them.
 
 ## Docs
 

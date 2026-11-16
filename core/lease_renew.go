@@ -3,8 +3,8 @@ package core
 import "fmt"
 
 func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
-	if b.Asset != "XUSD" {
-		return fmt.Errorf("lease_renew block must have asset=XUSD")
+	if b.Asset != "XCU" {
+		return fmt.Errorf("lease_renew block must have asset=XCU")
 	}
 	if b.Source == "" {
 		return fmt.Errorf("lease_renew must reference a source lease hash")
@@ -42,14 +42,11 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 		return fmt.Errorf("lease_renew: cumulative duration %d + %d exceeds max %d", lease.EffectiveDurationSecs(), b.Duration, LeaseMaxDuration)
 	}
 
-	if l.timekeeperConfigFn == nil {
+	tkEras := l.timekeeperEras()
+	if len(tkEras) == 0 {
 		return fmt.Errorf("lease_renew: timekeepers not configured")
 	}
-	tkConfig := l.timekeeperConfigFn()
-	if tkConfig == nil {
-		return fmt.Errorf("lease_renew: timekeepers not configured")
-	}
-	renewTime, err := ValidateAttestations(b.Attestations, b.Source, tkConfig, skipSkew)
+	renewTime, err := ValidateAttestationsAt(b.Attestations, b.Source, tkEras, skipSkew)
 	if err != nil {
 		return fmt.Errorf("lease_renew attestation: %w", err)
 	}
@@ -121,9 +118,9 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 		}
 	}
 
-	oldBal := l.getAssetBalanceOverlay(b.Account, "XUSD")
+	oldBal := l.getAssetBalanceOverlay(b.Account, "XCU")
 	if b.Amount > oldBal {
-		return fmt.Errorf("insufficient XUSD balance for renewal: have %d, need %d", oldBal, b.Amount)
+		return fmt.Errorf("insufficient XCU balance for renewal: have %d, need %d", oldBal, b.Amount)
 	}
 	if b.Balance != oldBal-b.Amount {
 		return fmt.Errorf("balance mismatch: expected %d, got %d", oldBal-b.Amount, b.Balance)

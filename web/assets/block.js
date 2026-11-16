@@ -183,7 +183,7 @@ function renderValue(key, value, block) {
   if (value == null) return text('–');
 
   if (AMOUNT_KEYS.has(key) && typeof value === 'number') {
-    const asset = key === 'cost' ? 'XUSD' : (block && block.asset) || 'XE';
+    const asset = key === 'cost' ? 'XCU' : (block && block.asset) || 'XE';
     return text(formatAmount(value, asset));
   }
 
