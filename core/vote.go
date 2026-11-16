@@ -141,8 +141,20 @@ func (vm *VoteManager) receiveVoteInner(v *Vote) error {
 	}
 
 	conflict := vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev)
-	if conflict != nil && conflict.WeightSnapshot != nil {
-		v.Weight = conflict.WeightSnapshot[v.RepAccount()]
+	if conflict != nil {
+		if !containsConflictHash(conflict.BlockHashes, v.BlockHash) {
+			return fmt.Errorf("vote block %s is not a candidate in conflict %s/%s", v.BlockHash, v.ConflictAccount, v.ConflictPrev)
+		}
+		if conflict.WeightSnapshot != nil {
+			v.Weight = conflict.WeightSnapshot[v.RepAccount()]
+		} else {
+			w := vm.ledger.GetVoteWeight(v.RepAccount())
+			if w.IsUint64() {
+				v.Weight = w.Uint64()
+			} else {
+				v.Weight = 0
+			}
+		}
 	} else {
 		w := vm.ledger.GetVoteWeight(v.RepAccount())
 		if w.IsUint64() {
