@@ -72,6 +72,7 @@ type nodeBackend interface {
 	RegisterAccount(reg *directory.Registration) error
 	ListDirectory() []*directory.Registration
 	LookupDirectory(account string) *directory.Registration
+	RemoveDirectory(account string)
 	GetVMs() []*vm.Info
 	GetVM(leaseHash string) *vm.Info
 	RequestAndCreateLease(ctx context.Context, vcpus, memoryMB, diskGB, duration uint64, accessPubKey string) (string, error)
@@ -214,6 +215,7 @@ func (h *Handler) routes() []apiRoute {
 		{"GET", "/directory", "All directory registrations (account → libp2p peer)", h.handleDirectoryList},
 		{"GET", "/directory/{account}", "Directory entry for an account", h.handleDirectoryLookup},
 		{"POST", "/directory/register", "Register own account in the directory", h.handleDirectoryRegister},
+		{"DELETE", "/directory/{account}", "Remove account from directory (operator)", h.handleDirectoryRemove},
 
 		{"POST", "/chat/send", "Send a chat message", h.handleChatSend},
 		{"GET", "/chat/auth/challenge", "Issue a challenge to sign for chat read ownership proof", h.handleChatChallenge},

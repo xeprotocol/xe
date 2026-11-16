@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/xeprotocol/xe/core"
 )
 
 const registrationDomainTag = "xe/directory-registration/v1\x00"
+const MaxRegistrationSkew = 5 * time.Minute
 
 func canonicalBytes(account, pubKey, nodePeer string, timestamp int64) []byte {
 	var b bytes.Buffer
@@ -41,6 +43,15 @@ func VerifyRegistration(reg *Registration) error {
 	}
 	if reg.Signature == "" {
 		return fmt.Errorf("missing signature")
+	}
+
+	now := core.Now().UnixNano()
+	skew := now - reg.Timestamp
+	if skew < -int64(MaxRegistrationSkew) {
+		return fmt.Errorf("registration timestamp too far in future: %s", time.Duration(-skew))
+	}
+	if skew > int64(DefaultTTL+MaxRegistrationSkew) {
+		return fmt.Errorf("registration timestamp expired / too far in past: %s", time.Duration(skew))
 	}
 
 	if err := core.VerifyPayloadKey(reg.PubKey, reg.Account); err != nil {
