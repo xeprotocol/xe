@@ -238,6 +238,10 @@ func walletPath() string {
 	return filepath.Join(home, ".xe", "wallet.seed")
 }
 
+var outboundHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
 func apiClient() *client.Client {
 	return client.New(nodeURL())
 }
@@ -786,7 +790,7 @@ func cmdFaucet() {
 	addr := kp.Address()
 
 	reqBody, _ := json.Marshal(map[string]string{"address": addr})
-	resp, err := http.Post(faucetURL()+"/request", "application/json", strings.NewReader(string(reqBody)))
+	resp, err := outboundHTTPClient.Post(faucetURL()+"/request", "application/json", strings.NewReader(string(reqBody)))
 	if err != nil {
 		fatal("faucet request: %v", err)
 	}
@@ -1131,7 +1135,7 @@ func cmdLeaseRenew(hash, secsStr string) {
 	req, _ := http.NewRequest("POST", nodeURL()+"/lease/"+hash+"/renew", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outboundHTTPClient.Do(req)
 	if err != nil {
 		fatal("renew request: %v", err)
 	}
