@@ -256,12 +256,14 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	var featureActiveFn func(feature string) bool
 
 	var certLookupFn func(hash string) *core.CertificateInfo
+	var currentCertLookupFn func(provider string) *core.CertificateInfo
 	ledger := core.NewLedger(s, core.LedgerConfig{
 		Difficulty:          cfg.Difficulty,
 		TimestampWindow:     core.DefaultTimestampWindow,
 		TimekeeperErasFn:    func() []core.TimekeeperEra { return timekeeperErasFn() },
 		MinterConfigFn:      func() *core.MinterConfig { return minterConfigFn() },
-		CertificateLookupFn: func(hash string) *core.CertificateInfo { return certLookupFn(hash) },
+		CertificateLookupFn:        func(hash string) *core.CertificateInfo { return certLookupFn(hash) },
+		CurrentCertificateLookupFn: func(provider string) *core.CertificateInfo { return currentCertLookupFn(provider) },
 		EpochRFn:            func() uint64 { return epochRFn() },
 		EpochPayoutCapFn:    func() uint64 { return epochPayoutCapFn() },
 		EpochTWAPFn:         func() uint64 { return epochTWAPFn() },
@@ -498,6 +500,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 	n.registerAttestationHandler()
 
 	certLookupFn = n.certificateInfoByHash
+	currentCertLookupFn = n.currentCertificateInfoByProvider
 
 	n.registerVMHandlers()
 	n.registerChatHandler()
