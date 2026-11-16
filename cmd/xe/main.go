@@ -151,7 +151,7 @@ Usage: xe <command> [args]
 Node:
   node [flags]            Start a node daemon
                           Flags include:
-                            --api (default true), --api-port 8080, --api-bind 127.0.0.1
+                            --api (default true), --api-port 8080, --api-bind 127.0.0.1, --api-trusted-proxy (default false)
                             --ui (default false), --ui-port 8000, --ui-bind 127.0.0.1
                             --ui-dir <path>   serve UI from disk (dev)
                             --ui-faucet <url> proxy /faucet/* to this faucet service (empty = disabled)
@@ -1290,6 +1290,7 @@ func cmdNode(args []string) {
 	apiEnabled := flags.Bool("api", true, "Enable HTTP API server")
 	apiPort := flags.Int("api-port", 8080, "HTTP API listen port")
 	apiBind := flags.String("api-bind", "127.0.0.1", "HTTP API bind address")
+	apiTrustedProxy := flags.Bool("api-trusted-proxy", false, "Trust X-Forwarded-For headers from reverse proxy for client IP resolution")
 	corsOrigin := flags.String("cors-origin", "", "Allowed CORS origin")
 	uiEnabled := flags.Bool("ui", false, "Enable embedded web UI server")
 	uiPort := flags.Int("ui-port", 8000, "Web UI listen port")
@@ -1447,6 +1448,9 @@ func cmdNode(args []string) {
 		h.SetObserver(observer)
 		if *corsOrigin != "" {
 			h.SetCORSOrigin(*corsOrigin)
+		}
+		if *apiTrustedProxy || os.Getenv("XE_API_TRUSTED_PROXY") == "true" || os.Getenv("XE_API_TRUSTED_PROXY") == "1" {
+			h.SetTrustedProxy(true)
 		}
 
 		h.SetAdminToken(os.Getenv("XE_API_ADMIN_TOKEN"))
