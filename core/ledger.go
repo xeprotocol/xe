@@ -105,6 +105,7 @@ func LeaseCost(vcpus, memoryMB, diskGB, duration, multiplierMilli uint64) (uint6
 }
 
 var ErrInvalidPoW = errors.New("invalid proof of work")
+var ErrUnopenedAccount = errors.New("unopened account has no declared public key")
 
 const DefaultTimestampWindow = int64(time.Hour)
 
@@ -1413,7 +1414,7 @@ func (l *Ledger) rebuildAccountKeys() {
 	}
 }
 
-func (l *Ledger) verifyBlockCredential(b *Block) error {
+func (l *Ledger) VerifyBlockCredential(b *Block) error {
 	if err := ValidatePubKeyDeclaration(b); err != nil {
 		return err
 	}
@@ -1421,6 +1422,19 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 	if len(b.Signatures) > 0 {
 		var ks *Keyset
 		if b.Type == BlockMultisigOpen {
+			if b.MSKeyset == nil {
+				return fmt.Errorf("multisig_open must include a keyset")
+			}
+			if err := ValidateKeyset(b.MSKeyset); err != nil {
+				return fmt.Errorf("multisig_open keyset: %w", err)
+			}
+			expected, err := DeriveMultisigAddress(b.MSKeyset)
+			if err != nil {
+				return fmt.Errorf("derive address: %w", err)
+			}
+			if b.Account != expected {
+				return fmt.Errorf("multisig_open account mismatch: got %s, want %s", shortHash(b.Account), shortHash(expected))
+			}
 			ks = b.MSKeyset
 		} else {
 			ks = l.GetKeyset(b.Account)
@@ -1444,6 +1458,10 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 		return nil
 	}
 
+	if b.Type == BlockMultisigOpen && len(b.Signatures) == 0 {
+		return fmt.Errorf("multisig_open requires signatures")
+	}
+
 	if l.GetKeyset(b.Account) != nil {
 
 		return fmt.Errorf("multisig account requires signatures")
@@ -1455,13 +1473,17 @@ func (l *Ledger) verifyBlockCredential(b *Block) error {
 	} else {
 		pubKey = l.GetAccountKey(b.Account)
 		if pubKey == "" {
-			return fmt.Errorf("signature: unopened account %s has no declared public key", shortAddr(b.Account))
+			return fmt.Errorf("signature: %w for %s", ErrUnopenedAccount, shortAddr(b.Account))
 		}
 	}
 	if err := VerifyBlockSignatureWith(b, pubKey); err != nil {
 		return fmt.Errorf("signature: %w", err)
 	}
 	return nil
+}
+
+func (l *Ledger) verifyBlockCredential(b *Block) error {
+	return l.VerifyBlockCredential(b)
 }
 
 func (l *Ledger) resolveMissingKeyset(account string) (*Keyset, error) {

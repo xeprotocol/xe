@@ -22,6 +22,8 @@ type GossipConfig struct {
 	ScoreInspect func(map[peer.ID]float64)
 
 	ScoreInspectInterval time.Duration
+
+	VerifyBlock func(*core.Block) error
 }
 
 func gossipTopics() []string {
@@ -74,13 +76,27 @@ func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 			return pubsub.ValidationReject
 		}
 
-		if len(b.Signature) != 128 && len(b.Signatures) == 0 {
-			return pubsub.ValidationReject
+		if len(b.Signatures) == 0 {
+			if len(b.Signature) != 128 {
+				return pubsub.ValidationReject
+			}
+			if _, err := hex.DecodeString(b.Signature); err != nil {
+				return pubsub.ValidationReject
+			}
+		} else {
+			for _, sig := range b.Signatures {
+				if len(sig.Sig) != 128 {
+					return pubsub.ValidationReject
+				}
+				if _, err := hex.DecodeString(sig.Sig); err != nil {
+					return pubsub.ValidationReject
+				}
+			}
 		}
 
 		expected, err := core.HashBlock(b)
 		if err != nil || expected != b.Hash {
-			return pubsub.ValidationIgnore
+			return pubsub.ValidationReject
 		}
 
 		if cfg.Difficulty > 0 {
@@ -89,6 +105,19 @@ func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 				return pubsub.ValidationReject
 			}
 			if !core.ValidatePoW(hashBytes, b.PoWNonce, cfg.Difficulty) {
+				return pubsub.ValidationReject
+			}
+		}
+
+		if err := core.VerifyBlock(b); err != nil {
+			return pubsub.ValidationReject
+		}
+
+		if cfg.VerifyBlock != nil {
+			if err := cfg.VerifyBlock(b); err != nil {
+				if core.IsRetryableError(err) {
+					return pubsub.ValidationIgnore
+				}
 				return pubsub.ValidationReject
 			}
 		}

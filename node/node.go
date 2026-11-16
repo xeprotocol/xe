@@ -162,9 +162,21 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 
 	xenet.SetupNetworkCheck(h, gater)
 
+	var verifyBlockMu sync.RWMutex
+	var verifyBlockFn func(*core.Block) error
+
 	ps, err := xenet.NewPubSub(ctx, h, xenet.GossipConfig{
 		Difficulty: cfg.Difficulty,
 		Trusted:    gater.IsTrusted,
+		VerifyBlock: func(b *core.Block) error {
+			verifyBlockMu.RLock()
+			fn := verifyBlockFn
+			verifyBlockMu.RUnlock()
+			if fn != nil {
+				return fn(b)
+			}
+			return core.VerifyBlock(b)
+		},
 	})
 	if err != nil {
 		cancel()
@@ -265,6 +277,10 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		EpochAtFn:           func(ns int64) []core.EpochParams { return epochAtFn(ns) },
 		FeatureActiveFn:     func(feature string) bool { return featureActiveFn(feature) },
 	})
+
+	verifyBlockMu.Lock()
+	verifyBlockFn = ledger.VerifyBlockCredential
+	verifyBlockMu.Unlock()
 
 	vs := s.(core.VoteStore)
 	cs := s.(core.ConflictStore)

@@ -156,7 +156,29 @@ func VerifyBlock(b *Block) error {
 	}
 
 	if len(b.Signatures) > 0 {
+		if b.Type == BlockMultisigOpen {
+			if b.MSKeyset == nil {
+				return fmt.Errorf("multisig_open must include a keyset")
+			}
+			if err := ValidateKeyset(b.MSKeyset); err != nil {
+				return fmt.Errorf("multisig keyset: %w", err)
+			}
+			expectedAddr, err := DeriveMultisigAddress(b.MSKeyset)
+			if err != nil {
+				return fmt.Errorf("derive multisig address: %w", err)
+			}
+			if b.Account != expectedAddr {
+				return fmt.Errorf("multisig address mismatch: got %s, want %s", b.Account, expectedAddr)
+			}
+			if err := VerifyMultisig(b.Hash, b.Signatures, b.MSKeyset); err != nil {
+				return fmt.Errorf("multisig: %w", err)
+			}
+		}
 		return nil
+	}
+
+	if b.Type == BlockMultisigOpen && len(b.Signatures) == 0 {
+		return fmt.Errorf("multisig_open requires signatures")
 	}
 
 	if b.Previous != "0" {
