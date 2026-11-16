@@ -40,6 +40,7 @@ type nodeBackend interface {
 	GetAllPending() []*core.PendingSend
 	GetFrontiers() map[string]string
 	GetFrontiersDetailed() []node.FrontierInfo
+	GetFrontiersDetailedPaged(offset, limit int) []node.FrontierInfo
 	GetAllAccounts() []node.AccountSummary
 	GetSupply() *core.SupplyReport
 	GetRecentBlocks(limit int) []*core.Block
@@ -97,6 +98,10 @@ type Handler struct {
 	recentMu     sync.Mutex
 	recentBlocks []*core.Block
 	recentAt     time.Time
+
+	frontiersMu    sync.Mutex
+	frontiersAt    time.Time
+	frontiersPages map[string][]node.FrontierInfo
 
 	observer *node.Observer
 }
@@ -685,12 +690,29 @@ func (h *Handler) handleGetRecentBlocks(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, blocks)
 }
 
+const frontiersCacheTTL = time.Second
+
+func (h *Handler) getFrontiersPaged(offset, limit int) []node.FrontierInfo {
+	h.frontiersMu.Lock()
+	defer h.frontiersMu.Unlock()
+	key := strconv.Itoa(offset) + ":" + strconv.Itoa(limit)
+	if h.frontiersPages != nil && time.Since(h.frontiersAt) < frontiersCacheTTL {
+		if page, ok := h.frontiersPages[key]; ok {
+			return page
+		}
+	} else {
+		h.frontiersPages = make(map[string][]node.FrontierInfo)
+		h.frontiersAt = time.Now()
+	}
+
+	page := h.node.GetFrontiersDetailedPaged(offset, limit)
+	h.frontiersPages[key] = page
+	return page
+}
+
 func (h *Handler) handleGetFrontiers(w http.ResponseWriter, r *http.Request) {
 	offset, limit := parsePagination(r)
-	frontiers := h.node.GetFrontiersDetailed()
-
-	sort.Slice(frontiers, func(i, j int) bool { return frontiers[i].Account < frontiers[j].Account })
-	writeJSON(w, http.StatusOK, paginateSlice(frontiers, offset, limit))
+	writeJSON(w, http.StatusOK, h.getFrontiersPaged(offset, limit))
 }
 
 func (h *Handler) handleGetAllConflicts(w http.ResponseWriter, r *http.Request) {
