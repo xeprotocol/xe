@@ -68,7 +68,7 @@ func main() {
 		}
 	case "send":
 		if len(args) < 2 {
-			fatal("usage: xe send <address> <amount> [--asset XUSD]")
+			fatal("usage: xe send <address> <amount> [--asset XE|XUSD] [--memo \"text\"]")
 		}
 		cmdSend(args)
 	case "receive":
@@ -168,7 +168,7 @@ Wallet:
 
 Transactions:
   send <addr> <amount> [--asset XE|XUSD] [--memo "text"]
-                          Send funds; --memo attaches up to 64 bytes of UTF-8
+                          Send funds (default asset: XE); --memo attaches up to 64 bytes of UTF-8
   receive                 Receive all pending sends
   faucet                  Request testnet XUSD from the faucet service to your wallet
   mint <amount>           Mint XUSD (authorized minter wallet only; ops/bootstrap)
@@ -664,15 +664,13 @@ func cmdWalletBalance() {
 	}
 }
 
-func cmdSend(args []string) {
-	initNetworkID()
-	kp := loadWallet()
-	addr := kp.Address()
-	c := apiClient()
-
-	dest := args[0]
-	asset := "XUSD"
-	memo := ""
+func parseSendArgs(args []string) (dest string, asset string, memo string, amountStr string, err error) {
+	if len(args) < 2 {
+		return "", "", "", "", fmt.Errorf("usage: xe send <address> <amount> [--asset XE|XUSD] [--memo \"text\"]")
+	}
+	dest = args[0]
+	amountStr = args[1]
+	asset = "XE"
 	for i, a := range args {
 		if a == "--asset" && i+1 < len(args) {
 			asset = args[i+1]
@@ -681,13 +679,27 @@ func cmdSend(args []string) {
 			memo = args[i+1]
 		}
 	}
+	return dest, asset, memo, amountStr, nil
+}
+
+func cmdSend(args []string) {
+	dest, asset, memo, amountStr, err := parseSendArgs(args)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	initNetworkID()
+	kp := loadWallet()
+	addr := kp.Address()
+	c := apiClient()
+
 	assetCfg, ok := core.AssetByName(asset)
 	if !ok {
 		fatal("unknown asset %q", asset)
 	}
-	amount, err := core.ParseAmount(args[1], assetCfg)
+	amount, err := core.ParseAmount(amountStr, assetCfg)
 	if err != nil {
-		fatal("invalid amount %q: %v", args[1], err)
+		fatal("invalid amount %q: %v", amountStr, err)
 	}
 	if amount == 0 {
 		fatal("send amount must be greater than zero")
