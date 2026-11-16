@@ -3,44 +3,87 @@ package chat
 import (
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/xeprotocol/xe/core"
 )
 
-const maxSeenIDs = 100_000
+const (
+	maxSeenIDs  = 100_000
+	maxAccounts = 10_000
+)
 
 type ChatStore struct {
 	mu            sync.RWMutex
 	messages      map[string][]*Envelope
 	seen          map[string]int64
+	seenOrder     []string
+	accountOrder  []string
+	lastPrune     time.Time
 	maxPerAccount int
+	maxAccounts   int
+	maxSeen       int
 	listeners     []chan *Envelope
 	listenerMu    sync.Mutex
 }
 
 func NewChatStore(maxPerAccount int) *ChatStore {
+	return NewChatStoreWithLimits(maxPerAccount, maxAccounts, maxSeenIDs)
+}
+
+func NewChatStoreWithLimits(maxPerAccount, maxAccts, maxSeen int) *ChatStore {
 	return &ChatStore{
 		messages:      make(map[string][]*Envelope),
 		seen:          make(map[string]int64),
+		seenOrder:     make([]string, 0),
+		accountOrder:  make([]string, 0),
 		maxPerAccount: maxPerAccount,
+		maxAccounts:   maxAccts,
+		maxSeen:       maxSeen,
 		listeners:     make([]chan *Envelope, 0),
 	}
 }
 
+func (s *ChatStore) maxSeenCap() int {
+	if s.maxSeen <= 0 {
+		return maxSeenIDs
+	}
+	return s.maxSeen
+}
+
+func (s *ChatStore) maxAccountsCap() int {
+	if s.maxAccounts <= 0 {
+		return maxAccounts
+	}
+	return s.maxAccounts
+}
+
 func (s *ChatStore) Store(env *Envelope) bool {
+	if env == nil || env.ID == "" {
+		return false
+	}
 	s.mu.Lock()
 	if _, dup := s.seen[env.ID]; dup {
 		s.mu.Unlock()
 		return false
 	}
-	if len(s.seen) >= maxSeenIDs {
-		s.pruneSeenLocked()
-		if len(s.seen) >= maxSeenIDs {
-			s.mu.Unlock()
-			return false
+
+	maxSeen := s.maxSeenCap()
+	if len(s.seen) >= maxSeen {
+		now := core.Now()
+		if s.lastPrune.IsZero() || now.Sub(s.lastPrune) >= 10*time.Second {
+			s.lastPrune = now
+			s.pruneSeenLocked(now)
+		}
+		for len(s.seen) >= maxSeen {
+			if !s.evictOldestSeenLocked() {
+				break
+			}
 		}
 	}
 	s.seen[env.ID] = env.Timestamp
+	s.seenOrder = append(s.seenOrder, env.ID)
+	s.compactSeenOrderLocked()
 
 	s.storeFor(env.To, env)
 
@@ -60,26 +103,104 @@ func (s *ChatStore) Store(env *Envelope) bool {
 	return true
 }
 
-func (s *ChatStore) pruneSeenLocked() {
-	cutoff := core.Now().Add(-2 * MaxEnvelopeSkew).UnixNano()
+func (s *ChatStore) pruneSeenLocked(now time.Time) {
+	cutoff := now.Add(-2 * MaxEnvelopeSkew).UnixNano()
 	for id, ts := range s.seen {
 		if ts < cutoff {
 			delete(s.seen, id)
 		}
 	}
+	s.compactSeenOrderLocked()
+}
+
+func (s *ChatStore) evictOldestSeenLocked() bool {
+	for len(s.seenOrder) > 0 {
+		id := s.seenOrder[0]
+		s.seenOrder = s.seenOrder[1:]
+		if _, ok := s.seen[id]; ok {
+			delete(s.seen, id)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ChatStore) compactSeenOrderLocked() {
+	maxSeen := s.maxSeenCap()
+	if len(s.seenOrder) <= 2*maxSeen {
+		return
+	}
+	compacted := make([]string, 0, len(s.seen))
+	for _, id := range s.seenOrder {
+		if _, ok := s.seen[id]; ok {
+			compacted = append(compacted, id)
+		}
+	}
+	s.seenOrder = compacted
 }
 
 func (s *ChatStore) storeFor(account string, env *Envelope) {
-	msgs := s.messages[account]
-	if len(msgs) >= s.maxPerAccount {
+	if account == "" {
+		return
+	}
+	msgs, exists := s.messages[account]
+	if !exists {
+		maxAccts := s.maxAccountsCap()
+		for len(s.messages) >= maxAccts {
+			if !s.evictOldestAccountLocked() {
+				break
+			}
+		}
+	}
 
-		newMsgs := make([]*Envelope, s.maxPerAccount)
+	maxPerAcct := s.maxPerAccount
+	if maxPerAcct <= 0 {
+		maxPerAcct = 1000
+	}
+
+	if len(msgs) >= maxPerAcct {
+		newMsgs := make([]*Envelope, maxPerAcct)
 		copy(newMsgs, msgs[1:])
-		newMsgs[s.maxPerAccount-1] = env
+		newMsgs[maxPerAcct-1] = env
 		s.messages[account] = newMsgs
 	} else {
 		s.messages[account] = append(msgs, env)
 	}
+
+	s.accountOrder = append(s.accountOrder, account)
+	s.compactAccountOrderLocked()
+}
+
+func (s *ChatStore) evictOldestAccountLocked() bool {
+	for len(s.accountOrder) > 0 {
+		acct := s.accountOrder[0]
+		s.accountOrder = s.accountOrder[1:]
+		if _, ok := s.messages[acct]; ok {
+			delete(s.messages, acct)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ChatStore) compactAccountOrderLocked() {
+	maxAccts := s.maxAccountsCap()
+	if len(s.accountOrder) <= 2*maxAccts {
+		return
+	}
+	compacted := make([]string, 0, len(s.messages))
+	seen := make(map[string]bool, len(s.messages))
+	for i := len(s.accountOrder) - 1; i >= 0; i-- {
+		acct := s.accountOrder[i]
+		if _, ok := s.messages[acct]; ok && !seen[acct] {
+			seen[acct] = true
+			compacted = append(compacted, acct)
+		}
+	}
+	for i, j := 0, len(compacted)-1; i < j; i, j = i+1, j-1 {
+		compacted[i], compacted[j] = compacted[j], compacted[i]
+	}
+	s.accountOrder = compacted
 }
 
 func (s *ChatStore) Messages(account string, since int64) []*Envelope {
