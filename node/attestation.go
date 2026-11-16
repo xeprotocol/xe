@@ -83,7 +83,7 @@ func (n *Node) handleAttestationRequest(from peer.ID, payload json.RawMessage) (
 	return raw, nil
 }
 
-func (n *Node) allowAttestation(source, identifier string) error {
+func (n *Node) acquireAttestation(source, identifier string) (func(), error) {
 	key := source + ":" + identifier
 	now := time.Now()
 
@@ -99,9 +99,20 @@ func (n *Node) allowAttestation(source, identifier string) error {
 		}
 	}
 	if last, ok := n.attRateMap[key]; ok && now.Sub(last) < AttestationRateLimit {
-		return fmt.Errorf("rate limited: retry after %v", AttestationRateLimit-now.Sub(last))
+		return nil, fmt.Errorf("rate limited: retry after %v", AttestationRateLimit-now.Sub(last))
 	}
-	return nil
+	n.attRateMap[key] = now
+
+	return func() {
+		n.attRateMu.Lock()
+		defer n.attRateMu.Unlock()
+		delete(n.attRateMap, key)
+	}, nil
+}
+
+func (n *Node) allowAttestation(source, identifier string) error {
+	_, err := n.acquireAttestation(source, identifier)
+	return err
 }
 
 func (n *Node) recordAttestation(source, identifier string) {
