@@ -170,7 +170,7 @@ Transactions:
   send <addr> <amount> [--asset XE|XUSD] [--memo "text"]
                           Send funds; --memo attaches up to 64 bytes of UTF-8
   receive                 Receive all pending sends
-  faucet                  Request testnet XUSD from the faucet service to your wallet
+  faucet                  Request testnet XE from the faucet service to your wallet
   mint <amount>           Mint XUSD (authorized minter wallet only; ops/bootstrap)
   burn <amount> [--yes] [--memo "text"]
                           Permanently destroy XE from your wallet (irreversible)
