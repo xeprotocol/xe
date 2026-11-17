@@ -14,6 +14,12 @@ import (
 	"github.com/xeprotocol/xe/perf"
 )
 
+const (
+	AdMaxAge         = 60 * time.Second
+	AdMaxFutureDrift = 60 * time.Second
+	RequestMaxAge    = 60 * time.Second
+)
+
 type GossipConfig struct {
 	Difficulty uint64
 
@@ -180,6 +186,10 @@ func certificateValidator() pubsub.ValidatorEx {
 	}
 }
 
+func MarketplaceValidator() pubsub.ValidatorEx {
+	return marketplaceValidator()
+}
+
 func marketplaceValidator() pubsub.ValidatorEx {
 	return func(_ context.Context, _ peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
 		var mm MarketplaceMsg
@@ -189,6 +199,11 @@ func marketplaceValidator() pubsub.ValidatorEx {
 		switch mm.Type {
 		case "advertisement":
 			if mm.Ad == nil {
+				return pubsub.ValidationReject
+			}
+			now := time.Now().Unix()
+			ts := NormalizeTimestamp(mm.Ad.Timestamp)
+			if ts < now-int64(AdMaxAge.Seconds()) || ts > now+int64(AdMaxFutureDrift.Seconds()) {
 				return pubsub.ValidationReject
 			}
 			if err := VerifyAdvertisement(mm.Ad); err != nil {

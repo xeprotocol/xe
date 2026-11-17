@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/xeprotocol/xe/core"
 )
@@ -17,6 +18,16 @@ const (
 	requestDomainTag       = "xe/marketplace-request/v1\x00"
 	offerDomainTag         = "xe/marketplace-offer/v1\x00"
 )
+
+// NormalizeTimestamp converts a timestamp in nanoseconds or milliseconds to Unix seconds.
+func NormalizeTimestamp(ts int64) int64 {
+	if ts > 100_000_000_000_000 || ts < -100_000_000_000_000 {
+		return ts / 1_000_000_000
+	} else if ts > 100_000_000_000 || ts < -100_000_000_000 {
+		return ts / 1000
+	}
+	return ts
+}
 
 func canonicalFields(domainTag string, fields ...string) []byte {
 	var b bytes.Buffer
@@ -106,6 +117,11 @@ func SignAdvertisement(ad *ResourceAdvertisement, privKey ed25519.PrivateKey) {
 func VerifyAdvertisement(ad *ResourceAdvertisement) error {
 	if ad.Provider == "" {
 		return fmt.Errorf("missing provider")
+	}
+	now := time.Now().Unix()
+	ts := NormalizeTimestamp(ad.Timestamp)
+	if ts < now-int64(AdMaxAge.Seconds()) || ts > now+int64(AdMaxFutureDrift.Seconds()) {
+		return fmt.Errorf("advertisement timestamp %d outside freshness window [-%v, +%v]", ad.Timestamp, AdMaxAge, AdMaxFutureDrift)
 	}
 	return verifyPayload(advertisementCanonical(ad), ad.ProviderPubKey, ad.Provider, ad.Signature)
 }
