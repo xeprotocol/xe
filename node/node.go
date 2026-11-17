@@ -2246,6 +2246,9 @@ func (n *Node) ManualSettle(lease *core.Lease) {
 }
 
 func (n *Node) ValidateTunnelLease(leaseHash string, peerID peer.ID) error {
+	if peerID == "" {
+		return fmt.Errorf("unauthorized peer for lease")
+	}
 	lease := n.GetLease(leaseHash)
 	if lease == nil {
 		return fmt.Errorf("lease not found")
@@ -2254,8 +2257,15 @@ func (n *Node) ValidateTunnelLease(leaseHash string, peerID peer.ID) error {
 	if lease.State != core.LeaseAccepted {
 		return fmt.Errorf("lease not active")
 	}
-	if lease.Provider != n.KeyPair.Address() {
+	if n.KeyPair == nil || lease.Provider != n.KeyPair.Address() {
 		return fmt.Errorf("not the provider for this lease")
+	}
+	if n.Directory == nil {
+		return fmt.Errorf("unauthorized peer for lease")
+	}
+	consumerPeer := n.PeerForAccount(lease.Consumer)
+	if consumerPeer == "" || peerID != consumerPeer {
+		return fmt.Errorf("unauthorized peer for lease")
 	}
 	return nil
 }

@@ -26,44 +26,109 @@ type TunnelValidator interface {
 	DialSSH(leaseHash string) (net.Conn, error)
 }
 
+const (
+	MaxTunnelsPerLease = 16
+	MaxTunnelsPerPeer  = 32
+)
+
+type tunnelEntry struct {
+	leaseHash string
+	peerID    peer.ID
+	closer    io.Closer
+	released  bool
+}
+
 type TunnelRegistry struct {
-	mu      sync.Mutex
-	tunnels map[string][]io.Closer
+	mu         sync.Mutex
+	tunnels    map[string][]*tunnelEntry
+	peerCounts map[peer.ID]int
 }
 
 func NewTunnelRegistry() *TunnelRegistry {
-	return &TunnelRegistry{tunnels: make(map[string][]io.Closer)}
+	return &TunnelRegistry{
+		tunnels:    make(map[string][]*tunnelEntry),
+		peerCounts: make(map[peer.ID]int),
+	}
 }
 
-func (r *TunnelRegistry) add(leaseHash string, c io.Closer) {
+func (r *TunnelRegistry) Acquire(leaseHash string, peerID peer.ID, c io.Closer) error {
 	r.mu.Lock()
-	r.tunnels[leaseHash] = append(r.tunnels[leaseHash], c)
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+
+	if len(r.tunnels[leaseHash]) >= MaxTunnelsPerLease {
+		return fmt.Errorf("max tunnels per lease reached (%d)", MaxTunnelsPerLease)
+	}
+	if r.peerCounts[peerID] >= MaxTunnelsPerPeer {
+		return fmt.Errorf("max tunnels per peer reached (%d)", MaxTunnelsPerPeer)
+	}
+
+	entry := &tunnelEntry{
+		leaseHash: leaseHash,
+		peerID:    peerID,
+		closer:    c,
+	}
+	r.tunnels[leaseHash] = append(r.tunnels[leaseHash], entry)
+	r.peerCounts[peerID]++
+	return nil
 }
 
-func (r *TunnelRegistry) remove(leaseHash string, c io.Closer) {
+func (r *TunnelRegistry) Release(leaseHash string, peerID peer.ID, c io.Closer) {
 	r.mu.Lock()
-	conns := r.tunnels[leaseHash]
-	for i, conn := range conns {
-		if conn == c {
-			r.tunnels[leaseHash] = append(conns[:i], conns[i+1:]...)
+	defer r.mu.Unlock()
+
+	entries := r.tunnels[leaseHash]
+	for i, e := range entries {
+		if e.closer == c {
+			if !e.released {
+				e.released = true
+				if r.peerCounts[peerID] > 1 {
+					r.peerCounts[peerID]--
+				} else {
+					delete(r.peerCounts, peerID)
+				}
+			}
+			r.tunnels[leaseHash] = append(entries[:i], entries[i+1:]...)
 			break
 		}
 	}
 	if len(r.tunnels[leaseHash]) == 0 {
 		delete(r.tunnels, leaseHash)
 	}
-	r.mu.Unlock()
 }
 
 func (r *TunnelRegistry) CloseTunnelsForLease(leaseHash string) {
 	r.mu.Lock()
-	conns := r.tunnels[leaseHash]
+	entries := r.tunnels[leaseHash]
 	delete(r.tunnels, leaseHash)
-	r.mu.Unlock()
-	for _, c := range conns {
-		_ = c.Close()
+	for _, e := range entries {
+		if !e.released {
+			e.released = true
+			if r.peerCounts[e.peerID] > 1 {
+				r.peerCounts[e.peerID]--
+			} else {
+				delete(r.peerCounts, e.peerID)
+			}
+		}
 	}
+	r.mu.Unlock()
+
+	for _, e := range entries {
+		if e.closer != nil {
+			_ = e.closer.Close()
+		}
+	}
+}
+
+func (r *TunnelRegistry) CountForLease(leaseHash string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.tunnels[leaseHash])
+}
+
+func (r *TunnelRegistry) CountForPeer(peerID peer.ID) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.peerCounts[peerID]
 }
 
 func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *TunnelRegistry) {
@@ -79,11 +144,21 @@ func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *Tunnel
 			return
 		}
 		leaseHash := hex.EncodeToString(leaseBytes[:])
+		remotePeer := s.Conn().RemotePeer()
 
-		if err := validator.ValidateTunnelLease(leaseHash, s.Conn().RemotePeer()); err != nil {
+		if err := validator.ValidateTunnelLease(leaseHash, remotePeer); err != nil {
 			log.Printf("tunnel: invalid lease %s: %v", leaseHash[:16], err)
 			writeTunnelError(s, err.Error())
 			return
+		}
+
+		if registry != nil {
+			if err := registry.Acquire(leaseHash, remotePeer, s); err != nil {
+				log.Printf("tunnel: stream cap exceeded for %s: %v", leaseHash[:16], err)
+				writeTunnelError(s, err.Error())
+				return
+			}
+			defer registry.Release(leaseHash, remotePeer, s)
 		}
 
 		backend, err := validator.DialSSH(leaseHash)
@@ -100,9 +175,6 @@ func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *Tunnel
 		}
 
 		_ = s.SetDeadline(time.Time{})
-
-		registry.add(leaseHash, s)
-		defer registry.remove(leaseHash, s)
 
 		var wg sync.WaitGroup
 		wg.Add(2)
