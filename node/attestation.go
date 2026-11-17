@@ -214,6 +214,9 @@ func capAttestations(atts []core.TimekeeperAttestation, leaseHash string, config
 }
 
 func (n *Node) getTimekeeperConfig() *core.TimekeeperConfig {
+	if n.StateChain == nil {
+		return nil
+	}
 	raw, ok := n.StateChain.GetKV("sys.timekeepers")
 	if !ok {
 		return nil
