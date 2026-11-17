@@ -27,6 +27,10 @@ func (c *Client) LookupDirectory(account string) (*directory.Registration, error
 }
 
 func (c *Client) ChatPoWDifficulty() (uint64, error) {
+	return c.ChatPoWDifficultyWithFloor(1)
+}
+
+func (c *Client) ChatPoWDifficultyWithFloor(floor uint64) (uint64, error) {
 	info, err := c.NodeInfo()
 	if err != nil {
 		return 0, err
@@ -35,7 +39,7 @@ func (c *Client) ChatPoWDifficulty() (uint64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("node advertises no chat_pow_difficulty")
 	}
-	return strconv.ParseUint(s, 16, 64)
+	return chat.ParsePoWDifficulty(s, floor)
 }
 
 func (c *Client) SendChat(env *chat.Envelope) error {

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/xeprotocol/xe/core"
@@ -16,7 +17,37 @@ const MaxMessageBytes = 8192
 
 const DefaultPoWDifficulty uint64 = 0xffffc00000000000
 
+const MinPoWDifficulty uint64 = DefaultPoWDifficulty
+
 const MaxEnvelopeSkew = 5 * time.Minute
+
+func ParsePoWDifficulty(s string, floor uint64) (uint64, error) {
+	if s == "" || len(s) > 16 {
+		return 0, fmt.Errorf("invalid chat_pow_difficulty %q", s)
+	}
+	diff, err := strconv.ParseUint(s, 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid chat_pow_difficulty %q: %w", s, err)
+	}
+	if diff == 0 {
+		return 0, fmt.Errorf("chat_pow_difficulty cannot be zero")
+	}
+	if floor > 0 && diff < floor {
+		return 0, fmt.Errorf("chat_pow_difficulty 0x%016x is below minimum floor 0x%016x", diff, floor)
+	}
+	return diff, nil
+}
+
+func ClampPoWDifficulty(s string, floor uint64) (uint64, bool) {
+	if floor == 0 {
+		floor = DefaultPoWDifficulty
+	}
+	diff, err := ParsePoWDifficulty(s, floor)
+	if err != nil {
+		return floor, false
+	}
+	return diff, true
+}
 
 type Envelope struct {
 	ID   string `json:"id"`
