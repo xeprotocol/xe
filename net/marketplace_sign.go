@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/xeprotocol/xe/core"
 )
@@ -118,6 +119,14 @@ func SignRequest(req *ResourceRequest, privKey ed25519.PrivateKey) {
 func VerifyRequest(req *ResourceRequest) error {
 	if req.Consumer == "" {
 		return fmt.Errorf("missing consumer")
+	}
+	now := time.Now().Unix()
+	ts := req.Timestamp
+	if ts > 1e14 || ts < -1e14 {
+		ts /= 1e9
+	}
+	if ts < now-int64(RequestMaxAge.Seconds()) || ts > now+int64(RequestMaxFutureDrift.Seconds()) {
+		return fmt.Errorf("request timestamp %d out of freshness window (now %d)", req.Timestamp, now)
 	}
 	return verifyPayload(requestCanonical(req), req.ConsumerPubKey, req.Consumer, req.Signature)
 }
