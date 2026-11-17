@@ -24,27 +24,90 @@ func (c PeerCapabilities) HasFeature(f string) bool {
 	return false
 }
 
+type PeerRetainPolicy func(peer.ID) bool
+
 type peerCapTable struct {
-	mu    sync.RWMutex
-	caps  map[peer.ID]PeerCapabilities
-	order []peer.ID
+	mu     sync.RWMutex
+	max    int
+	caps   map[peer.ID]PeerCapabilities
+	order  []peer.ID
+	retain PeerRetainPolicy
 }
 
-func newPeerCapTable() *peerCapTable {
-	return &peerCapTable{caps: make(map[peer.ID]PeerCapabilities)}
+func newPeerCapTable(max ...int) *peerCapTable {
+	limit := maxPeerCapEntries
+	if len(max) > 0 && max[0] > 0 {
+		limit = max[0]
+	}
+	return &peerCapTable{
+		max:  limit,
+		caps: make(map[peer.ID]PeerCapabilities),
+	}
+}
+
+func (t *peerCapTable) setRetainPolicy(fn PeerRetainPolicy) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.retain = fn
 }
 
 func (t *peerCapTable) record(p peer.ID, c PeerCapabilities) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, seen := t.caps[p]; !seen {
-		t.order = append(t.order, p)
+
+	// If already tracked, reposition to back of order (LRU update)
+	if _, seen := t.caps[p]; seen {
+		for i, id := range t.order {
+			if id == p {
+				t.order = append(t.order[:i], t.order[i+1:]...)
+				break
+			}
+		}
 	}
+	t.order = append(t.order, p)
 	t.caps[p] = c
-	for len(t.order) > maxPeerCapEntries {
-		oldest := t.order[0]
-		t.order = t.order[1:]
-		delete(t.caps, oldest)
+
+	limit := t.max
+	if limit <= 0 {
+		limit = maxPeerCapEntries
+	}
+
+	for len(t.order) > limit {
+		victimIdx := -1
+		if t.retain != nil {
+			for i, cand := range t.order {
+				if !t.retain(cand) {
+					victimIdx = i
+					break
+				}
+			}
+			// When all entries in the table are retained, drop/evict the incoming newcomer
+			// instead of displacing existing retained representatives.
+			if victimIdx == -1 {
+				victimIdx = len(t.order) - 1
+			}
+		} else {
+			// No retain policy configured: standard FIFO eviction
+			victimIdx = 0
+		}
+		victim := t.order[victimIdx]
+		t.order = append(t.order[:victimIdx], t.order[victimIdx+1:]...)
+		delete(t.caps, victim)
+	}
+}
+
+func (t *peerCapTable) remove(p peer.ID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.caps[p]; !ok {
+		return
+	}
+	delete(t.caps, p)
+	for i, id := range t.order {
+		if id == p {
+			t.order = append(t.order[:i], t.order[i+1:]...)
+			break
+		}
 	}
 }
 
@@ -77,12 +140,32 @@ func (g *NetworkGater) RecordPeerCapabilities(p peer.ID, c PeerCapabilities) {
 	g.caps.record(p, c)
 }
 
+func (g *NetworkGater) RemovePeerCapabilities(p peer.ID) {
+	g.caps.remove(p)
+}
+
 func (g *NetworkGater) PeerCapabilities(p peer.ID) (PeerCapabilities, bool) {
 	return g.caps.get(p)
 }
 
 func (g *NetworkGater) AllPeerCapabilities() map[peer.ID]PeerCapabilities {
 	return g.caps.all()
+}
+
+func (g *NetworkGater) SetPeerRetainPolicy(fn PeerRetainPolicy) {
+	g.caps.setRetainPolicy(fn)
+}
+
+func (g *NetworkGater) PeerRetainPolicy() PeerRetainPolicy {
+	g.caps.mu.RLock()
+	defer g.caps.mu.RUnlock()
+	return g.caps.retain
+}
+
+func (g *NetworkGater) SetMaxPeerCapEntries(n int) {
+	g.caps.mu.Lock()
+	defer g.caps.mu.Unlock()
+	g.caps.max = n
 }
 
 func (g *NetworkGater) SetMinProtocolVersion(v string) {
