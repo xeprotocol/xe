@@ -1028,6 +1028,9 @@ func (l *Ledger) fireBlockAdded(b *Block) {
 }
 
 func (l *Ledger) validateAndAddSend(b *Block) error {
+	if b.Source != "" {
+		return fmt.Errorf("send: must not have source")
+	}
 	chain, err := l.getAccountChainOverlay(b.Account)
 	if err != nil {
 		return fmt.Errorf("GetAccountChain: %w", err)
@@ -1140,6 +1143,9 @@ func (l *Ledger) validateAndAddReceive(b *Block) error {
 	if b.Source == "" {
 		return fmt.Errorf("receive must reference a source send")
 	}
+	if b.Destination != "" && b.Destination != b.Account {
+		return fmt.Errorf("receive: destination must match account or be empty")
+	}
 
 	pending, err := l.getPendingSendOverlay(b.Source)
 	if err != nil {
@@ -1150,6 +1156,9 @@ func (l *Ledger) validateAndAddReceive(b *Block) error {
 	}
 	if pending.Destination != b.Account {
 		return fmt.Errorf("send not addressed to this account")
+	}
+	if b.Amount != 0 && b.Amount != pending.Amount {
+		return fmt.Errorf("receive: amount %d does not match pending send amount %d", b.Amount, pending.Amount)
 	}
 
 	if l.isLiveLeaseEscrow(b.Source) {
@@ -1631,6 +1640,9 @@ func (l *Ledger) validateAndAddLease(b *Block) error {
 	if b.Asset != "XCU" {
 		return fmt.Errorf("lease block must have asset=XCU")
 	}
+	if b.Source != "" {
+		return fmt.Errorf("lease: must not have source")
+	}
 	if b.Destination == "" {
 		return fmt.Errorf("lease block must have a destination (provider)")
 	}
@@ -1941,6 +1953,12 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 	if leaseBlock.Type != BlockLease {
 		return fmt.Errorf("source block is not a lease block")
 	}
+	if b.Destination != "" && b.Destination != leaseBlock.Destination {
+		return fmt.Errorf("lease_cancel: destination must match lease provider or be empty")
+	}
+	if b.Amount != 0 && b.Amount != leaseBlock.Amount {
+		return fmt.Errorf("lease_cancel: amount %d does not match lease cost %d", b.Amount, leaseBlock.Amount)
+	}
 	if leaseBlock.Account != b.Account {
 		return fmt.Errorf("lease_cancel: only the consumer can cancel a lease")
 	}
@@ -2027,6 +2045,12 @@ func (l *Ledger) validateAndAddLeaseForceSettle(b *Block, skipSkew bool) error {
 	}
 	if leaseBlock.Type != BlockLease {
 		return fmt.Errorf("source block is not a lease block")
+	}
+	if b.Destination != "" && b.Destination != leaseBlock.Destination {
+		return fmt.Errorf("lease_force_settle: destination must match lease provider or be empty")
+	}
+	if b.Amount != 0 && b.Amount != leaseBlock.Amount {
+		return fmt.Errorf("lease_force_settle: amount %d does not match lease cost %d", b.Amount, leaseBlock.Amount)
 	}
 	if leaseBlock.Account != b.Account {
 		return fmt.Errorf("lease_force_settle: only the consumer can force-settle a lease")

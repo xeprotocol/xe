@@ -33,6 +33,9 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 	if lease.Consumer != b.Account {
 		return fmt.Errorf("lease_renew: only the consumer can renew a lease")
 	}
+	if b.Destination != "" && b.Destination != lease.Provider {
+		return fmt.Errorf("lease_renew: destination must match provider or be empty")
+	}
 
 	if b.Duration < LeaseMinDuration {
 		return fmt.Errorf("lease_renew duration must be >= %d seconds, got %d", LeaseMinDuration, b.Duration)
