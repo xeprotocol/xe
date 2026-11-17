@@ -110,6 +110,9 @@ type NetworkGater struct {
 	maxInbound     int64
 	inboundRefused atomic.Uint64
 
+	pendingMu      sync.Mutex
+	pendingInbound map[peer.ID][]*time.Timer
+
 	handshakes *peerRateLimiter
 
 	banPath string
@@ -131,10 +134,11 @@ type NetworkMismatch struct {
 
 func NewNetworkGater() *NetworkGater {
 	return &NetworkGater{
-		banDur:     defaultBanDur,
-		trusted:    make(map[peer.ID]struct{}),
-		bans:       newBanStore(maxBannedPeers),
-		maxInbound: defaultMaxInboundConns,
+		banDur:         defaultBanDur,
+		trusted:        make(map[peer.ID]struct{}),
+		bans:           newBanStore(maxBannedPeers),
+		maxInbound:     defaultMaxInboundConns,
+		pendingInbound: make(map[peer.ID][]*time.Timer),
 		handshakes: newPeerRateLimiter(netcheckPerPeerRPS, netcheckPerPeerBurst,
 			netcheckGlobalRPS, netcheckGlobalBurst, netcheckLimiterPeers),
 
@@ -303,6 +307,62 @@ func (g *NetworkGater) InterceptAccept(_ network.ConnMultiaddrs) bool {
 	return true
 }
 
+const inboundHandshakeTimeout = 10 * time.Second
+
+func (g *NetworkGater) recordInboundHandshake(p peer.ID) {
+	g.pendingMu.Lock()
+	defer g.pendingMu.Unlock()
+	if g.pendingInbound == nil {
+		g.pendingInbound = make(map[peer.ID][]*time.Timer)
+	}
+	var t *time.Timer
+	t = time.AfterFunc(inboundHandshakeTimeout, func() {
+		g.expirePendingInbound(p, t)
+	})
+	g.pendingInbound[p] = append(g.pendingInbound[p], t)
+}
+
+func (g *NetworkGater) inboundConnected(p peer.ID) {
+	g.pendingMu.Lock()
+	defer g.pendingMu.Unlock()
+	if list, ok := g.pendingInbound[p]; ok && len(list) > 0 {
+		list[0].Stop()
+		if len(list) == 1 {
+			delete(g.pendingInbound, p)
+		} else {
+			g.pendingInbound[p] = list[1:]
+		}
+	}
+}
+
+func (g *NetworkGater) expirePendingInbound(p peer.ID, t *time.Timer) {
+	g.pendingMu.Lock()
+	defer g.pendingMu.Unlock()
+	list, ok := g.pendingInbound[p]
+	if !ok {
+		return
+	}
+	for i, timer := range list {
+		if timer == t {
+			if len(list) == 1 {
+				delete(g.pendingInbound, p)
+			} else {
+				g.pendingInbound[p] = append(list[:i], list[i+1:]...)
+			}
+			if g.inbound.Add(-1) < 0 {
+				g.inbound.Store(0)
+			}
+			return
+		}
+	}
+}
+
+func (g *NetworkGater) inboundDisconnected(p peer.ID) {
+	if g.inbound.Add(-1) < 0 {
+		g.inbound.Store(0)
+	}
+}
+
 func (g *NetworkGater) InterceptSecured(dir network.Direction, p peer.ID, _ network.ConnMultiaddrs) bool {
 	if g.isBanned(p) {
 		return false
@@ -310,9 +370,21 @@ func (g *NetworkGater) InterceptSecured(dir network.Direction, p peer.ID, _ netw
 
 	if dir == network.DirInbound && !g.isTrusted(p) {
 		max := atomic.LoadInt64(&g.maxInbound)
-		if max > 0 && g.inbound.Load() >= max {
-			g.inboundRefused.Add(1)
-			return false
+		if max > 0 {
+			for {
+				cur := g.inbound.Load()
+				if cur >= max {
+					g.inboundRefused.Add(1)
+					return false
+				}
+				if g.inbound.CompareAndSwap(cur, cur+1) {
+					g.recordInboundHandshake(p)
+					break
+				}
+			}
+		} else {
+			g.inbound.Add(1)
+			g.recordInboundHandshake(p)
 		}
 	}
 	return true
@@ -336,16 +408,14 @@ func SetupNetworkCheck(h host.Host, gater *NetworkGater) {
 
 	h.Network().Notify(&network.NotifyBundle{
 		ConnectedF: func(_ network.Network, conn network.Conn) {
-			if conn.Stat().Direction == network.DirInbound {
-				gater.inbound.Add(1)
+			if conn.Stat().Direction == network.DirInbound && !gater.isTrusted(conn.RemotePeer()) {
+				gater.inboundConnected(conn.RemotePeer())
 			}
 			go verifyPeer(h, conn.RemotePeer(), gater)
 		},
 		DisconnectedF: func(_ network.Network, conn network.Conn) {
-			if conn.Stat().Direction == network.DirInbound {
-				if gater.inbound.Add(-1) < 0 {
-					gater.inbound.Store(0)
-				}
+			if conn.Stat().Direction == network.DirInbound && !gater.isTrusted(conn.RemotePeer()) {
+				gater.inboundDisconnected(conn.RemotePeer())
 			}
 		},
 	})
