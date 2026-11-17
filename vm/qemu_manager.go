@@ -141,10 +141,33 @@ func NewQEMUManager(dataDir string, cfg QEMUConfig) (*QEMUManager, error) {
 	return m, nil
 }
 
+func (m *QEMUManager) lookupVM(leaseHash string) (*qemuVM, bool) {
+	if v, ok := m.vms[leaseHash]; ok {
+		return v, true
+	}
+	prefix := leaseHash
+	if len(prefix) >= 12 {
+		prefix = prefix[:12]
+	}
+	if v, ok := m.vms[prefix]; ok {
+		return v, true
+	}
+	name := "xe-" + prefix
+	for _, v := range m.vms {
+		if filepath.Base(v.workDir) == name || strings.HasPrefix(v.leaseHash, prefix) || strings.HasPrefix(prefix, v.leaseHash) {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
 func (m *QEMUManager) Provision(leaseHash string, res Resources, accessPubKey string) (*Info, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if _, exists := m.lookupVM(leaseHash); exists {
+		return nil, fmt.Errorf("vm already exists for lease %s", leaseHash)
+	}
 	if len(m.vms) > 0 {
 		return nil, fmt.Errorf("qemu manager: GPU is already in use by another lease")
 	}
@@ -272,7 +295,7 @@ func (m *QEMUManager) Teardown(leaseHash string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	v, ok := m.vms[leaseHash]
+	v, ok := m.lookupVM(leaseHash)
 	if !ok {
 		return fmt.Errorf("qemu vm not found for lease %s", leaseHash)
 	}
@@ -289,15 +312,19 @@ func (m *QEMUManager) Teardown(leaseHash string) error {
 	}
 
 	_ = os.RemoveAll(v.workDir)
-	delete(m.vms, leaseHash)
+	for k, cand := range m.vms {
+		if cand == v {
+			delete(m.vms, k)
+		}
+	}
 
-	log.Printf("QEMU VM xe-%s torn down", leaseHash[:12])
+	log.Printf("QEMU VM %s torn down", filepath.Base(v.workDir))
 	return nil
 }
 
 func (m *QEMUManager) DialSSH(leaseHash string) (net.Conn, error) {
 	m.mu.RLock()
-	v, ok := m.vms[leaseHash]
+	v, ok := m.lookupVM(leaseHash)
 	m.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("qemu vm not found for lease %s", leaseHash)
@@ -310,11 +337,14 @@ func (m *QEMUManager) DialSSH(leaseHash string) (net.Conn, error) {
 }
 
 func (m *QEMUManager) Get(leaseHash string) (*Info, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	v, ok := m.vms[leaseHash]
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.lookupVM(leaseHash)
 	if !ok {
 		return nil, fmt.Errorf("qemu vm not found for lease %s", leaseHash)
+	}
+	if len(leaseHash) > len(v.leaseHash) {
+		m.vms[leaseHash] = v
 	}
 	return &Info{
 		LeaseHash: leaseHash,
@@ -359,12 +389,74 @@ func (m *QEMUManager) killQEMU(pid int) error {
 }
 
 func (m *QEMUManager) cleanOrphans() {
-	orphans := pgrepMatch("qemu-system-x86_64", m.workRoot)
-	for _, pidStr := range orphans {
-		log.Printf("QEMU: cleaning orphan process pid=%s", pidStr)
-		_ = exec.Command(m.cfg.SudoBinary, "kill", "-KILL", pidStr).Run()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	activePids := make(map[string]bool)
+	entries, err := os.ReadDir(m.workRoot)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "xe-") {
+				continue
+			}
+			workDir := filepath.Join(m.workRoot, entry.Name())
+			pidPath := filepath.Join(workDir, "qemu.pid")
+			pidBytes, err := os.ReadFile(pidPath)
+			if err != nil {
+				_ = os.RemoveAll(workDir)
+				continue
+			}
+			pidStr := strings.TrimSpace(string(pidBytes))
+			pid, err := strconv.Atoi(pidStr)
+			if err != nil || pid <= 0 {
+				_ = os.RemoveAll(workDir)
+				continue
+			}
+
+			alive := false
+			if m.cfg.SudoBinary != "" {
+				if err := exec.Command(m.cfg.SudoBinary, "kill", "-0", pidStr).Run(); err == nil {
+					alive = true
+				}
+			} else {
+				if err := exec.Command("kill", "-0", pidStr).Run(); err == nil {
+					alive = true
+				}
+			}
+
+			if alive {
+				activePids[pidStr] = true
+				leasePrefix := strings.TrimPrefix(entry.Name(), "xe-")
+				m.vms[leasePrefix] = &qemuVM{
+					leaseHash: leasePrefix,
+					workDir:   workDir,
+					pidPath:   pidPath,
+					pid:       pid,
+					sshPort:   m.cfg.SSHHostfwdPort,
+					createdAt: time.Now().UnixNano(),
+				}
+				log.Printf("Preserving and adopting running QEMU VM: %s pid=%d", entry.Name(), pid)
+			} else {
+				_ = os.RemoveAll(workDir)
+			}
+		}
 	}
-	if len(orphans) > 0 && m.cfg.VFIO.GPUAdminToolsPath != "" {
+
+	orphans := pgrepMatch("qemu-system-x86_64", m.workRoot)
+	strayKilled := 0
+	for _, pidStr := range orphans {
+		if activePids[pidStr] {
+			continue
+		}
+		log.Printf("QEMU: cleaning orphan process pid=%s", pidStr)
+		if m.cfg.SudoBinary != "" {
+			_ = exec.Command(m.cfg.SudoBinary, "kill", "-KILL", pidStr).Run()
+		} else {
+			_ = exec.Command("kill", "-KILL", pidStr).Run()
+		}
+		strayKilled++
+	}
+	if strayKilled > 0 && m.cfg.VFIO.GPUAdminToolsPath != "" && len(m.vms) == 0 {
 		time.Sleep(2 * time.Second)
 		if err := m.cfg.VFIO.ResetGPU(); err != nil {
 			log.Printf("QEMU: orphan-cleanup GPU FLR failed: %v", err)

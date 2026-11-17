@@ -56,6 +56,9 @@ func (n *Node) registerVMHandlers() {
 }
 
 func (n *Node) PeerForAccount(account string) peer.ID {
+	if n.Directory == nil {
+		return ""
+	}
 	reg, ok := n.Directory.Lookup(account)
 	if ok {
 		pid, err := peer.Decode(reg.NodePeer)
@@ -87,8 +90,10 @@ func (n *Node) provisionVM(leaseBlock *core.Block) {
 	}
 
 	consumerPeer := n.PeerForAccount(leaseBlock.Account)
-	if consumerPeer == "" {
-		log.Printf("Could not find consumer peer for account %s", shortAddr(leaseBlock.Account))
+	if consumerPeer == "" || n.Msg == nil {
+		if consumerPeer == "" {
+			log.Printf("Could not find consumer peer for account %s", shortAddr(leaseBlock.Account))
+		}
 		return
 	}
 
@@ -100,6 +105,34 @@ func (n *Node) provisionVM(leaseBlock *core.Block) {
 		return
 	}
 	log.Printf("Sent VM info to consumer %s for lease %s", consumerPeer.ShortString(), shortHash(leaseBlock.Hash))
+}
+
+func (n *Node) reprovisionVM(lease *core.Lease) {
+	if n.VMManager == nil || lease == nil {
+		return
+	}
+	info, err := n.VMManager.Provision(lease.LeaseHash, vm.Resources{
+		VCPUs:    lease.VCPUs,
+		MemoryMB: lease.MemoryMB,
+		DiskGB:   lease.DiskGB,
+	}, lease.AccessPubKey)
+	if err != nil {
+		log.Printf("VM reprovision failed for lease %s: %v", shortHash(lease.LeaseHash), err)
+		return
+	}
+	if info.Credentials != nil {
+		log.Printf("VM reprovisioned for lease %s (user=%s)", shortHash(lease.LeaseHash), info.Credentials.Username)
+	} else {
+		log.Printf("VM reprovisioned for lease %s (ssh-only, no credentials)", shortHash(lease.LeaseHash))
+	}
+
+	consumerPeer := n.PeerForAccount(lease.Consumer)
+	if consumerPeer == "" || n.Msg == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+	defer cancel()
+	_, _ = n.Msg.Request(ctx, consumerPeer, "vm_credentials", info)
 }
 
 func (n *Node) teardownVM(lease *core.Lease) {
