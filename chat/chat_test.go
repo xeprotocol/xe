@@ -29,8 +29,8 @@ func TestPruneMessagesEvictsStaleBuckets(t *testing.T) {
 		t.Fatal("fresh-1 must store")
 	}
 	// A stale message in a bucket whose newest message is fresh must not
-	// evict the bucket — but a bucket holding only that stale message (here
-	// mallory, the To side of stale-3) is evicted.
+	// evict the bucket — but the stale message itself is dropped, so one
+	// fresh message cannot pin a whole bucket of stale messages (XE-17836).
 	if !s.Store(testEnvelope("stale-3", "erin", "mallory", stale)) {
 		t.Fatal("stale-3 must store")
 	}
@@ -47,14 +47,46 @@ func TestPruneMessagesEvictsStaleBuckets(t *testing.T) {
 	if len(accounts) != 2 {
 		t.Fatalf("want 2 accounts after prune (erin, frank), got %d: %v", len(accounts), accounts)
 	}
-	if msgs := s.Messages("erin", 0); len(msgs) != 2 {
-		t.Fatalf("fresh bucket must survive with both messages, got %d", len(msgs))
+	if msgs := s.Messages("erin", 0); len(msgs) != 1 {
+		t.Fatalf("fresh bucket must survive with only its fresh message, got %d", len(msgs))
 	}
 	if msgs := s.Messages("mallory", 0); len(msgs) != 0 {
 		t.Fatalf("stale-only bucket must be gone, got %d messages", len(msgs))
 	}
 	if msgs := s.Messages("alice", 0); len(msgs) != 0 {
 		t.Fatalf("stale bucket must be gone, got %d messages", len(msgs))
+	}
+}
+
+// XE-17836: one fresh message must not pin a whole bucket of stale messages.
+// Fill a bucket to maxPerAccount with stale messages, then keep it alive with
+// a single fresh message: after the prune only the fresh message may remain.
+func TestPruneMessagesDropsStaleMessagesFromPinnedBucket(t *testing.T) {
+	s := NewChatStore(1000)
+	now := core.Now()
+	stale := now.Add(-20 * time.Minute).UnixNano()
+
+	for i := 0; i < 999; i++ {
+		if !s.Store(testEnvelope(fmt.Sprintf("stale-%d", i), "attacker", "victim", stale)) {
+			t.Fatalf("stale-%d must store", i)
+		}
+	}
+	if !s.Store(testEnvelope("fresh-1", "attacker", "victim", now.UnixNano())) {
+		t.Fatal("fresh-1 must store")
+	}
+	if got := len(s.Messages("victim", 0)); got != 1000 {
+		t.Fatalf("want 1000 messages before prune, got %d", got)
+	}
+
+	s.mu.Lock()
+	s.pruneMessagesLocked()
+	s.mu.Unlock()
+
+	if msgs := s.Messages("victim", 0); len(msgs) != 1 {
+		t.Fatalf("pinned bucket must shrink to its 1 fresh message, got %d", len(msgs))
+	}
+	if msgs := s.Messages("attacker", 0); len(msgs) != 1 {
+		t.Fatalf("attacker bucket must shrink to its 1 fresh message, got %d", len(msgs))
 	}
 }
 

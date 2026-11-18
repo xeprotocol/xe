@@ -74,11 +74,15 @@ func (s *ChatStore) pruneSeenLocked() {
 }
 
 // pruneMessagesLocked evicts per-account buckets whose newest message is older
-// than the freshness window, mirroring pruneSeenLocked. Without this the
-// messages map grows forever: every envelope adds a key for both To and From
-// and those keys are never removed, so a client minting fresh accounts grows
-// the node without bound (xeprotocol/xe#247). A bucket is evicted only when
-// its newest message is stale, so live conversations are never touched.
+// than the freshness window, mirroring pruneSeenLocked, and drops stale
+// messages from buckets that survive. Without this the messages map grows
+// forever: every envelope adds a key for both To and From and those keys are
+// never removed, so a client minting fresh accounts grows the node without
+// bound (xeprotocol/xe#247). Evicting whole buckets only is not enough: one
+// fresh message would pin the entire bucket, including up to maxPerAccount
+// stale messages, so the map could still grow to gigabytes (XE-17836). A
+// bucket therefore survives only with its fresh messages; live conversations
+// are never touched.
 func (s *ChatStore) pruneMessagesLocked() {
 	cutoff := core.Now().Add(-2 * MaxEnvelopeSkew).UnixNano()
 	for account, msgs := range s.messages {
@@ -90,6 +94,18 @@ func (s *ChatStore) pruneMessagesLocked() {
 		}
 		if newest < cutoff {
 			delete(s.messages, account)
+			continue
+		}
+		kept := msgs[:0]
+		for _, env := range msgs {
+			if env.Timestamp >= cutoff {
+				kept = append(kept, env)
+			}
+		}
+		if len(kept) == 0 {
+			delete(s.messages, account)
+		} else {
+			s.messages[account] = kept
 		}
 	}
 }
