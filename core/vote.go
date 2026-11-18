@@ -106,11 +106,6 @@ func (vm *VoteManager) flushPendingVotes(account, prev string) {
 
 func (vm *VoteManager) ReceiveVote(v *Vote) error {
 	if err := vm.ValidateVote(v); err != nil {
-
-		if vm.isConflictNotFound(v) {
-			vm.bufferVote(v)
-			return nil
-		}
 		return err
 	}
 
@@ -123,6 +118,14 @@ func (vm *VoteManager) ReceiveVote(v *Vote) error {
 		return nil
 	}
 
+	// If conflict record has not arrived yet (vote gossip outrunning block gossip),
+	// buffer vote for deferred processing upon OnConflict rather than locking an
+	// unverified or dropped candidate hash.
+	if vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev) == nil {
+		vm.bufferVote(v)
+		return nil
+	}
+
 	if err := vm.receiveVoteInner(v); err != nil {
 		return err
 	}
@@ -132,17 +135,36 @@ func (vm *VoteManager) ReceiveVote(v *Vote) error {
 }
 
 func (vm *VoteManager) receiveVoteInner(v *Vote) error {
+	conflict := vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev)
+	if conflict != nil && !containsConflictHash(conflict.BlockHashes, v.BlockHash) {
+		return fmt.Errorf("vote block %s is not a candidate in conflict %s/%s", v.BlockHash, v.ConflictAccount, v.ConflictPrev)
+	}
+
 	existing, err := vm.store.GetVote(v.ConflictAccount, v.ConflictPrev, v.RepPubKey)
 	if err != nil {
 		return fmt.Errorf("ReceiveVote: GetVote: %w", err)
 	}
 	if existing != nil && existing.Final {
-		return nil
+		// Only preserve final lock if the existing vote was for a confirmed candidate in the conflict.
+		// If existing was stored for a dropped/unrecorded sibling, do not burn the rep's vote.
+		if conflict != nil && !containsConflictHash(conflict.BlockHashes, existing.BlockHash) {
+			// existing vote is for a non-candidate; allow replacement
+		} else {
+			return nil
+		}
 	}
 
-	conflict := vm.ledger.GetConflict(v.ConflictAccount, v.ConflictPrev)
-	if conflict != nil && conflict.WeightSnapshot != nil {
-		v.Weight = conflict.WeightSnapshot[v.RepAccount()]
+	if conflict != nil {
+		if conflict.WeightSnapshot != nil {
+			v.Weight = conflict.WeightSnapshot[v.RepAccount()]
+		} else {
+			w := vm.ledger.GetVoteWeight(v.RepAccount())
+			if w.IsUint64() {
+				v.Weight = w.Uint64()
+			} else {
+				v.Weight = 0
+			}
+		}
 	} else {
 		w := vm.ledger.GetVoteWeight(v.RepAccount())
 		if w.IsUint64() {

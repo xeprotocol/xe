@@ -1,6 +1,9 @@
 package core
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 var conflictRWMu sync.RWMutex
 
@@ -69,7 +72,7 @@ func recordConflict(cs ConflictStore, account, previous, existingHash, newHash s
 
 	const maxConflictHashes = 10
 	if len(record.BlockHashes) >= maxConflictHashes {
-		return false, nil
+		return false, fmt.Errorf("conflict record is full (maximum %d candidate hashes reached)", maxConflictHashes)
 	}
 	record.BlockHashes = append(record.BlockHashes, newHash)
 	if err := cs.SaveConflict(record); err != nil {
