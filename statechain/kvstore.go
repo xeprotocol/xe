@@ -218,10 +218,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 				if _, err := hex.DecodeString(a); err != nil {
 					return fmt.Errorf("representatives address[%d] invalid hex: %w", i, err)
 				}
-				if seen[a] {
+				lower := strings.ToLower(a)
+				if seen[lower] {
 					return fmt.Errorf("representatives address[%d] is a duplicate", i)
 				}
-				seen[a] = true
+				seen[lower] = true
 			}
 		default:
 
@@ -480,6 +481,9 @@ func lowercaseKeys(key string, value json.RawMessage) json.RawMessage {
 			Keys []string `json:"keys"`
 		}{}
 		v, keys = mc, &mc.Keys
+	case "sys.representatives":
+		rc := &RepresentativeConfig{}
+		v, keys = rc, &rc.Addresses
 	default:
 		return value
 	}
