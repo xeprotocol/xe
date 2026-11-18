@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/xeprotocol/xe/core"
+	"github.com/xeprotocol/xe/vm"
 )
 
 func (h *Handler) handleGetProviders(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +97,12 @@ func (h *Handler) handleGetCertificateByProvider(w http.ResponseWriter, r *http.
 }
 
 func (h *Handler) handleGetVMs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.node.GetVMs())
+	vms := h.node.GetVMs()
+	redacted := make([]*vm.Info, len(vms))
+	for i, v := range vms {
+		redacted[i] = v.Redacted()
+	}
+	writeJSON(w, http.StatusOK, redacted)
 }
 
 func (h *Handler) handleGetVM(w http.ResponseWriter, r *http.Request) {
@@ -110,7 +116,7 @@ func (h *Handler) handleGetVM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "vm not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, info)
+	writeJSON(w, http.StatusOK, info.Redacted())
 }
 
 func (h *Handler) handleLeaseRequest(w http.ResponseWriter, r *http.Request) {
