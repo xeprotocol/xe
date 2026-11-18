@@ -3,6 +3,7 @@ package core
 import (
 	"log"
 	"math/big"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -27,7 +28,7 @@ func (c *RepresentativeConfig) allowlist() map[string]bool {
 	set := make(map[string]bool, len(c.Addresses))
 	for _, a := range c.Addresses {
 		if a != "" {
-			set[a] = true
+			set[strings.ToLower(a)] = true
 		}
 	}
 	if len(set) == 0 {
@@ -106,7 +107,7 @@ func (l *Ledger) noteFailedOpen(v bool) {
 }
 
 func repEligibleLocked(set map[string]bool, rep string) bool {
-	return set == nil || set[rep]
+	return set == nil || set[strings.ToLower(rep)]
 }
 
 func (l *Ledger) sumEligibleLocked(set map[string]bool) *big.Int {
