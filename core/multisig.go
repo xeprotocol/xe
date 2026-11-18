@@ -141,8 +141,16 @@ func VerifyMultisigAny(hash string, sigs []BlockSignature, ks *Keyset) error {
 }
 
 func IsSpendingOp(t BlockType) bool {
+	// XE-17229 / XE-0001: BlockReceive and the lease lifecycle ops are
+	// spending-class. A receive can carry a representative change
+	// (delegation hijack), and lease ops move or lock stake, so all of
+	// them require full multisig threshold. Classifying by type is
+	// deliberately stricter than the rep-change heuristic in
+	// verifyBlockCredential: plain receives now also need threshold.
 	switch t {
-	case BlockSend, BlockBurn, BlockLease, BlockLeaseRenew, BlockMultisigOpen, BlockMultisigUpdate, BlockMint:
+	case BlockSend, BlockBurn, BlockLease, BlockLeaseRenew,
+		BlockLeaseAccept, BlockLeaseCancel, BlockLeaseForceSettle, BlockLeaseSettle,
+		BlockReceive, BlockMultisigOpen, BlockMultisigUpdate, BlockMint:
 		return true
 	default:
 		return false
