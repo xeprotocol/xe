@@ -102,6 +102,7 @@ func (l *Ledger) priorLease(leaseHash string, target LeaseState) *Lease {
 		restored.LockedR = 0
 		restored.LockedPayoutCap = 0
 		restored.LockedTWAP = 0
+		restored.Renewals = nil
 	}
 	return &restored
 }
@@ -118,6 +119,17 @@ func (l *Ledger) escrowPendingOf(leaseHash string) *PendingSend {
 			for i := range lease.Renewals {
 				amount += lease.Renewals[i].Cost
 			}
+		}
+	}
+	if chain, err := l.store.GetAccountChain(lb.Account); err == nil && chain != nil {
+		var renewCost uint64
+		for _, b := range chain.Blocks {
+			if b.Type == BlockLeaseRenew && b.Source == leaseHash {
+				renewCost += b.Amount
+			}
+		}
+		if lb.Amount+renewCost > amount {
+			amount = lb.Amount + renewCost
 		}
 	}
 	return &PendingSend{

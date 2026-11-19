@@ -993,6 +993,7 @@ func applyCommitTxn(txn *badger.Txn, d pendingDelta, c *core.BlockCommit) error 
 				return err
 			}
 			lease.State = core.LeaseCancelled
+			lease.Renewals = nil
 			cancelData, err := json.Marshal(&lease)
 			if err != nil {
 				return err

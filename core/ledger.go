@@ -1984,7 +1984,10 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 	}
 
 	oldBal := l.getAssetBalanceOverlay(b.Account, "XCU")
-	expectedBal := oldBal + leaseBlock.Amount
+	expectedBal := oldBal + pending.Amount
+	if expectedBal < oldBal {
+		return fmt.Errorf("lease_cancel would overflow uint64 balance")
+	}
 	if b.Balance != expectedBal {
 		return fmt.Errorf("balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 	}
