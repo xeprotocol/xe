@@ -3294,7 +3294,8 @@ func (l *Ledger) planSwap(account, oldHash string) ([]cascadeStep, error) {
 		}
 		switch b.Type {
 		case BlockSend, BlockReceive, BlockBurn, BlockMint:
-
+		case BlockLease, BlockLeaseAccept, BlockLeaseSettle, BlockLeaseForceSettle, BlockLeaseCancel, BlockLeaseRenew:
+		case BlockMultisigOpen:
 		default:
 			return nil, fmt.Errorf("SwapBlock: cannot unwind descendant %q (%s) of the replaced block — reversing its side-effects is not yet implemented", b.Type, shortHash(b.Hash))
 		}
