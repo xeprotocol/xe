@@ -385,9 +385,24 @@ func validateEpochValue(value json.RawMessage, kv *KVStore) error {
 		return fmt.Errorf("epoch r_price_floor (%d) exceeds r_price_floor_tier_1 (%d)", ev.RPriceFloor, tc.RPriceFloorTier1)
 	}
 
+	maxR := tc.RInit
+	if tc.RPriceFloorTier1 > maxR {
+		maxR = tc.RPriceFloorTier1
+	}
+	if ev.REffective > maxR {
+		return fmt.Errorf("epoch r_effective (%d) exceeds max allowed r (%d)", ev.REffective, maxR)
+	}
+	if ev.REffective == 0 {
+		return fmt.Errorf("epoch r_effective must be > 0")
+	}
+
 	expectedS := SMilliForPhase(ev.Phase)
 	if ev.SMilli != expectedS {
 		return fmt.Errorf("epoch s_milli (%d) does not match phase %d (expected %d)", ev.SMilli, ev.Phase, expectedS)
+	}
+
+	if ev.RCollusion == 0 {
+		return fmt.Errorf("epoch r_collusion must be > 0")
 	}
 
 	expectedRCol := expectedRCollusion(ev.TWAPMilliUSD, uint64(ev.SMilli), factor)
@@ -401,7 +416,7 @@ func validateEpochValue(value json.RawMessage, kv *KVStore) error {
 		supportive = ev.RPriceFloor
 	}
 	expectedR := supportive
-	if ev.RCollusion != 0 && ev.RCollusion < supportive {
+	if ev.RCollusion < supportive {
 		expectedR = ev.RCollusion
 	}
 	if ev.REffective != expectedR {
@@ -414,27 +429,24 @@ func validateEpochValue(value json.RawMessage, kv *KVStore) error {
 		if ev.RVolume <= ev.RPriceFloor {
 			return fmt.Errorf("r_source 'volume' but r_volume (%d) <= r_price_floor (%d)", ev.RVolume, ev.RPriceFloor)
 		}
-		if ev.RCollusion != 0 && ev.RCollusion < ev.RVolume {
+		if ev.RCollusion < ev.RVolume {
 			return fmt.Errorf("r_source 'volume' but r_collusion (%d) < r_volume (%d) — should be 'collusion'", ev.RCollusion, ev.RVolume)
 		}
 	case "price_floor":
 		if ev.RPriceFloor <= ev.RVolume {
 			return fmt.Errorf("r_source 'price_floor' but r_price_floor (%d) <= r_volume (%d)", ev.RPriceFloor, ev.RVolume)
 		}
-		if ev.RCollusion != 0 && ev.RCollusion < ev.RPriceFloor {
+		if ev.RCollusion < ev.RPriceFloor {
 			return fmt.Errorf("r_source 'price_floor' but r_collusion (%d) < r_price_floor (%d) — should be 'collusion'", ev.RCollusion, ev.RPriceFloor)
 		}
 	case "tied":
 		if ev.RVolume != ev.RPriceFloor {
 			return fmt.Errorf("r_source 'tied' but r_volume (%d) != r_price_floor (%d)", ev.RVolume, ev.RPriceFloor)
 		}
-		if ev.RCollusion != 0 && ev.RCollusion < ev.RVolume {
+		if ev.RCollusion < ev.RVolume {
 			return fmt.Errorf("r_source 'tied' but r_collusion (%d) < supportive (%d) — should be 'collusion'", ev.RCollusion, ev.RVolume)
 		}
 	case "collusion":
-		if ev.RCollusion == 0 {
-			return fmt.Errorf("r_source 'collusion' but r_collusion is zero")
-		}
 		if ev.RCollusion >= supportive {
 			return fmt.Errorf("r_source 'collusion' but r_collusion (%d) >= supportive max (%d)", ev.RCollusion, supportive)
 		}
@@ -462,7 +474,11 @@ func expectedRCollusion(twapMilliUSD, sMilli, factorMilli uint64) uint64 {
 	if factorMilli == 0 {
 		factorMilli = RCollusionFactorMilliDefault
 	}
-	return factorMilli * (1000 - sMilli) / twapMilliUSD
+	res := factorMilli * (1000 - sMilli) / twapMilliUSD
+	if res == 0 {
+		return 1
+	}
+	return res
 }
 
 func lowercaseKeys(key string, value json.RawMessage) json.RawMessage {

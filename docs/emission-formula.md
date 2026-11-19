@@ -166,8 +166,8 @@ against a false TWAP: both bounds scale with `1 / TWAP`, so a false low TWAP
 raises both by the same factor. It binds only in the R_collusion = 0 edge
 above.
 
-When `payout_cap` or `twap_milli_usd` is zero the cap is disabled entirely,
-preserving backward compatibility with pre-v13 epochs and test fixtures.
+When `payout_cap` or `twap_milli_usd` is zero, `CapR` fails closed and returns 0,
+preventing unbounded emissions if an invalid epoch or zero-TWAP parameter is encountered.
 
 ## Code reference
 
