@@ -1368,6 +1368,13 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 				continue
 			}
 
+			if n.VMManager == nil {
+				continue
+			}
+			if _, isMock := n.VMManager.(*vm.MockManager); isMock {
+				continue
+			}
+
 			availVCPUs, availMemMB, availDiskGB := n.providerVCPUs, n.providerMemoryMB, n.providerDiskGB
 			if n.VMManager != nil {
 				for _, vi := range n.VMManager.List() {
@@ -1509,10 +1516,16 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 		return
 	}
 
-	if n.VMManager != nil {
-		if _, err := n.VMManager.Get(leaseBlock.Hash); err == nil {
-			return
-		}
+	if n.VMManager == nil {
+		log.Printf("Cannot auto-accept lease %s: no VM manager configured", shortHash(leaseBlock.Hash))
+		return
+	}
+	if _, isMock := n.VMManager.(*vm.MockManager); isMock {
+		log.Printf("Refusing to auto-accept lease %s: mock VM manager cannot accept leases for emission", shortHash(leaseBlock.Hash))
+		return
+	}
+	if _, err := n.VMManager.Get(leaseBlock.Hash); err == nil {
+		return
 	}
 
 	if err := n.acceptPolicy.Allow(leaseBlock, n.activeLeaseCount()); err != nil {
@@ -1603,8 +1616,8 @@ func (n *Node) autoAcceptLease(leaseBlock *core.Block) {
 	}
 
 	if n.VMManager != nil {
-		if _, err := n.VMManager.Get(leaseBlock.Hash); err != nil {
-			log.Printf("Lease %s: VM provision failed, not accepting", shortHash(leaseBlock.Hash))
+		if info, err := n.VMManager.Get(leaseBlock.Hash); err != nil || info == nil || info.Status != "running" {
+			log.Printf("Lease %s: VM provision failed or not running, not accepting", shortHash(leaseBlock.Hash))
 			return
 		}
 	}
@@ -1835,6 +1848,12 @@ func (n *Node) cleanupOrphanedVMs() {
 }
 
 func (n *Node) trySettleExpiredLeases() {
+	if n.VMManager == nil {
+		return
+	}
+	if _, isMock := n.VMManager.(*vm.MockManager); isMock {
+		return
+	}
 	ls, ok := n.store.(core.LeaseStore)
 	if !ok {
 		return
@@ -2042,6 +2061,19 @@ func (n *Node) settleLease(lease *core.Lease) {
 
 	if lease.Cost == 0 {
 		log.Printf("lease_settle: stored lease.Cost is zero for %s", shortHash(lease.LeaseHash))
+		return
+	}
+	if n.VMManager == nil {
+		log.Printf("Cannot settle lease %s: no VM manager configured", shortHash(lease.LeaseHash))
+		return
+	}
+	if _, isMock := n.VMManager.(*vm.MockManager); isMock {
+		log.Printf("Refusing to settle lease %s: mock VM manager cannot settle leases for emission", shortHash(lease.LeaseHash))
+		return
+	}
+	vmInfo, err := n.VMManager.Get(lease.LeaseHash)
+	if err != nil || vmInfo == nil || vmInfo.Status != "running" {
+		log.Printf("Cannot settle lease %s: VM is not running (err=%v)", shortHash(lease.LeaseHash), err)
 		return
 	}
 	xeAmount := n.leaseSettleAmount(lease)
