@@ -87,7 +87,7 @@ key delivered alongside the address:
 | GET | `/frontiers` | Frontier hash for every account (paginated) |
 | GET | `/supply` | Aggregate supply per asset and the conservation identity |
 | GET | `/pending` | All pending sends (paginated) |
-| GET | `/pending/{address}` | Pending sends to one account |
+| GET | `/pending/{address}` | Pending sends to one account (paginated) |
 | GET | `/blocks/recent` | Most recent blocks across the lattice (`?limit=`, `?since=`) |
 | GET | `/blocks/{hash}` | Block by hash |
 | POST | `/blocks/send` | Submit a signed send block |
@@ -646,12 +646,12 @@ curl "https://ldn.core.test.network/pending?limit=2"
 ```
 
 ### GET /pending/{address}
-Pending sends destined for one account. Path: `address`. (Entries here are raw `PendingSend` with no `Timestamp` field.)
+Pending sends destined for one account. Path: `address`. Query: `?offset=N&limit=M` (default limit 100, max 1000).
 ```json
 {
   "address": "334457d5...e80f",
   "pending": [
-    { "SendHash": "0099bb98...5d99", "Source": "5a598c38...b56d", "Destination": "334457d5...e80f", "Amount": 411203, "Asset": "XCU" }
+    { "SendHash": "0099bb98...5d99", "Source": "5a598c38...b56d", "Destination": "334457d5...e80f", "Amount": 411203, "Asset": "XCU", "Timestamp": 1715000000000000000 }
   ]
 }
 ```
