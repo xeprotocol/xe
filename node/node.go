@@ -1962,12 +1962,19 @@ func (d *archiveDue) prune(due map[string]bool) {
 }
 
 func (n *Node) archiveExpiredLease(lease *core.Lease) {
+	if ls, ok := n.store.(core.LeaseStore); ok {
+		latest, err := ls.GetLease(lease.LeaseHash)
+		if err != nil || latest == nil || !shouldArchiveExpiredLease(latest, core.Now().UnixNano()) {
+			return
+		}
+		lease = latest
+	}
 	if err := n.Ledger.ArchiveExpiredLease(lease); err != nil {
 		log.Printf("archive: %s: %v", shortHash(lease.LeaseHash), err)
 		return
 	}
 	log.Printf("Archived expired lease %s: burned %d µXCU escrow (both parties offline)",
-		shortHash(lease.LeaseHash), lease.Cost+lease.Stake)
+		shortHash(lease.LeaseHash), lease.TotalCost()+lease.Stake)
 }
 
 func (n *Node) forceSettleLease(lease *core.Lease) {

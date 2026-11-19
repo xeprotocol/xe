@@ -236,6 +236,14 @@ func (l *Lease) EffectiveDurationSecs() uint64 {
 	return total
 }
 
+func (l *Lease) TotalCost() uint64 {
+	total := l.Cost
+	for i := range l.Renewals {
+		total += l.Renewals[i].Cost
+	}
+	return total
+}
+
 func (l *Lease) EffectiveExpiry() int64 {
 	return l.StartTime + int64(l.EffectiveDurationSecs())*int64(time.Second)
 }
