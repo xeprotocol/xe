@@ -32,6 +32,7 @@ type nodeBackend interface {
 	GetBalance(account string) uint64
 	GetAssetBalances(account string) map[string]uint64
 	GetSpendableBalances(account string) map[string]uint64
+	GetFinalSpendableBalances(account string) map[string]uint64
 	IsBlockFinalized(account, hash string) bool
 	FinalHeight(account string) uint64
 	GetKeyset(account string) *core.Keyset
@@ -461,18 +462,28 @@ func (h *Handler) handleGetBalance(w http.ResponseWriter, r *http.Request) {
 	if spendable == nil {
 		spendable = map[string]uint64{}
 	}
+	finalSpendable := h.node.GetFinalSpendableBalances(address)
+	if finalSpendable == nil {
+		finalSpendable = map[string]uint64{}
+	}
+	finalHeight := h.node.FinalHeight(address)
+	_, total := h.node.GetChainRange(address, 0, 0)
+	hasUnconfirmedFrontier := uint64(total) > finalHeight
+
 	resp := struct {
-		Address string `json:"address"`
-
-		Balances map[string]uint64 `json:"balances"`
-
-		Spendable   map[string]uint64 `json:"spendable"`
-		FinalHeight uint64            `json:"final_height"`
+		Address                string            `json:"address"`
+		Balances               map[string]uint64 `json:"balances"`
+		Spendable              map[string]uint64 `json:"spendable"`
+		FinalSpendable         map[string]uint64 `json:"final_spendable"`
+		FinalHeight            uint64            `json:"final_height"`
+		HasUnconfirmedFrontier bool              `json:"has_unconfirmed_frontier"`
 	}{
-		Address:     address,
-		Balances:    balances,
-		Spendable:   spendable,
-		FinalHeight: h.node.FinalHeight(address),
+		Address:                address,
+		Balances:               balances,
+		Spendable:              spendable,
+		FinalSpendable:         finalSpendable,
+		FinalHeight:            finalHeight,
+		HasUnconfirmedFrontier: hasUnconfirmedFrontier,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

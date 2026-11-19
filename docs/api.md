@@ -79,7 +79,7 @@ key delivered alongside the address:
 | GET | `/network/activations` | Feature activation registry as of the state-chain tip + what this build implements |
 | GET | `/network/readiness` | Delegated vote weight by advertised version and feature |
 | GET | `/accounts` | All known accounts (paginated) |
-| GET | `/accounts/{address}/balance` | Per-asset balance + spendable + final height |
+| GET | `/accounts/{address}/balance` | Per-asset balance + spendable + final spendable + final height + unconfirmed frontier flag |
 | GET | `/accounts/{address}/chain` | Account block chain (paginated) |
 | GET | `/accounts/{address}/keyset` | Multisig keyset for an account |
 | GET | `/accounts/{address}/reputation` | Per-account reputation aggregate |
@@ -469,10 +469,12 @@ curl https://ldn.core.test.network/accounts/0813c29...a33f/balance
   "address": "dcb8ed55384fca757b4d70aa46f472014a581ddff941671cf6a679a04caa8df8",
   "balances":  { "XE": 300000000, "XCU": 181469175 },
   "spendable": { "XE": 300000000, "XCU": 181469175 },
-  "final_height": 7
+  "final_spendable": { "XE": 300000000, "XCU": 181469175 },
+  "final_height": 7,
+  "has_unconfirmed_frontier": false
 }
 ```
-> `balances` includes unfinalized inflows; **`spendable` counts only finalized (irreversible) funds — treat it as the settlement figure**. `final_height` is the account's finalized-block watermark.
+> `balances` and `spendable` report figures following the node's local account frontier. If the frontier includes blocks not yet finalized, `has_unconfirmed_frontier` is set to `true`. `final_spendable` reflects only funds finalized (irreversible) up to `final_height` — treat it or blocks with `finalized: true` as the settlement figure. `final_height` is the account's finalized-block watermark.
 > Errors: `400 missing address`.
 
 ### GET /accounts/{address}/chain

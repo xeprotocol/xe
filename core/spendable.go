@@ -31,6 +31,14 @@ func (l *Ledger) SpendableBalances(account string) map[string]uint64 {
 	return l.spendableUpTo(account, fh, math.MaxInt)
 }
 
+func (l *Ledger) FinalSpendableBalances(account string) map[string]uint64 {
+	fh := l.FinalHeight(account)
+	if fh == 0 {
+		return make(map[string]uint64)
+	}
+	return l.spendableUpTo(account, fh, int(fh))
+}
+
 func (l *Ledger) advanceFinalSnapshot(account string, fh uint64) {
 	l.spendableUpTo(account, fh, int(fh))
 }
