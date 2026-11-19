@@ -518,6 +518,9 @@ func (l *Ledger) ArchiveExpiredLease(lease *Lease) error {
 	if !ok {
 		return fmt.Errorf("store cannot archive leases")
 	}
+	if lease == nil {
+		return fmt.Errorf("lease is nil")
+	}
 	accounts := []string{lease.Consumer, lease.Provider}
 	sort.Strings(accounts)
 	first := l.acquireAccountLock(accounts[0])
@@ -531,12 +534,32 @@ func (l *Ledger) ArchiveExpiredLease(lease *Lease) error {
 	}
 	leaseEntry := l.acquireLeaseLock(lease.LeaseHash)
 	defer l.releaseLeaseLock(lease.LeaseHash, leaseEntry)
+
+	if ls, ok := l.store.(LeaseStore); ok {
+		cur, err := ls.GetLease(lease.LeaseHash)
+		if err != nil {
+			return fmt.Errorf("GetLease: %w", err)
+		}
+		if cur == nil {
+			return fmt.Errorf("lease %s not found", shortHash(lease.LeaseHash))
+		}
+		if cur.State != LeaseAccepted || cur.Settled {
+			return fmt.Errorf("ArchiveExpiredLease: %w: lease %s changed state: state=%s, settled=%v",
+				ErrLeaseStateConflict, shortHash(lease.LeaseHash), cur.State, cur.Settled)
+		}
+		if cur.EffectiveExpiry() != lease.EffectiveExpiry() {
+			return fmt.Errorf("ArchiveExpiredLease: %w: lease %s expiry changed: effective=%d, expected=%d",
+				ErrLeaseStateConflict, shortHash(lease.LeaseHash), cur.EffectiveExpiry(), lease.EffectiveExpiry())
+		}
+		lease = cur
+	}
+
 	return as.ArchiveLease(lease)
 }
 
 func isLeaseStateTransition(t BlockType) bool {
 	switch t {
-	case BlockLeaseAccept, BlockLeaseSettle, BlockLeaseCancel, BlockLeaseForceSettle:
+	case BlockLeaseAccept, BlockLeaseSettle, BlockLeaseCancel, BlockLeaseForceSettle, BlockLeaseRenew:
 		return true
 	}
 	return false
