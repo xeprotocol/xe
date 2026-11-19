@@ -2167,12 +2167,12 @@ func (l *Ledger) EpochParamsAt(ns int64) (EpochParams, bool) {
 
 func CapR(r, payoutCap, twapMilliUSD uint64) uint64 {
 	if payoutCap == 0 || twapMilliUSD == 0 {
-		return r
+		return 0
 	}
 
 	scaled, ok := safeMul(payoutCap, 1000)
 	if !ok {
-		return r
+		return 0
 	}
 	rCapMax := ceilDiv(scaled, twapMilliUSD)
 	if rCapMax < r {
