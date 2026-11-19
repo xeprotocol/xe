@@ -164,13 +164,22 @@ func directoryValidator() pubsub.ValidatorEx {
 }
 
 func certificateValidator() pubsub.ValidatorEx {
-	return func(_ context.Context, _ peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
+	limiter := newPeerRateLimiter(2.0, 10, 20.0, 50, 2048)
+	return func(_ context.Context, p peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
+		if p != "" && !limiter.allow(p) {
+			return pubsub.ValidationIgnore
+		}
+
 		var cert perf.Certificate
 		if err := json.Unmarshal(msg.Data, &cert); err != nil {
 			return pubsub.ValidationReject
 		}
 		if cert.Provider == "" || cert.ProviderPubKey == "" || cert.Hash == "" || cert.Signature == "" {
 			return pubsub.ValidationReject
+		}
+
+		if time.Now().UnixNano() > cert.ExpiresAt {
+			return pubsub.ValidationIgnore
 		}
 
 		if err := perf.VerifyCertificateContent(&cert); err != nil {
