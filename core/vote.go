@@ -105,6 +105,9 @@ func (vm *VoteManager) flushPendingVotes(account, prev string) {
 }
 
 func (vm *VoteManager) ReceiveVote(v *Vote) error {
+	if v == nil {
+		return fmt.Errorf("ValidateVote: nil vote")
+	}
 	if err := vm.ValidateVote(v); err != nil {
 
 		if vm.isConflictNotFound(v) {
@@ -137,6 +140,9 @@ func (vm *VoteManager) receiveVoteInner(v *Vote) error {
 		return fmt.Errorf("ReceiveVote: GetVote: %w", err)
 	}
 	if existing != nil && existing.Final {
+		return nil
+	}
+	if existing != nil && !v.Final && existing.BlockHash == v.BlockHash {
 		return nil
 	}
 

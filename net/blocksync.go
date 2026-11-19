@@ -48,9 +48,14 @@ func SetupBlockSync(msg *Messenger, provide func(hash string) *core.Block) {
 }
 
 func PullBlocks(ctx context.Context, msg *Messenger, peers []peer.ID, hashes []string, ingest func(*core.Block) error) int {
+	if ingest == nil {
+		return 0
+	}
 	want := make(map[string]bool, len(hashes))
 	for _, h := range hashes {
-		want[h] = true
+		if h != "" {
+			want[h] = true
+		}
 	}
 	if len(want) == 0 {
 		return 0
@@ -58,12 +63,15 @@ func PullBlocks(ctx context.Context, msg *Messenger, peers []peer.ID, hashes []s
 
 	pulled := 0
 	for _, pid := range peers {
-		if len(want) == 0 {
+		if len(want) == 0 || ctx.Err() != nil {
 			break
 		}
-		remaining := make([]string, 0, len(want))
+		remaining := make([]string, 0, min(len(want), MaxBlockRequestHashes))
 		for h := range want {
 			remaining = append(remaining, h)
+			if len(remaining) >= MaxBlockRequestHashes {
+				break
+			}
 		}
 
 		reqCtx, cancel := context.WithTimeout(ctx, blockPullTimeout)
@@ -77,8 +85,18 @@ func PullBlocks(ctx context.Context, msg *Messenger, peers []peer.ID, hashes []s
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			continue
 		}
-		for _, b := range resp.Blocks {
+		blocks := resp.Blocks
+		if len(blocks) > MaxBlockRequestHashes {
+			blocks = blocks[:MaxBlockRequestHashes]
+		}
+		for _, b := range blocks {
+			if len(want) == 0 {
+				break
+			}
 			if b == nil || !want[b.Hash] {
+				continue
+			}
+			if computed, herr := core.HashBlock(b); herr != nil || computed != b.Hash {
 				continue
 			}
 			if err := ingest(b); err != nil {
