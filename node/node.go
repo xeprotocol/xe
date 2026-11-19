@@ -2470,6 +2470,9 @@ func (n *Node) directoryPruneLoop() {
 			if pruned := n.Directory.Prune(); pruned > 0 {
 				logging.Debugf("directory: pruned %d expired registrations", pruned)
 			}
+			if prunedCerts := n.PruneExpiredCertificates(); prunedCerts > 0 {
+				logging.Debugf("certificate: pruned %d expired certificates", prunedCerts)
+			}
 		}
 	}
 }

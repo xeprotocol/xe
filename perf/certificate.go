@@ -198,8 +198,32 @@ func VerifyCertificateContent(c *Certificate) error {
 		return fmt.Errorf("puzzles mismatch: got %d, want %d", c.Puzzles, PoWPuzzles)
 	}
 
+	if !isHex64(c.WorkProof) {
+		return fmt.Errorf("work_proof must be 64 lowercase hex chars, got %q", c.WorkProof)
+	}
+
 	if !isHex64(c.CPUHash) {
 		return fmt.Errorf("cpu_hash must be 64 lowercase hex chars, got %q", c.CPUHash)
+	}
+
+	if !isHex64(c.StartAttestationRoot) {
+		return fmt.Errorf("start_attestation_root must be 64 lowercase hex chars, got %q", c.StartAttestationRoot)
+	}
+
+	if !isHex64(c.EndAttestationRoot) {
+		return fmt.Errorf("end_attestation_root must be 64 lowercase hex chars, got %q", c.EndAttestationRoot)
+	}
+
+	if c.IssuedAt <= 0 {
+		return fmt.Errorf("certificate issued_at must be positive, got %d", c.IssuedAt)
+	}
+
+	if c.ExpiresAt <= c.IssuedAt {
+		return fmt.Errorf("certificate expires_at %d must be after issued_at %d", c.ExpiresAt, c.IssuedAt)
+	}
+
+	if c.ExpiresAt-c.IssuedAt > int64(CertificateValidity+24*time.Hour) {
+		return fmt.Errorf("certificate validity duration exceeds maximum allowed")
 	}
 
 	if c.PriceMultiplierMilli < PriceMultiplierMin || c.PriceMultiplierMilli > PriceMultiplierMax {

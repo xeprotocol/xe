@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/xeprotocol/xe/core"
@@ -341,6 +342,10 @@ func (n *Node) ingestCertificate(cert *perf.Certificate) bool {
 		return false
 	}
 
+	if cert.ExpiresAt <= core.Now().UnixNano() {
+		return false
+	}
+
 	if err := perf.VerifyCertificateContent(cert); err != nil {
 		logging.Warnf("Certificate: rejected %s from %s: %v",
 			shortHash(cert.Hash), shortHash(cert.Provider), err)
@@ -387,20 +392,83 @@ func (n *Node) loadPersistedCertificates() {
 		return
 	}
 	loaded := 0
+	now := core.Now().UnixNano()
+	var toDelete []string
+	var validCerts []*perf.Certificate
 	for key, data := range all {
 		var cert perf.Certificate
 		if err := json.Unmarshal(data, &cert); err != nil {
 			log.Printf("Certificate: decode persisted %s: %v", shortHash(key), err)
+			toDelete = append(toDelete, key)
 			continue
 		}
 
-		if added, _ := n.certs().put(&cert); added {
+		if cert.ExpiresAt <= now {
+			toDelete = append(toDelete, cert.Hash)
+			continue
+		}
+
+		if err := perf.VerifyCertificateContent(&cert); err != nil {
+			log.Printf("Certificate: persisted cert invalid %s: %v", shortHash(key), err)
+			toDelete = append(toDelete, cert.Hash)
+			continue
+		}
+
+		validCerts = append(validCerts, &cert)
+	}
+
+	sort.SliceStable(validCerts, func(i, j int) bool {
+		return validCerts[i].IssuedAt < validCerts[j].IssuedAt
+	})
+
+	for _, cert := range validCerts {
+		added, evicted := n.certs().put(cert)
+		if added {
 			loaded++
+		} else {
+			toDelete = append(toDelete, cert.Hash)
+		}
+		if len(evicted) > 0 {
+			toDelete = append(toDelete, evicted...)
+		}
+	}
+
+	deleted := make(map[string]struct{}, len(toDelete))
+	for _, hash := range toDelete {
+		if hash == "" {
+			continue
+		}
+		if _, seen := deleted[hash]; seen {
+			continue
+		}
+		deleted[hash] = struct{}{}
+		if err := cs.DeleteCertificate(hash); err != nil {
+			log.Printf("Certificate: prune persisted %s: %v", shortHash(hash), err)
 		}
 	}
 	if loaded > 0 {
 		log.Printf("Certificate: loaded %d persisted certificate(s)", loaded)
 	}
+}
+
+func (n *Node) PruneExpiredCertificates() int {
+	now := core.Now().UnixNano()
+	evicted := n.certs().pruneExpired(now)
+	if len(evicted) == 0 {
+		return 0
+	}
+	if cs, ok := n.store.(core.CertificateStore); ok {
+		for _, hash := range evicted {
+			if err := cs.DeleteCertificate(hash); err != nil {
+				log.Printf("Certificate: evict expired %s: %v", shortHash(hash), err)
+			}
+		}
+	}
+	return len(evicted)
+}
+
+func (n *Node) CertificateCount() int {
+	return n.certs().len()
 }
 
 func (n *Node) collectCertificates() []*perf.Certificate {
