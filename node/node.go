@@ -892,6 +892,10 @@ func (n *Node) GetSpendableBalances(account string) map[string]uint64 {
 	return n.Ledger.SpendableBalances(account)
 }
 
+func (n *Node) GetFinalSpendableBalances(account string) map[string]uint64 {
+	return n.Ledger.FinalSpendableBalances(account)
+}
+
 func (n *Node) IsBlockFinalized(account, hash string) bool {
 	return n.Ledger.IsFinalized(account, hash)
 }

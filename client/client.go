@@ -58,6 +58,37 @@ func (c *Client) GetChain(addr string) ([]*core.Block, error) {
 	return all, nil
 }
 
+type BalanceInfo struct {
+	Address                string            `json:"address"`
+	Balances               map[string]uint64 `json:"balances"`
+	Spendable              map[string]uint64 `json:"spendable"`
+	FinalSpendable         map[string]uint64 `json:"final_spendable"`
+	FinalHeight            uint64            `json:"final_height"`
+	HasUnconfirmedFrontier bool              `json:"has_unconfirmed_frontier"`
+}
+
+func (c *Client) GetBalanceInfo(addr string) (*BalanceInfo, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/accounts/%s/balance", c.BaseURL, addr))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var result BalanceInfo
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if result.Balances == nil {
+		result.Balances = map[string]uint64{}
+	}
+	if result.Spendable == nil {
+		result.Spendable = map[string]uint64{}
+	}
+	if result.FinalSpendable == nil {
+		result.FinalSpendable = map[string]uint64{}
+	}
+	return &result, nil
+}
+
 func (c *Client) GetBalances(addr string) (map[string]uint64, error) {
 	resp, err := http.Get(fmt.Sprintf("%s/accounts/%s/balance", c.BaseURL, addr))
 	if err != nil {
