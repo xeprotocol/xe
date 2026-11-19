@@ -125,18 +125,19 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 			seen[lower] = true
 		}
 	case "sys.minter":
-
 		var mc struct {
-			Keys []string `json:"keys"`
+			Keys      []string `json:"keys"`
+			Addresses []string `json:"addresses"`
 		}
 		if err := json.Unmarshal(value, &mc); err != nil {
 			return fmt.Errorf("invalid minter config JSON: %w", err)
 		}
-		if len(mc.Keys) == 0 {
-			return fmt.Errorf("minter config must have at least one key")
+		all := append(mc.Keys, mc.Addresses...)
+		if len(all) == 0 {
+			return fmt.Errorf("minter config must have at least one key or address")
 		}
-		seen := make(map[string]bool, len(mc.Keys))
-		for i, k := range mc.Keys {
+		seen := make(map[string]bool, len(all))
+		for i, k := range all {
 			if len(k) != 64 {
 				return fmt.Errorf("minter key[%d] invalid length: got %d, want 64 hex chars", i, len(k))
 			}
@@ -477,9 +478,31 @@ func lowercaseKeys(key string, value json.RawMessage) json.RawMessage {
 		v, keys = oc, &oc.Keys
 	case "sys.minter":
 		mc := &struct {
-			Keys []string `json:"keys"`
+			Keys      []string `json:"keys"`
+			Addresses []string `json:"addresses"`
 		}{}
-		v, keys = mc, &mc.Keys
+		if err := json.Unmarshal(value, mc); err != nil {
+			return value
+		}
+		changed := false
+		for i, k := range mc.Keys {
+			if lower := strings.ToLower(k); lower != k {
+				mc.Keys[i], changed = lower, true
+			}
+		}
+		for i, a := range mc.Addresses {
+			if lower := strings.ToLower(a); lower != a {
+				mc.Addresses[i], changed = lower, true
+			}
+		}
+		if !changed {
+			return value
+		}
+		out, err := json.Marshal(mc)
+		if err != nil {
+			return value
+		}
+		return out
 	default:
 		return value
 	}

@@ -764,7 +764,7 @@ Reference implementations: `core.MarshalBlockAux` (Go),
 - `lease_renew` — consumer-signed; extends an accepted lease in place. Carries `source` (the lease hash), `amount` (additional XCU escrowed at the provider's current rate), `duration` (additional secs), `certificate_hash` (the provider's current cert), the locked emission params `locked_r` / `locked_payout_cap` / `locked_twap_milli` (from the epoch at the attested renewal time), and `attestations`. It grows the single lease escrow in place; settle then sums emission over the base plus every renewal, each at its own locked R. **Gated on the `lease_renew` activation** (`sys.activations`): before activation the block is rejected retryably as "not yet activated"; a node that does not know the type ignores it.
 - `multisig_open` / `multisig_update` — carry `keyset` and `signatures` (one per signer).
 - `burn` — **XE only** (enforced by the ledger validator); optional `memo`.
-- `mint` — **XCU, authorized minter only** (`sys.minter`); rejected otherwise. `sys.minter.keys` holds account **addresses**, matched against the block's `account` (unlike `sys.timekeepers` / `sys.oracle` / `sys.dao_keyset`, which hold verifying keys matched against signatures).
+- `mint` — **XCU, authorized minter only** (`sys.minter`); rejected otherwise. `sys.minter.keys` (or `sys.minter.addresses`) holds account addresses or verifying public keys, matched against the block's `account` (matched directly or via derived address).
 
 ### Block object reference (the POST `/blocks/*` body)
 | Field | Type | Notes |

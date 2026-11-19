@@ -6,7 +6,8 @@ import (
 )
 
 type MinterConfig struct {
-	Keys []string `json:"keys"`
+	Keys      []string `json:"keys"`
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 func (l *Ledger) isMinter(account string) bool {
@@ -17,8 +18,19 @@ func (l *Ledger) isMinter(account string) bool {
 	if cfg == nil {
 		return false
 	}
+	for _, a := range cfg.Addresses {
+		if strings.EqualFold(a, account) {
+			return true
+		}
+		if derived, err := DeriveAddress(a); err == nil && strings.EqualFold(derived, account) {
+			return true
+		}
+	}
 	for _, k := range cfg.Keys {
 		if strings.EqualFold(k, account) {
+			return true
+		}
+		if derived, err := DeriveAddress(k); err == nil && strings.EqualFold(derived, account) {
 			return true
 		}
 	}
