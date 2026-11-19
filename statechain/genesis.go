@@ -72,6 +72,11 @@ func ValidateGenesis(b *Block) error {
 	if len(b.Ops) == 0 {
 		return fmt.Errorf("genesis: must have at least one op")
 	}
+	for _, op := range b.Ops {
+		if err := ValidateOp(op); err != nil {
+			return fmt.Errorf("genesis: %w", err)
+		}
+	}
 
 	expected, err := HashBlock(b)
 	if err != nil {
