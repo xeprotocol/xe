@@ -15,6 +15,7 @@ type Store interface {
 	PutPendingSend(ps *PendingSend) error
 	DeletePendingSend(sendHash string) error
 	GetPendingByDest(account string) ([]*PendingSend, error)
+	GetPendingBySource(account string) ([]*PendingSend, error)
 	GetAllPending() ([]*PendingSend, error)
 	PutFrontier(account string, blockHash string) error
 	GetFrontier(account string) (string, error)

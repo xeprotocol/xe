@@ -40,6 +40,7 @@ type nodeBackend interface {
 	GetChainRange(account string, from, to int) ([]*core.Block, int)
 	GetBlock(hash string) *core.Block
 	GetPending(account string) []*core.PendingSend
+	GetPendingBySource(account string) []*core.PendingSend
 	GetPendingPage(ctx context.Context, offset, limit int) ([]*core.PendingSend, error)
 	GetFrontiers() map[string]string
 	GetFrontiersPage(offset, limit int) []node.FrontierInfo
@@ -560,7 +561,13 @@ func (h *Handler) handleGetPending(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing address")
 		return
 	}
-	pending := h.node.GetPending(address)
+	role := r.URL.Query().Get("role")
+	var pending []*core.PendingSend
+	if role == "source" || role == "sender" {
+		pending = h.node.GetPendingBySource(address)
+	} else {
+		pending = h.node.GetPending(address)
+	}
 	entries, err := h.enrichPending(r.Context(), pending)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "request cancelled")
@@ -592,7 +599,9 @@ func (h *Handler) enrichPending(ctx context.Context, pending []*core.PendingSend
 			return nil, err
 		}
 		var ts int64
-		if b := h.node.GetBlock(p.SendHash); b != nil {
+		if p.Timestamp > 0 {
+			ts = p.Timestamp
+		} else if b := h.node.GetBlock(p.SendHash); b != nil {
 			ts = b.Timestamp
 		}
 		entries = append(entries, pendingEntry{

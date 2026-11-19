@@ -1067,6 +1067,26 @@ func (l *Ledger) validateAndAddSend(b *Block) error {
 		return fmt.Errorf("send: %w", err)
 	}
 
+	if MaxPendingPerAccount > 0 {
+		srcPending, err := l.getPendingBySourceOverlay(b.Account)
+		if err != nil {
+			return fmt.Errorf("check source pending: %w", err)
+		}
+		if len(srcPending) >= MaxPendingPerAccount {
+			return fmt.Errorf("account %s reached pending cap (%d >= %d): recipient must claim existing sends before creating more", shortAddr(b.Account), len(srcPending), MaxPendingPerAccount)
+		}
+	}
+
+	if MaxPendingPerDestination > 0 {
+		dstPending, err := l.getPendingByDestOverlay(b.Destination)
+		if err != nil {
+			return fmt.Errorf("check destination pending: %w", err)
+		}
+		if len(dstPending) >= MaxPendingPerDestination {
+			return fmt.Errorf("destination %s reached pending cap (%d >= %d): recipient must claim existing sends before accepting more", shortAddr(b.Destination), len(dstPending), MaxPendingPerDestination)
+		}
+	}
+
 	commit, prevBalance, err := l.prepareBlockWrite(b)
 	if err != nil {
 		return err
@@ -1077,6 +1097,7 @@ func (l *Ledger) validateAndAddSend(b *Block) error {
 		Destination: b.Destination,
 		Amount:      b.Amount,
 		Asset:       b.Asset,
+		Timestamp:   b.Timestamp,
 	}
 	return l.commitBlockWrite(commit, prevBalance)
 }
@@ -1150,6 +1171,12 @@ func (l *Ledger) validateAndAddReceive(b *Block) error {
 	}
 	if pending.Destination != b.Account {
 		return fmt.Errorf("send not addressed to this account")
+	}
+
+	if PendingSendTTL > 0 && pending.Timestamp > 0 && b.Timestamp > pending.Timestamp {
+		if pending.IsExpired(b.Timestamp, PendingSendTTL) {
+			return fmt.Errorf("pending send %s has expired (ttl=%v)", shortHash(b.Source), PendingSendTTL)
+		}
 	}
 
 	if l.isLiveLeaseEscrow(b.Source) {
@@ -1711,6 +1738,7 @@ func (l *Ledger) validateAndAddLease(b *Block) error {
 		Destination: b.Destination,
 		Amount:      b.Amount,
 		Asset:       "XCU",
+		Timestamp:   b.Timestamp,
 	}
 	commit.PutLease = &Lease{
 		LeaseHash:       b.Hash,
@@ -2551,6 +2579,16 @@ func (l *Ledger) GetPendingForAccount(account string) []*PendingSend {
 	return result
 }
 
+func (l *Ledger) GetPendingBySource(account string) []*PendingSend {
+	result, err := l.store.GetPendingBySource(account)
+	if err != nil {
+		storeReadErrors.Add(1)
+		log.Printf("ERROR: GetPendingBySource: store read for %s failed: %v", shortAddr(account), err)
+		return nil
+	}
+	return result
+}
+
 func (l *Ledger) GetAllPending() []*PendingSend {
 	result, err := l.store.GetAllPending()
 	if err != nil {
@@ -3175,6 +3213,7 @@ func (l *Ledger) pendingConsumedAboveSlot(b *Block) *PendingSend {
 				Destination: src.Destination,
 				Amount:      src.Amount,
 				Asset:       asset,
+				Timestamp:   src.Timestamp,
 			}
 		}
 		if cb.Hash == b.Previous {

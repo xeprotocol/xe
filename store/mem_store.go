@@ -18,6 +18,7 @@ type MemStore struct {
 	chains        map[string]*core.AccountChain
 	pending       map[string]*core.PendingSend
 	pendingByDest map[string]map[string]*core.PendingSend
+	pendingBySrc  map[string]map[string]*core.PendingSend
 	frontiers     map[string]string
 
 	conflicts map[string]*core.Conflict
@@ -51,6 +52,7 @@ func NewMemStore() *MemStore {
 		chains:        make(map[string]*core.AccountChain),
 		pending:       make(map[string]*core.PendingSend),
 		pendingByDest: make(map[string]map[string]*core.PendingSend),
+		pendingBySrc:  make(map[string]map[string]*core.PendingSend),
 		frontiers:     make(map[string]string),
 		conflicts:     make(map[string]*core.Conflict),
 		staged:        make(map[string]*core.Block),
@@ -153,6 +155,13 @@ func (m *MemStore) PutPendingSend(ps *core.PendingSend) error {
 		m.pendingByDest[ps.Destination] = make(map[string]*core.PendingSend)
 	}
 	m.pendingByDest[ps.Destination][ps.SendHash] = &cp
+	if ps.Source != "" {
+		if m.pendingBySrc[ps.Source] == nil {
+			m.pendingBySrc[ps.Source] = make(map[string]*core.PendingSend)
+		}
+		cp2 := cp
+		m.pendingBySrc[ps.Source][ps.SendHash] = &cp2
+	}
 	return nil
 }
 
@@ -164,11 +173,18 @@ func (m *MemStore) DeletePendingSend(sendHash string) error {
 		return nil
 	}
 	dest := ps.Destination
+	src := ps.Source
 	delete(m.pending, sendHash)
 	if destMap := m.pendingByDest[dest]; destMap != nil {
 		delete(destMap, sendHash)
 		if len(destMap) == 0 {
 			delete(m.pendingByDest, dest)
+		}
+	}
+	if srcMap := m.pendingBySrc[src]; srcMap != nil {
+		delete(srcMap, sendHash)
+		if len(srcMap) == 0 {
+			delete(m.pendingBySrc, src)
 		}
 	}
 	return nil
@@ -183,6 +199,21 @@ func (m *MemStore) GetPendingByDest(account string) ([]*core.PendingSend, error)
 	}
 	out := make([]*core.PendingSend, 0, len(destMap))
 	for _, ps := range destMap {
+		cp := *ps
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
+func (m *MemStore) GetPendingBySource(account string) ([]*core.PendingSend, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	srcMap := m.pendingBySrc[account]
+	if len(srcMap) == 0 {
+		return nil, nil
+	}
+	out := make([]*core.PendingSend, 0, len(srcMap))
+	for _, ps := range srcMap {
 		cp := *ps
 		out = append(out, &cp)
 	}
@@ -271,11 +302,18 @@ func (m *MemStore) applyUndoLocked(u *core.BlockUndo) error {
 	if u.DeletePendingID != "" {
 		if ps, ok := m.pending[u.DeletePendingID]; ok {
 			dest := ps.Destination
+			src := ps.Source
 			delete(m.pending, u.DeletePendingID)
 			if dm := m.pendingByDest[dest]; dm != nil {
 				delete(dm, u.DeletePendingID)
 				if len(dm) == 0 {
 					delete(m.pendingByDest, dest)
+				}
+			}
+			if sm := m.pendingBySrc[src]; sm != nil {
+				delete(sm, u.DeletePendingID)
+				if len(sm) == 0 {
+					delete(m.pendingBySrc, src)
 				}
 			}
 		}
@@ -288,6 +326,13 @@ func (m *MemStore) applyUndoLocked(u *core.BlockUndo) error {
 		}
 		cp2 := cp
 		m.pendingByDest[cp.Destination][cp.SendHash] = &cp2
+		if cp.Source != "" {
+			if m.pendingBySrc[cp.Source] == nil {
+				m.pendingBySrc[cp.Source] = make(map[string]*core.PendingSend)
+			}
+			cp3 := cp
+			m.pendingBySrc[cp.Source][cp.SendHash] = &cp3
+		}
 	}
 	if u.RejectHash != "" {
 		m.blockStatus[u.RejectHash] = core.StatusRejected
@@ -376,17 +421,31 @@ func (m *MemStore) applyCommitLocked(c *core.BlockCommit) error {
 		}
 		cp2 := cp
 		m.pendingByDest[cp.Destination][cp.SendHash] = &cp2
+		if cp.Source != "" {
+			if m.pendingBySrc[cp.Source] == nil {
+				m.pendingBySrc[cp.Source] = make(map[string]*core.PendingSend)
+			}
+			cp3 := cp
+			m.pendingBySrc[cp.Source][cp.SendHash] = &cp3
+		}
 	}
 
 	if c.DeletePendingID != "" {
 		ps, ok := m.pending[c.DeletePendingID]
 		if ok {
 			dest := ps.Destination
+			src := ps.Source
 			delete(m.pending, c.DeletePendingID)
 			if destMap := m.pendingByDest[dest]; destMap != nil {
 				delete(destMap, c.DeletePendingID)
 				if len(destMap) == 0 {
 					delete(m.pendingByDest, dest)
+				}
+			}
+			if srcMap := m.pendingBySrc[src]; srcMap != nil {
+				delete(srcMap, c.DeletePendingID)
+				if len(srcMap) == 0 {
+					delete(m.pendingBySrc, src)
 				}
 			}
 		}

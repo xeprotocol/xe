@@ -646,12 +646,15 @@ curl "https://ldn.core.test.network/pending?limit=2"
 ```
 
 ### GET /pending/{address}
-Pending sends destined for one account. Path: `address`. (Entries here are raw `PendingSend` with no `Timestamp` field.)
+Pending sends destined for (or originating from) one account. Path: `address`.
+
+Params:
+- `role` — optional; `destination` (default) returns pending sends waiting to be received by this account. `source` returns pending sends created by this account that remain uncollected.
 ```json
 {
   "address": "334457d5...e80f",
   "pending": [
-    { "SendHash": "0099bb98...5d99", "Source": "5a598c38...b56d", "Destination": "334457d5...e80f", "Amount": 411203, "Asset": "XCU" }
+    { "SendHash": "0099bb98...5d99", "Source": "5a598c38...b56d", "Destination": "334457d5...e80f", "Amount": 411203, "Asset": "XCU", "Timestamp": 1700000000000000000 }
   ]
 }
 ```
