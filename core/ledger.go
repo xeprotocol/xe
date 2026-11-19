@@ -45,7 +45,7 @@ func ceilDiv(a, b uint64) uint64 {
 }
 
 func LeaseStake(cost uint64) uint64 {
-	if LeaseStakeDivisor == 0 {
+	if LeaseStakeDivisor == 0 || cost == 0 {
 		return 0
 	}
 	stake := ceilDiv(cost, LeaseStakeDivisor)
@@ -116,7 +116,7 @@ const (
 	LeaseVCPURate     = uint64(20_000)
 	LeaseMemGBRate    = uint64(10_000)
 	LeaseDiskGBRate   = uint64(1_000)
-	LeaseStakeDivisor = uint64(0)
+	DefaultLeaseStakeDivisor = uint64(10)
 )
 
 const (
@@ -165,6 +165,8 @@ var (
 	LeaseEscrowExpiry = DefaultLeaseEscrowExpiry
 
 	LeaseArchiveGap = DefaultLeaseArchiveGap
+
+	LeaseStakeDivisor = DefaultLeaseStakeDivisor
 )
 
 func ApplyGenesisLeaseTiming(b *Block) {
@@ -174,6 +176,7 @@ func ApplyGenesisLeaseTiming(b *Block) {
 	LeaseEscrowExpiry = DefaultLeaseEscrowExpiry
 	LeaseArchiveGap = DefaultLeaseArchiveGap
 	MaxAttestationSkew = DefaultMaxAttestationSkew
+	LeaseStakeDivisor = DefaultLeaseStakeDivisor
 	if b == nil {
 		return
 	}
@@ -1773,6 +1776,9 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 	}
 
 	expectedStake := LeaseStake(leaseBlock.Amount)
+	if !skipSkew && expectedStake == 0 {
+		return fmt.Errorf("lease_accept: provider stake cannot be zero")
+	}
 	if b.Amount != expectedStake {
 		return fmt.Errorf("lease_accept stake mismatch: expected %d, got %d", expectedStake, b.Amount)
 	}
@@ -2272,6 +2278,9 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 	}
 	if lease.Provider != b.Account {
 		return fmt.Errorf("lease_settle: provider account mismatch")
+	}
+	if !skipSkew && lease.Stake == 0 {
+		return fmt.Errorf("lease_settle: lease has zero stake collateral")
 	}
 
 	if lease.State != LeaseAccepted {
