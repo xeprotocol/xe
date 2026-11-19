@@ -354,7 +354,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		if err := json.Unmarshal(raw, &config); err != nil {
 			return nil
 		}
-		if len(config.Keys) == 0 {
+		if len(config.Keys) == 0 && len(config.Addresses) == 0 {
 			return nil
 		}
 		return &config
