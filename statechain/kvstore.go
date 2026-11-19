@@ -218,10 +218,11 @@ func validateSysKeyValue(key string, value json.RawMessage) error {
 				if _, err := hex.DecodeString(a); err != nil {
 					return fmt.Errorf("representatives address[%d] invalid hex: %w", i, err)
 				}
-				if seen[a] {
+				lower := strings.ToLower(a)
+				if seen[lower] {
 					return fmt.Errorf("representatives address[%d] is a duplicate", i)
 				}
-				seen[a] = true
+				seen[lower] = true
 			}
 		default:
 
@@ -480,6 +481,9 @@ func lowercaseKeys(key string, value json.RawMessage) json.RawMessage {
 			Keys []string `json:"keys"`
 		}{}
 		v, keys = mc, &mc.Keys
+	case "sys.representatives":
+		rc := &RepresentativeConfig{}
+		v, keys = rc, &rc.Addresses
 	default:
 		return value
 	}
@@ -566,6 +570,14 @@ func (kv *KVStore) OracleConfig() (*OracleConfig, error) {
 	if len(oc.AllowedPrefix) == 0 {
 		return nil, fmt.Errorf("sys.oracle: no allowed_prefix")
 	}
+	seen := make(map[string]bool, len(oc.Keys))
+	for i, k := range oc.Keys {
+		lower := strings.ToLower(k)
+		if seen[lower] {
+			return nil, fmt.Errorf("sys.oracle: key[%d] is a duplicate", i)
+		}
+		seen[lower] = true
+	}
 	return &oc, nil
 }
 
@@ -634,6 +646,14 @@ func (kv *KVStore) DAOKeyset() (*DAOKeyset, error) {
 	}
 	if ks.Threshold < MinDAOThreshold || ks.Threshold > len(ks.Keys) {
 		return nil, fmt.Errorf("sys.dao_keyset: invalid threshold %d for %d keys (min %d)", ks.Threshold, len(ks.Keys), MinDAOThreshold)
+	}
+	seen := make(map[string]bool, len(ks.Keys))
+	for i, k := range ks.Keys {
+		lower := strings.ToLower(k)
+		if seen[lower] {
+			return nil, fmt.Errorf("sys.dao_keyset: key[%d] is a duplicate", i)
+		}
+		seen[lower] = true
 	}
 	return &ks, nil
 }
