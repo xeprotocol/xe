@@ -87,6 +87,19 @@ func (c *Client) GetPending(addr string) ([]*core.PendingSend, error) {
 	return result.Pending, nil
 }
 
+func (c *Client) GetPendingBySource(addr string) ([]*core.PendingSend, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/pending/%s?role=source", c.BaseURL, addr))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var result struct {
+		Pending []*core.PendingSend `json:"pending"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&result)
+	return result.Pending, nil
+}
+
 func (c *Client) SubmitBlock(b *core.Block, endpoint string) error {
 	data, _ := json.Marshal(b)
 	resp, err := http.Post(fmt.Sprintf("%s/blocks/%s", c.BaseURL, endpoint), "application/json", bytes.NewReader(data))

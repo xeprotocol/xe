@@ -992,6 +992,10 @@ func (n *Node) GetPending(account string) []*core.PendingSend {
 	return n.Ledger.GetPendingForAccount(account)
 }
 
+func (n *Node) GetPendingBySource(account string) []*core.PendingSend {
+	return n.Ledger.GetPendingBySource(account)
+}
+
 func (n *Node) GetFrontiers() map[string]string {
 	return n.Ledger.Frontiers()
 }

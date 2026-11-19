@@ -121,6 +121,72 @@ func (l *Ledger) getPendingSendOverlay(sendHash string) (*PendingSend, error) {
 	return l.store.GetPendingSend(sendHash)
 }
 
+func (l *Ledger) getPendingByDestOverlay(dest string) ([]*PendingSend, error) {
+	pends, err := l.store.GetPendingByDest(dest)
+	if err != nil {
+		return nil, err
+	}
+	cb := l.activeCascadeFor()
+	if cb == nil {
+		return pends, nil
+	}
+	var result []*PendingSend
+	for _, ps := range pends {
+		if !cb.delPending[ps.SendHash] {
+			result = append(result, ps)
+		}
+	}
+	for _, ps := range cb.addPending {
+		if ps.Destination == dest && !cb.delPending[ps.SendHash] {
+			found := false
+			for _, r := range result {
+				if r.SendHash == ps.SendHash {
+					found = true
+					break
+				}
+			}
+			if !found {
+				cp := *ps
+				result = append(result, &cp)
+			}
+		}
+	}
+	return result, nil
+}
+
+func (l *Ledger) getPendingBySourceOverlay(source string) ([]*PendingSend, error) {
+	pends, err := l.store.GetPendingBySource(source)
+	if err != nil {
+		return nil, err
+	}
+	cb := l.activeCascadeFor()
+	if cb == nil {
+		return pends, nil
+	}
+	var result []*PendingSend
+	for _, ps := range pends {
+		if !cb.delPending[ps.SendHash] {
+			result = append(result, ps)
+		}
+	}
+	for _, ps := range cb.addPending {
+		if ps.Source == source && !cb.delPending[ps.SendHash] {
+			found := false
+			for _, r := range result {
+				if r.SendHash == ps.SendHash {
+					found = true
+					break
+				}
+			}
+			if !found {
+				cp := *ps
+				result = append(result, &cp)
+			}
+		}
+	}
+	return result, nil
+}
+
 func (l *Ledger) getLeaseOverlay(leaseHash string) (lease *Lease, ok bool, err error) {
 	cb := l.activeCascadeFor()
 	if cb != nil {

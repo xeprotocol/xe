@@ -37,6 +37,7 @@ const (
 	prefixFinalVote   = byte(0x11)
 	prefixCertificate = byte(0x12)
 	prefixAccountKey  = byte(0x13)
+	prefixPendingSrc  = byte(0x14)
 )
 
 type BadgerStore struct {
@@ -308,6 +309,65 @@ func (s *BadgerStore) GetPendingSend(sendHash string) (*core.PendingSend, error)
 	return &ps, nil
 }
 
+func addPendingIndexTxn(txn *badger.Txn, prefix byte, account string, sendHash string) error {
+	if account == "" {
+		return nil
+	}
+	key := prefixedKey(prefix, account)
+	var hashes []string
+	item, err := txn.Get(key)
+	if err != nil && err != badger.ErrKeyNotFound {
+		return err
+	}
+	if err == nil {
+		if err := item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &hashes)
+		}); err != nil {
+			return err
+		}
+	}
+	hashes = append(hashes, sendHash)
+	data, err := json.Marshal(hashes)
+	if err != nil {
+		return err
+	}
+	return txn.Set(key, data)
+}
+
+func removePendingIndexTxn(txn *badger.Txn, prefix byte, account string, sendHash string) error {
+	if account == "" {
+		return nil
+	}
+	key := prefixedKey(prefix, account)
+	var hashes []string
+	item, err := txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &hashes)
+	}); err != nil {
+		return err
+	}
+	filtered := hashes[:0]
+	for _, h := range hashes {
+		if h != sendHash {
+			filtered = append(filtered, h)
+		}
+	}
+	if len(filtered) == 0 {
+		return txn.Delete(key)
+	}
+	data, err := json.Marshal(filtered)
+	if err != nil {
+		return err
+	}
+	return txn.Set(key, data)
+}
+
 func (s *BadgerStore) PutPendingSend(ps *core.PendingSend) error {
 	psData, err := json.Marshal(ps)
 	if err != nil {
@@ -315,30 +375,13 @@ func (s *BadgerStore) PutPendingSend(ps *core.PendingSend) error {
 	}
 
 	return s.updatePending(func(txn *badger.Txn, d pendingDelta) error {
-
 		if err := putPendingTxn(txn, d, ps, psData); err != nil {
 			return err
 		}
-
-		destKey := prefixedKey(prefixPendingDst, ps.Destination)
-		var hashes []string
-		item, err := txn.Get(destKey)
-		if err != nil && err != badger.ErrKeyNotFound {
+		if err := addPendingIndexTxn(txn, prefixPendingDst, ps.Destination, ps.SendHash); err != nil {
 			return err
 		}
-		if err == nil {
-			if err := item.Value(func(val []byte) error {
-				return json.Unmarshal(val, &hashes)
-			}); err != nil {
-				return err
-			}
-		}
-		hashes = append(hashes, ps.SendHash)
-		destData, err := json.Marshal(hashes)
-		if err != nil {
-			return err
-		}
-		return txn.Set(destKey, destData)
+		return addPendingIndexTxn(txn, prefixPendingSrc, ps.Source, ps.SendHash)
 	})
 }
 
@@ -349,7 +392,6 @@ func (s *BadgerStore) DeletePendingSend(sendHash string) error {
 }
 
 func deletePendingTxn(txn *badger.Txn, d pendingDelta, sendHash string) error {
-
 	pendingKey := prefixedKey(prefixPending, sendHash)
 	item, err := txn.Get(pendingKey)
 	if err == badger.ErrKeyNotFound {
@@ -371,41 +413,47 @@ func deletePendingTxn(txn *badger.Txn, d pendingDelta, sendHash string) error {
 	}
 	d.removed(&ps)
 
-	destKey := prefixedKey(prefixPendingDst, ps.Destination)
-	var hashes []string
-	item2, err := txn.Get(destKey)
-	if err != nil && err != badger.ErrKeyNotFound {
+	if err := removePendingIndexTxn(txn, prefixPendingDst, ps.Destination, sendHash); err != nil {
 		return err
 	}
-	if err == nil {
-		if err := item2.Value(func(val []byte) error {
-			return json.Unmarshal(val, &hashes)
-		}); err != nil {
-			return err
-		}
-	}
-
-	filtered := hashes[:0]
-	for _, h := range hashes {
-		if h != sendHash {
-			filtered = append(filtered, h)
-		}
-	}
-
-	if len(filtered) == 0 {
-		return txn.Delete(destKey)
-	}
-	destData, err := json.Marshal(filtered)
-	if err != nil {
-		return err
-	}
-	return txn.Set(destKey, destData)
+	return removePendingIndexTxn(txn, prefixPendingSrc, ps.Source, sendHash)
 }
 
 func (s *BadgerStore) GetPendingByDest(account string) ([]*core.PendingSend, error) {
 	var hashes []string
 	err := s.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get(prefixedKey(prefixPendingDst, account))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &hashes)
+		})
+	})
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*core.PendingSend, 0, len(hashes))
+	for _, h := range hashes {
+		ps, err := s.GetPendingSend(h)
+		if err != nil {
+			return nil, err
+		}
+		if ps != nil {
+			out = append(out, ps)
+		}
+	}
+	return out, nil
+}
+
+func (s *BadgerStore) GetPendingBySource(account string) ([]*core.PendingSend, error) {
+	var hashes []string
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(prefixedKey(prefixPendingSrc, account))
 		if err != nil {
 			return err
 		}
@@ -923,26 +971,10 @@ func applyCommitTxn(txn *badger.Txn, d pendingDelta, c *core.BlockCommit) error 
 			if err := putPendingTxn(txn, d, c.AddPending, psData); err != nil {
 				return err
 			}
-
-			destKey := prefixedKey(prefixPendingDst, c.AddPending.Destination)
-			var destHashes []string
-			item, err := txn.Get(destKey)
-			if err != nil && err != badger.ErrKeyNotFound {
+			if err := addPendingIndexTxn(txn, prefixPendingDst, c.AddPending.Destination, c.AddPending.SendHash); err != nil {
 				return err
 			}
-			if err == nil {
-				if err := item.Value(func(val []byte) error {
-					return json.Unmarshal(val, &destHashes)
-				}); err != nil {
-					return err
-				}
-			}
-			destHashes = append(destHashes, c.AddPending.SendHash)
-			destData, err := json.Marshal(destHashes)
-			if err != nil {
-				return err
-			}
-			if err := txn.Set(destKey, destData); err != nil {
+			if err := addPendingIndexTxn(txn, prefixPendingSrc, c.AddPending.Source, c.AddPending.SendHash); err != nil {
 				return err
 			}
 		}
@@ -1048,38 +1080,11 @@ func applyCommitTxn(txn *badger.Txn, d pendingDelta, c *core.BlockCommit) error 
 					return err
 				}
 				d.removed(&ps)
-
-				destKey := prefixedKey(prefixPendingDst, ps.Destination)
-				var destHashes []string
-				item2, err := txn.Get(destKey)
-				if err != nil && err != badger.ErrKeyNotFound {
+				if err := removePendingIndexTxn(txn, prefixPendingDst, ps.Destination, c.DeletePendingID); err != nil {
 					return err
 				}
-				if err == nil {
-					if err := item2.Value(func(val []byte) error {
-						return json.Unmarshal(val, &destHashes)
-					}); err != nil {
-						return err
-					}
-				}
-				filtered := destHashes[:0]
-				for _, h := range destHashes {
-					if h != c.DeletePendingID {
-						filtered = append(filtered, h)
-					}
-				}
-				if len(filtered) == 0 {
-					if err := txn.Delete(destKey); err != nil {
-						return err
-					}
-				} else {
-					destData, err := json.Marshal(filtered)
-					if err != nil {
-						return err
-					}
-					if err := txn.Set(destKey, destData); err != nil {
-						return err
-					}
+				if err := removePendingIndexTxn(txn, prefixPendingSrc, ps.Source, c.DeletePendingID); err != nil {
+					return err
 				}
 			}
 		}
@@ -1174,35 +1179,11 @@ func applyUndoTxn(txn *badger.Txn, d pendingDelta, u *core.BlockUndo, writeChain
 					return err
 				}
 				d.removed(&ps)
-				destKey := prefixedKey(prefixPendingDst, ps.Destination)
-				var destHashes []string
-				if it, err := txn.Get(destKey); err == nil {
-					if err := it.Value(func(val []byte) error {
-						return json.Unmarshal(val, &destHashes)
-					}); err != nil {
-						return err
-					}
-				} else if err != badger.ErrKeyNotFound {
+				if err := removePendingIndexTxn(txn, prefixPendingDst, ps.Destination, u.DeletePendingID); err != nil {
 					return err
 				}
-				filtered := destHashes[:0]
-				for _, h := range destHashes {
-					if h != u.DeletePendingID {
-						filtered = append(filtered, h)
-					}
-				}
-				if len(filtered) == 0 {
-					if err := txn.Delete(destKey); err != nil {
-						return err
-					}
-				} else {
-					fd, err := json.Marshal(filtered)
-					if err != nil {
-						return err
-					}
-					if err := txn.Set(destKey, fd); err != nil {
-						return err
-					}
+				if err := removePendingIndexTxn(txn, prefixPendingSrc, ps.Source, u.DeletePendingID); err != nil {
+					return err
 				}
 			}
 		}
@@ -1215,23 +1196,10 @@ func applyUndoTxn(txn *badger.Txn, d pendingDelta, u *core.BlockUndo, writeChain
 			if err := putPendingTxn(txn, d, u.AddPending, psData); err != nil {
 				return err
 			}
-			destKey := prefixedKey(prefixPendingDst, u.AddPending.Destination)
-			var destHashes []string
-			if it, err := txn.Get(destKey); err == nil {
-				if err := it.Value(func(val []byte) error {
-					return json.Unmarshal(val, &destHashes)
-				}); err != nil {
-					return err
-				}
-			} else if err != badger.ErrKeyNotFound {
+			if err := addPendingIndexTxn(txn, prefixPendingDst, u.AddPending.Destination, u.AddPending.SendHash); err != nil {
 				return err
 			}
-			destHashes = append(destHashes, u.AddPending.SendHash)
-			dd, err := json.Marshal(destHashes)
-			if err != nil {
-				return err
-			}
-			if err := txn.Set(destKey, dd); err != nil {
+			if err := addPendingIndexTxn(txn, prefixPendingSrc, u.AddPending.Source, u.AddPending.SendHash); err != nil {
 				return err
 			}
 		}

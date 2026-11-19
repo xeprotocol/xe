@@ -144,7 +144,37 @@ type PendingSend struct {
 	Destination string
 	Amount      uint64
 	Asset       string
+	Timestamp   int64
 }
+
+// IsExpired reports whether the pending send has exceeded the given TTL relative to now.
+// If ttl <= 0 or ps.Timestamp <= 0, IsExpired returns false.
+func (ps *PendingSend) IsExpired(now int64, ttl time.Duration) bool {
+	if ttl <= 0 || ps.Timestamp <= 0 {
+		return false
+	}
+	return now-ps.Timestamp > ttl.Nanoseconds()
+}
+
+const (
+	// DefaultMaxPendingPerAccount is the maximum number of uncollected pending sends
+	// a source account may have active across the network.
+	DefaultMaxPendingPerAccount = 100
+
+	// DefaultMaxPendingPerDestination is the maximum number of uncollected pending sends
+	// that can be waiting for a single destination account.
+	DefaultMaxPendingPerDestination = 100
+
+	// DefaultPendingSendTTL is the default time-to-live for pending sends.
+	// 0 means no automatic expiry unless configured.
+	DefaultPendingSendTTL = time.Duration(0)
+)
+
+var (
+	MaxPendingPerAccount     = DefaultMaxPendingPerAccount
+	MaxPendingPerDestination = DefaultMaxPendingPerDestination
+	PendingSendTTL           = DefaultPendingSendTTL
+)
 
 type Vote struct {
 	RepPubKey       string

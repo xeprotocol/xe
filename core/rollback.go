@@ -126,6 +126,7 @@ func (l *Ledger) escrowPendingOf(leaseHash string) *PendingSend {
 		Destination: lb.Destination,
 		Amount:      amount,
 		Asset:       "XCU",
+		Timestamp:   lb.Timestamp,
 	}
 }
 
@@ -216,6 +217,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 				Destination: src.Destination,
 				Amount:      src.Amount,
 				Asset:       srcAsset,
+				Timestamp:   src.Timestamp,
 			}
 		}
 	case BlockLease:
