@@ -7,6 +7,14 @@ import (
 	"fmt"
 )
 
+func normalizeRawJSON(b []byte) []byte {
+	if len(b) == 0 {
+		return b
+	}
+	b = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(b, []byte("\r"), nil)
+}
+
 func MarshalCanonical(b *Block) ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -44,7 +52,7 @@ func MarshalCanonical(b *Block) ([]byte, error) {
 		buf.Write(keyBytes)
 
 		if op.Action == ActionSet {
-			valBytes := []byte(op.Value)
+			valBytes := normalizeRawJSON(op.Value)
 			var valLen [4]byte
 			binary.BigEndian.PutUint32(valLen[:], uint32(len(valBytes)))
 			buf.Write(valLen[:])
