@@ -116,6 +116,7 @@ func (m *LimaManager) Provision(leaseHash string, res Resources, accessPubKey st
 	}
 
 	if _, err := m.runLimactlWithTimeout(2*time.Minute, "create", "--tty=false", "--name="+name, templatePath); err != nil {
+		_, _ = m.runLimactl("delete", "--force", name)
 		_ = os.Remove(templatePath)
 		return nil, fmt.Errorf("lima create: %w", err)
 	}
