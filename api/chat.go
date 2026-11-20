@@ -82,6 +82,13 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ip := clientIP(r)
+	if !h.acquireSSESlot(ip) {
+		writeError(w, http.StatusTooManyRequests, "too many concurrent chat SSE streams")
+		return
+	}
+	defer h.releaseSSESlot(ip)
+
 	account := r.URL.Query().Get("account")
 	if account == "" {
 
@@ -91,6 +98,10 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	} else if !h.requireChatOwnership(w, r, account) {
 		return
 	}
+
+	// Exempt long-lived streaming responses from HTTP server write timeout
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
