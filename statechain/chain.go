@@ -13,7 +13,7 @@ import (
 var ErrGap = errors.New("statechain gap")
 
 type Chain struct {
-	mu           sync.Mutex
+	mu           sync.RWMutex
 	store        StateChainStore
 	kv           *KVStore
 	tip          *Block
@@ -109,12 +109,16 @@ func (c *Chain) applyValidated(b *Block) {
 }
 
 func (c *Chain) AddBlock(b *Block) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if b == nil {
+		return errors.New("nil block")
+	}
 
 	if err := VerifyBlockHash(b); err != nil {
 		return err
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if b.Index <= c.tip.Index {
 		existing, err := c.store.GetStateBlock(b.Index)
@@ -276,14 +280,12 @@ func verifyMultisig(b *Block, keyset *DAOKeyset) error {
 }
 
 func (c *Chain) Tip() *Block {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.tip
 }
 
 func (c *Chain) GetBlock(index uint64) (*Block, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if index == 0 {
 		return c.genesis, nil
 	}
@@ -291,8 +293,9 @@ func (c *Chain) GetBlock(index uint64) (*Block, error) {
 }
 
 func (c *Chain) GetBlocks(start, limit uint64) ([]*Block, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if limit == 0 {
+		return []*Block{}, nil
+	}
 	if start == 0 {
 		blocks := []*Block{c.genesis}
 		if limit <= 1 {
@@ -308,8 +311,6 @@ func (c *Chain) GetBlocks(start, limit uint64) ([]*Block, error) {
 }
 
 func (c *Chain) BlockCount() (uint64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	count, err := c.store.StateBlockCount()
 	if err != nil {
 		return 0, err
@@ -318,8 +319,8 @@ func (c *Chain) BlockCount() (uint64, error) {
 }
 
 func (c *Chain) GetKV(key string) (json.RawMessage, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.kv.Get(key)
 }
 
@@ -335,27 +336,27 @@ func (c *Chain) KVHistory(key string) []KVVersion {
 }
 
 func (c *Chain) GetKVByPrefix(prefix string) map[string]json.RawMessage {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.kv.GetByPrefix(prefix)
 }
 
 func (c *Chain) GetAllKV() map[string]json.RawMessage {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.kv.GetAll()
 }
 
 func (c *Chain) DAOKeyset() *DAOKeyset {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	ks, _ := c.kv.DAOKeyset()
 	return ks
 }
 
 func (c *Chain) Phase() uint8 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	p, _ := c.kv.Phase()
 	return p
 }
