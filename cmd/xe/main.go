@@ -1290,7 +1290,7 @@ func cmdNode(args []string) {
 	apiEnabled := flags.Bool("api", true, "Enable HTTP API server")
 	apiPort := flags.Int("api-port", 8080, "HTTP API listen port")
 	apiBind := flags.String("api-bind", "127.0.0.1", "HTTP API bind address")
-	corsOrigin := flags.String("cors-origin", "", "Allowed CORS origin")
+	corsOrigin := flags.String("cors-origin", "*", "Allowed CORS origin (default \"*\"; supports comma-separated list)")
 	uiEnabled := flags.Bool("ui", false, "Enable embedded web UI server")
 	uiPort := flags.Int("ui-port", 8000, "Web UI listen port")
 	uiBind := flags.String("ui-bind", "127.0.0.1", "Web UI bind address")
