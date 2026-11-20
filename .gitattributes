@@ -1,0 +1,2 @@
+# Ensure deterministic canonical hashing across platforms regardless of core.autocrlf
+*.json text eol=lf

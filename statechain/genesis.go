@@ -17,6 +17,7 @@ func SetGenesisJSON(data []byte) error {
 	if len(data) == 0 {
 		return fmt.Errorf("genesis: empty genesis document")
 	}
+	data = normalizeRawJSON(data)
 	if _, err := ParseGenesis(data); err != nil {
 		return err
 	}
@@ -52,6 +53,7 @@ func LoadGenesis() (*Block, error) {
 }
 
 func ParseGenesis(data []byte) (*Block, error) {
+	data = normalizeRawJSON(data)
 	var b Block
 	if err := json.Unmarshal(data, &b); err != nil {
 		return nil, fmt.Errorf("parse genesis: %w", err)

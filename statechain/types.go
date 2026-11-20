@@ -17,6 +17,19 @@ type Op struct {
 	Value  json.RawMessage `json:"value,omitempty"`
 }
 
+func (o *Op) UnmarshalJSON(data []byte) error {
+	type rawOp Op
+	var ro rawOp
+	if err := json.Unmarshal(data, &ro); err != nil {
+		return err
+	}
+	*o = Op(ro)
+	if len(o.Value) > 0 {
+		o.Value = normalizeRawJSON(o.Value)
+	}
+	return nil
+}
+
 type BlockSignature struct {
 	PublicKey string `json:"public_key"`
 	Sig       string `json:"signature"`
