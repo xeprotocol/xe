@@ -73,7 +73,7 @@ func NewMessenger(h host.Host, d *dht.IpfsDHT) *Messenger {
 			}
 		}()
 
-		if !m.limiter.allow(s.Conn().RemotePeer()) {
+		if !m.limiter.allowConn(s.Conn()) {
 			m.noteRateLimited(s.Conn().RemotePeer())
 			_ = s.Reset()
 			return

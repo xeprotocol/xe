@@ -326,7 +326,7 @@ func SetupNetworkCheck(h host.Host, gater *NetworkGater) {
 	h.SetStreamHandler(NetcheckProtocolID, func(s network.Stream) {
 		defer func() { _ = s.Close() }()
 
-		if !gater.handshakes.allow(s.Conn().RemotePeer()) {
+		if !gater.handshakes.allowConn(s.Conn()) {
 			_ = s.Reset()
 			return
 		}
