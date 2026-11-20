@@ -18,6 +18,8 @@ const chatAuthDomain = "xe/chat-read-auth/v1\x00"
 
 const chatChallengeTTLNs = int64(120) * 1_000_000_000
 
+const maxChatSeenNonces = 10_000
+
 const (
 	chatChExpiryLen = 8
 	chatChNonceLen  = 16
@@ -101,6 +103,9 @@ func (s *chatAuthState) verifyProof(account, pubKey, challenge, sig string, now 
 	}
 	if _, used := s.seen[nonceKey]; used {
 		return fmt.Errorf("challenge already used")
+	}
+	if len(s.seen) >= maxChatSeenNonces {
+		return fmt.Errorf("too many active authentication challenges")
 	}
 	s.seen[nonceKey] = expiry
 	return nil
