@@ -74,6 +74,7 @@ type Node struct {
 	consumerVMs      sync.Map
 	pendingOffersMu  sync.Mutex
 	pendingOffers    map[string]*xenet.ResourceOffer
+	activeRequests   map[string]*xenet.ResourceRequest
 	providerAds      sync.Map
 	blockCreateMu    sync.Mutex
 	reservedRes      vm.Resources
@@ -485,6 +486,7 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 		gater:                  gater,
 		activationLog:          newActivationReporter(),
 		pendingOffers:          make(map[string]*xenet.ResourceOffer),
+		activeRequests:         make(map[string]*xenet.ResourceRequest),
 		acceptInFlight:         make(map[string]struct{}),
 		pullSem:                make(chan struct{}, maxInFlightVotePulls),
 		ctx:                    ctx,
@@ -1449,12 +1451,61 @@ func (n *Node) handleMarketplace(msgs <-chan *xenet.MarketplaceMsg) {
 				continue
 			}
 
+			now := time.Now().UnixNano()
+			maxAge := int64(60 * time.Second)
+			maxFuture := int64(10 * time.Second)
+			if msg.Offer.Timestamp < now-maxAge || msg.Offer.Timestamp > now+maxFuture {
+				logging.Warnf("Rejecting resource offer for %s: timestamp out of bounds (%d vs now %d)",
+					shortHash(msg.Offer.RequestID), msg.Offer.Timestamp, now)
+				continue
+			}
+
 			n.pendingOffersMu.Lock()
 
 			cutoff := time.Now().Add(-60 * time.Second).UnixNano()
 			for id, o := range n.pendingOffers {
 				if o.Timestamp < cutoff {
 					delete(n.pendingOffers, id)
+				}
+			}
+			for id, r := range n.activeRequests {
+				if r.Timestamp < cutoff {
+					delete(n.activeRequests, id)
+				}
+			}
+
+			if n.activeRequests == nil {
+				n.activeRequests = make(map[string]*xenet.ResourceRequest)
+			}
+			req, isMine := n.activeRequests[msg.Offer.RequestID]
+			if !isMine {
+				n.pendingOffersMu.Unlock()
+				continue
+			}
+
+			if msg.Offer.Timestamp < req.Timestamp {
+				logging.Warnf("Rejecting offer for %s: offer timestamp %d is older than request timestamp %d",
+					shortHash(msg.Offer.RequestID), msg.Offer.Timestamp, req.Timestamp)
+				n.pendingOffersMu.Unlock()
+				continue
+			}
+
+			if msg.Offer.VCPUs < req.VCPUs ||
+				msg.Offer.MemoryMB < req.MemoryMB ||
+				msg.Offer.DiskGB < req.DiskGB ||
+				msg.Offer.Duration < req.Duration {
+				logging.Warnf("Rejecting offer for %s: under-dimensioned (req %d/%d/%d/%ds, offer %d/%d/%d/%ds)",
+					shortHash(msg.Offer.RequestID),
+					req.VCPUs, req.MemoryMB, req.DiskGB, req.Duration,
+					msg.Offer.VCPUs, msg.Offer.MemoryMB, msg.Offer.DiskGB, msg.Offer.Duration)
+				n.pendingOffersMu.Unlock()
+				continue
+			}
+
+			if existing, exists := n.pendingOffers[msg.Offer.RequestID]; exists {
+				if msg.Offer.TotalCost >= existing.TotalCost {
+					n.pendingOffersMu.Unlock()
+					continue
 				}
 			}
 
@@ -2123,12 +2174,29 @@ func (n *Node) RequestLease(vcpus, memoryMB, diskGB, durationSecs uint64) (*xene
 		Timestamp: core.Now().UnixNano(),
 	}
 	xenet.SignRequest(req, n.KeyPair.Private)
+
+	n.pendingOffersMu.Lock()
+	if n.activeRequests == nil {
+		n.activeRequests = make(map[string]*xenet.ResourceRequest)
+	}
+	n.activeRequests[requestID] = req
+	n.pendingOffersMu.Unlock()
+
+	defer func() {
+		n.pendingOffersMu.Lock()
+		delete(n.activeRequests, requestID)
+		delete(n.pendingOffers, requestID)
+		n.pendingOffersMu.Unlock()
+	}()
+
 	msg := &xenet.MarketplaceMsg{
 		Type:    "request",
 		Request: req,
 	}
-	if err := n.MarketGossip.Publish(n.ctx, msg); err != nil {
-		return nil, fmt.Errorf("publish request: %w", err)
+	if n.MarketGossip != nil {
+		if err := n.MarketGossip.Publish(n.ctx, msg); err != nil {
+			return nil, fmt.Errorf("publish request: %w", err)
+		}
 	}
 	log.Printf("Published resource request %s: %d vCPUs, %d MB, %d GB for %ds", shortHash(requestID), vcpus, memoryMB, diskGB, durationSecs)
 
@@ -2147,12 +2215,30 @@ func (n *Node) RequestLease(vcpus, memoryMB, diskGB, durationSecs uint64) (*xene
 			}
 			n.pendingOffersMu.Unlock()
 			if ok {
+				if offer.VCPUs < vcpus || offer.MemoryMB < memoryMB || offer.DiskGB < diskGB || offer.Duration < durationSecs {
+					log.Printf("Received under-dimensioned offer for %s, continuing wait", shortHash(requestID))
+					continue
+				}
 				return offer, nil
 			}
 		case <-n.ctx.Done():
 			return nil, n.ctx.Err()
 		}
 	}
+}
+
+// RegisterActiveRequest records an outgoing resource request so that incoming
+// offers for it are accepted by handleMarketplace.
+func (n *Node) RegisterActiveRequest(req *xenet.ResourceRequest) {
+	if req == nil || req.RequestID == "" {
+		return
+	}
+	n.pendingOffersMu.Lock()
+	defer n.pendingOffersMu.Unlock()
+	if n.activeRequests == nil {
+		n.activeRequests = make(map[string]*xenet.ResourceRequest)
+	}
+	n.activeRequests[req.RequestID] = req
 }
 
 func (n *Node) CreateLeaseBlock(provider string, vcpus, memoryMB, diskGB, durationSecs, cost uint64, accessPubKey, certHash string) error {
