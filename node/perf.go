@@ -341,7 +341,7 @@ func (n *Node) ingestCertificate(cert *perf.Certificate) bool {
 		return false
 	}
 
-	if err := perf.VerifyCertificateContent(cert); err != nil {
+	if err := perf.VerifyCertificate(cert, core.Now().UnixNano()); err != nil {
 		logging.Warnf("Certificate: rejected %s from %s: %v",
 			shortHash(cert.Hash), shortHash(cert.Provider), err)
 		return false
@@ -404,8 +404,15 @@ func (n *Node) loadPersistedCertificates() {
 }
 
 func (n *Node) collectCertificates() []*perf.Certificate {
-	out := n.certs().all()
-	if lc := n.perfCert.Load(); lc != nil {
+	now := core.Now().UnixNano()
+	all := n.certs().all()
+	out := make([]*perf.Certificate, 0, len(all)+1)
+	for _, c := range all {
+		if c != nil && now <= c.ExpiresAt {
+			out = append(out, c)
+		}
+	}
+	if lc := n.perfCert.Load(); lc != nil && now <= lc.cert.ExpiresAt {
 		out = append([]*perf.Certificate{lc.cert}, out...)
 	}
 	return out

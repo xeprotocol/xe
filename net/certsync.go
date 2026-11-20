@@ -9,9 +9,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/xeprotocol/xe/perf"
-
+	"github.com/xeprotocol/xe/core"
 	"github.com/xeprotocol/xe/logging"
+	"github.com/xeprotocol/xe/perf"
 )
 
 const (
@@ -27,11 +27,22 @@ const (
 func SetupCertSync(ctx context.Context, h host.Host, msg *Messenger, provide func() []*perf.Certificate, ingest func(*perf.Certificate) bool) {
 	msg.Handle(CertRequestMsgType, func(_ peer.ID, _ json.RawMessage) (json.RawMessage, error) {
 		certs := provide()
-		if len(certs) > certPullMaxResponse {
-			certs = certs[:certPullMaxResponse]
+		now := core.Now().UnixNano()
+		valid := make([]*perf.Certificate, 0, len(certs))
+		for _, cert := range certs {
+			if cert != nil && now <= cert.ExpiresAt {
+				valid = append(valid, cert)
+			}
 		}
-		return json.Marshal(certs)
+		if len(valid) > certPullMaxResponse {
+			valid = valid[:certPullMaxResponse]
+		}
+		return json.Marshal(valid)
 	})
+
+	if h == nil {
+		return
+	}
 
 	h.Network().Notify(&network.NotifyBundle{
 		ConnectedF: func(_ network.Network, conn network.Conn) {
