@@ -356,6 +356,21 @@ func (sg *StateChainGossip) Subscribe(ctx context.Context) <-chan *statechain.Bl
 			if len(scm.Block.Hash) != 64 || len(scm.Block.Signatures) == 0 {
 				continue
 			}
+			if err := statechain.VerifyBlockHash(scm.Block); err != nil {
+				continue
+			}
+			validSig := false
+			for _, sig := range scm.Block.Signatures {
+				if len(sig.PublicKey) == 64 && len(sig.Sig) == 128 {
+					if err := statechain.VerifySignature(scm.Block.Hash, sig); err == nil {
+						validSig = true
+						break
+					}
+				}
+			}
+			if !validSig {
+				continue
+			}
 
 			select {
 			case ch <- scm.Block:
