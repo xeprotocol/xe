@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,11 +21,20 @@ const (
 	banFileName = "bans.json"
 
 	banSnapshotVersion = 1
+
+	// Bans lasting 2 hours or more (e.g. 24h security / protocol violation bans)
+	// are classified as security bans and protected from eviction by throwaway bans.
+	protectedBanDuration = 2 * time.Hour
+
+	// Minimum duration that a newly created ban is retained before being eligible
+	// for eviction under capacity pressure.
+	minBanRetentionFloor = 5 * time.Minute
 )
 
 type banStore struct {
-	mu      sync.RWMutex
-	entries map[peer.ID]time.Time
+	mu        sync.RWMutex
+	entries   map[peer.ID]time.Time
+	createdAt map[peer.ID]time.Time
 
 	order []peer.ID
 	max   int
@@ -43,8 +53,9 @@ func newBanStore(max int) *banStore {
 		max = maxBannedPeers
 	}
 	return &banStore{
-		entries: make(map[peer.ID]time.Time),
-		max:     max,
+		entries:   make(map[peer.ID]time.Time),
+		createdAt: make(map[peer.ID]time.Time),
+		max:       max,
 	}
 }
 
@@ -52,16 +63,21 @@ func (s *banStore) ban(p peer.ID, until time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now()
 	if _, exists := s.entries[p]; !exists {
-		if now := time.Now(); len(s.entries) >= s.max && now.Sub(s.lastSweep) >= inlineSweepInterval {
+		if len(s.entries) >= s.max && now.Sub(s.lastSweep) >= inlineSweepInterval {
 			s.lastSweep = now
 			s.sweepLocked(now)
 		}
 		for len(s.entries) >= s.max {
-			if !s.evictOldestLocked() {
+			if !s.evictLocked(now, until) {
 				break
 			}
 		}
+		if len(s.entries) >= s.max {
+			return
+		}
+		s.createdAt[p] = now
 		s.order = append(s.order, p)
 		s.compactLocked()
 	}
@@ -73,6 +89,7 @@ func (s *banStore) clear(p peer.ID) {
 	s.mu.Lock()
 	if _, ok := s.entries[p]; ok {
 		delete(s.entries, p)
+		delete(s.createdAt, p)
 		s.dirty.Store(true)
 	}
 	s.mu.Unlock()
@@ -90,6 +107,7 @@ func (s *banStore) banned(p peer.ID) bool {
 
 		if exp, ok := s.entries[p]; ok && time.Now().After(exp) {
 			delete(s.entries, p)
+			delete(s.createdAt, p)
 			s.dirty.Store(true)
 		}
 		s.mu.Unlock()
@@ -115,6 +133,7 @@ func (s *banStore) sweepLocked(now time.Time) int {
 	for p, exp := range s.entries {
 		if now.After(exp) {
 			delete(s.entries, p)
+			delete(s.createdAt, p)
 			removed++
 		}
 	}
@@ -126,17 +145,75 @@ func (s *banStore) sweepLocked(now time.Time) int {
 	return removed
 }
 
-func (s *banStore) evictOldestLocked() bool {
-	for len(s.order) > 0 {
-		p := s.order[0]
-		s.order = s.order[1:]
-		if _, ok := s.entries[p]; ok {
+func (s *banStore) evictLocked(now time.Time, incomingUntil time.Time) bool {
+	// Step 1: Evict any entry that has already expired
+	for p, exp := range s.entries {
+		if now.After(exp) {
 			delete(s.entries, p)
+			delete(s.createdAt, p)
 			s.evicted.Add(1)
 			s.dirty.Store(true)
 			return true
 		}
 	}
+
+	// Step 2: Unprotected entries beyond the retention floor, shortest TTL first
+	var bestCandidate peer.ID
+	var earliestExpiry time.Time
+	found := false
+
+	for p, exp := range s.entries {
+		if exp.Sub(now) >= protectedBanDuration {
+			continue // Protected security ban
+		}
+		cTime := s.createdAt[p]
+		if now.Sub(cTime) < minBanRetentionFloor {
+			continue // Protected by minimum retention floor
+		}
+		if !found || exp.Before(earliestExpiry) {
+			bestCandidate = p
+			earliestExpiry = exp
+			found = true
+		}
+	}
+
+	// Step 3: If all candidates are within retention floor, evict non-security entry with earliest expiry
+	if !found {
+		for p, exp := range s.entries {
+			if exp.Sub(now) >= protectedBanDuration {
+				continue // Security bans are never evicted for throwaway bans
+			}
+			if !found || exp.Before(earliestExpiry) {
+				bestCandidate = p
+				earliestExpiry = exp
+				found = true
+			}
+		}
+	}
+
+	// Step 4: If all entries are security bans and incoming ban is also a security ban,
+	// evict the security ban with earliest expiry if incoming ban has longer remaining duration
+	if !found && incomingUntil.Sub(now) >= protectedBanDuration {
+		for p, exp := range s.entries {
+			if !found || exp.Before(earliestExpiry) {
+				bestCandidate = p
+				earliestExpiry = exp
+				found = true
+			}
+		}
+		if found && !earliestExpiry.Before(incomingUntil) {
+			found = false
+		}
+	}
+
+	if found {
+		delete(s.entries, bestCandidate)
+		delete(s.createdAt, bestCandidate)
+		s.evicted.Add(1)
+		s.dirty.Store(true)
+		return true
+	}
+
 	return false
 }
 
@@ -179,6 +256,10 @@ func (s *banStore) save(path string) error {
 	}
 	s.mu.RUnlock()
 
+	sort.Slice(snap.Entries, func(i, j int) bool {
+		return snap.Entries[i].ExpiryNs > snap.Entries[j].ExpiryNs
+	})
+
 	data, err := json.Marshal(&snap)
 	if err != nil {
 		return fmt.Errorf("marshal bans: %w", err)
@@ -212,6 +293,10 @@ func (s *banStore) load(path string) (int, error) {
 	if snap.Version != banSnapshotVersion {
 		return 0, fmt.Errorf("unsupported ban snapshot version %d", snap.Version)
 	}
+
+	sort.Slice(snap.Entries, func(i, j int) bool {
+		return snap.Entries[i].ExpiryNs > snap.Entries[j].ExpiryNs
+	})
 
 	now := time.Now()
 	restored := 0
