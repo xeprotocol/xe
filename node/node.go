@@ -2155,18 +2155,18 @@ func (n *Node) RequestLease(vcpus, memoryMB, diskGB, durationSecs uint64) (*xene
 	}
 }
 
-func (n *Node) CreateLeaseBlock(provider string, vcpus, memoryMB, diskGB, durationSecs, cost uint64, accessPubKey, certHash string) error {
+func (n *Node) CreateLeaseBlock(provider string, vcpus, memoryMB, diskGB, durationSecs, cost uint64, accessPubKey, certHash string) (string, error) {
 	n.blockCreateMu.Lock()
 	defer n.blockCreateMu.Unlock()
 	myAddr := n.KeyPair.Address()
 	chain := n.Ledger.GetChain(myAddr)
 	if len(chain) == 0 {
-		return fmt.Errorf("account not open")
+		return "", fmt.Errorf("account not open")
 	}
 	prev := chain[len(chain)-1].Hash
 	xcuBal := n.Ledger.GetAssetBalances(myAddr)["XCU"]
 	if cost > xcuBal {
-		return fmt.Errorf("insufficient XCU: have %d, need %d", xcuBal, cost)
+		return "", fmt.Errorf("insufficient XCU: have %d, need %d", xcuBal, cost)
 	}
 
 	b := &core.Block{
@@ -2186,14 +2186,17 @@ func (n *Node) CreateLeaseBlock(provider string, vcpus, memoryMB, diskGB, durati
 		CertificateHash: certHash,
 	}
 	if err := core.SignBlock(b, n.KeyPair); err != nil {
-		return fmt.Errorf("sign lease block: %w", err)
+		return "", fmt.Errorf("sign lease block: %w", err)
 	}
 	n.solvePoW(b)
 
 	if err := n.Ledger.AddBlock(b); err != nil {
-		return err
+		return "", err
 	}
-	return n.Gossip.Publish(n.ctx, b)
+	if err := n.Gossip.Publish(n.ctx, b); err != nil {
+		return "", err
+	}
+	return b.Hash, nil
 }
 
 func (n *Node) GetLeases() []*core.Lease {
