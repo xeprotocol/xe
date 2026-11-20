@@ -1,0 +1,171 @@
+# Schedule C: seats, classes, who runs each, model IDs, keys, repository.
+# Human seats carry an ed25519 public key (64 hex). The account address is derived from it.
+# Agent seats are designated by member resolution after filing; until then they are listed
+# as "designed" and the harness runs in members-direct mode.
+#
+# Keyset / treasury / pause keys are NOT in this file. The keyset is read from the chain
+# (sys.dao_keyset). Treasury is an on-chain multisig account referenced by address.
+
+version: 1
+mode: members-direct              # members-direct | ensemble
+
+repository:
+  url: https://github.com/xeprotocol/dao
+  licence: GPL-3.0-or-later
+  audit: none completed
+
+human_seats:
+  - id: founder-a
+    name: Joseph Michael Denne
+    kind: member
+    role: Founder
+    public_key: ""                # fill at key ceremony
+    may:
+      - reserved_matters
+      - pause
+      - sign_statechain
+      - sign_treasury
+      - sign_resolutions
+  - id: founder-b
+    name: William James Lebens
+    kind: member
+    role: Founder
+    public_key: ""
+    may:
+      - reserved_matters
+      - pause
+      - sign_statechain
+      - sign_treasury
+      - sign_resolutions
+  - id: cto
+    name: Adam Dean
+    kind: officer                 # member | officer; see BRIEF §16 item 1
+    role: CTO
+    public_key: ""
+    may:
+      - sign_treasury
+      - sign_operations
+      - operational_review
+
+agent_seats:
+  - id: orchestrator
+    role: Orchestrator
+    class: orchestrator
+    status: designed              # designed | designated | active | retired
+    model: ""                     # pinned at designation
+    account: ""                   # on-chain address once keys exist
+    tool_scopes: [chain.read, web.read, log.read, log.write.analysis, chat.send, portal.vote]
+    summary: >-
+      Routes work between the seats, pulls their positions into one written recommendation, and
+      breaks deadlocks by saying which evidence it weighted and why. Runs the health checks.
+      Recommends only: it holds no key, cannot pause, move value or sign.
+  - id: orchestrator-backup
+    role: Orchestrator (backup)
+    class: orchestrator
+    status: designed
+    model: ""
+    account: ""
+    tool_scopes: [chain.read, web.read, log.read, log.write.analysis, chat.send, portal.vote]
+    summary: >-
+      Stands in for the orchestrator when it is unavailable or when a second synthesis is wanted.
+      Same instructions, same limits, a different model so the two do not share blind spots.
+  - id: research
+    role: Research & Intelligence
+    class: specialist
+    status: designed
+    model: ""
+    account: ""
+    tool_scopes: [chain.read, web.read, log.read, log.write.analysis, portal.vote]
+    summary: >-
+      Establishes facts. Reads the chain, the web and the DAO's own history, and returns findings
+      with hashes and sources. The other seats reason from what it finds, so it returns less with
+      evidence rather than more without.
+  - id: financial
+    role: Financial & Accounting
+    class: specialist
+    status: designed
+    model: ""
+    account: ""
+    tool_scopes: [chain.read, log.read, log.write.analysis, portal.vote]
+    summary: >-
+      Reads the money and says what it means: balances, flows, what a proposal would do to the
+      position. Read-only by design; it never prepares or recommends the mechanics of a transfer.
+  - id: legal
+    role: Legal & Compliance
+    class: specialist
+    status: designed
+    model: ""
+    account: ""
+    tool_scopes: [log.read, log.write.analysis, portal.vote]
+    summary: >-
+      Reads the founding documents and the rules that apply to the DAO and says what they permit,
+      require and forbid. It drafts; a person signs. It is not a lawyer and says so.
+  - id: governance
+    role: Proposal & Governance
+    class: specialist
+    status: designed
+    model: ""
+    account: ""
+    tool_scopes: [chain.read, log.read, log.write.analysis, portal.vote]
+    summary: >-
+      Evaluates proposals on their merits against the Charter, simulates what they would do,
+      counter-proposes when a better version exists, and keeps the open-vote process honest.
+  - id: execution
+    role: Execution & Operations
+    class: specialist
+    status: designed
+    model: ""
+    account: ""
+    tool_scopes: [chain.read, log.read, log.write.analysis, tx.prepare, block.prepare, chat.send, portal.vote]
+    summary: >-
+      Turns decided things into exact, unsigned artefacts for people to sign, and runs the tools
+      the harness allows. Holds no key; nothing it prepares moves until a person signs it.
+  - id: risk
+    role: Risk & Safety
+    class: specialist
+    status: designed
+    model: ""
+    account: ""
+    tool_scopes: [chain.read, web.read, log.read, log.write.analysis, portal.vote]
+    summary: >-
+      The adversary in the room. Assumes every proposal is a trick and every message an attack,
+      and looks for the evidence. When it finds some it recommends a halt, and that goes to the
+      people who hold the lever, with priority.
+  - id: community
+    role: Community & Sentiment
+    class: specialist
+    status: designed
+    optional: true
+    model: ""
+    account: ""
+    tool_scopes: [web.read, log.read, log.write.analysis, chat.send, portal.vote]
+    summary: >-
+      Watches the portal, the inbox and the public conversation about XE, reports what people are
+      saying, asking and misunderstanding, and drafts first replies to routine questions.
+      Optional, and it informs rather than steers.
+
+# Plain meaning of each tool scope, for the seat pages. A scope not listed here is not grantable.
+tool_scopes:
+  chain.read: read any account, block, balance or state-chain key from a node
+  web.read: fetch public web pages, recording a hash of what was retrieved
+  log.read: read the DAO's own event log
+  log.write.analysis: write an analysis record to the log, stamped with model and prompt hash
+  chat.send: send a message from the DAO's chat account, through the outbox
+  portal.vote: cast the seat's bounded vote in an open vote
+  tx.prepare: assemble an unsigned transaction for a person to sign; never signs or submits
+  block.prepare: assemble an unsigned state-chain block for the keyset to sign; never signs or submits
+
+# Models likely in the harness (tools, not members). Pinned IDs go on the seats above at designation.
+model_candidates:
+  - Grok 4.7
+  - Claude Fable 5.1
+  - GPT-6 Astra          # hard limit: never receives tx.*, block.* or tool.* scopes
+  - GLM-5.3
+  - Qwen3.6 27B
+  - Mistral Small 4
+  - Kimi K3
+
+accounts:                         # per deployment: fill on the server from `dao keys init`; the signer is authoritative
+  dao: ""                         # the DAO's public account: directory-registered, receives chat
+  fee: ""                         # receives proposal fees; refunds or burns them
+  treasury: ""                    # hash-derived multisig; human keyholders only

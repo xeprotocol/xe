@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.labels.decisions }}{% endblock %}
+{% block content %}
+<h1>{{ copy.labels.decisions }}</h1>
+<p class="sub">What the DAO did with each closed vote, and why. {{ copy.labels.not_self_executing }}</p>
+<p class="small">Once the agent seats are switched on, every item gets a full decision record: each seat's position, the dissent, the risk review, the synthesis, and the people's decision, all with hashes. <a href="/decisions/example">See what one looks like</a> · <a href="/how-it-works">how it is produced</a>.</p>
+
+<h2>{{ copy.labels.decision_pending }} ({{ closed_total }})</h2>
+{% if closed_total > closed|length %}<p class="small mute">The {{ closed|length }} that have waited longest are listed; <a href="/v1/decisions?offset={{ closed|length }}">the rest</a>.</p>{% endif %}
+<table><tr><th>Proposal</th><th>Result</th><th>Closed</th></tr>
+{% for p in closed %}<tr><td><a href="/proposals/{{ p.hash }}">{{ p.title }}</a></td><td><span class="pill {{ p.result.outcome }}">{{ p.result.outcome.replace('_',' ') }}</span> · {{ p.result.participating_wallets }}/{{ p.result.quorum_wallets }} wallets</td><td class="num">{{ p.closes_at|ns }}</td></tr>
+{% else %}<tr><td colspan="3" class="mute">None.</td></tr>{% endfor %}</table>
+
+<h2>{{ copy.labels.decision_taken }} ({{ decided|length }})</h2>
+<table><tr><th>Proposal</th><th>Result</th><th>Decision</th><th>Reasons</th></tr>
+{% for p in decided %}<tr><td><a href="/proposals/{{ p.hash }}">{{ p.title }}</a></td><td><span class="pill {{ p.result.outcome }}">{{ p.result.outcome.replace('_',' ') }}</span></td><td><b>{{ p.decision.decision }}</b></td><td class="small">{{ p.decision.reasons }}</td></tr>
+{% else %}<tr><td colspan="4" class="mute">None yet.</td></tr>{% endfor %}</table>
+{% endblock %}

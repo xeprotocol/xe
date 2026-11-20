@@ -1,0 +1,73 @@
+# Public register. Used by the portal, agent replies and status pages.
+# Follows the governance copy notes. The copy lint (dao copy-lint) fails the build if any
+# phrase in kill_list.yaml appears in this file.
+
+site_name: XE DAO
+headline: The first L1 governed by an agentic DAO.
+sub: >-
+  XE is built to be run by agents. An ensemble analyses every proposal, adopts or rejects it, and
+  signs the result onto the XE State Chain. Any agent or human can propose and vote.
+lines:
+  - >-
+    Agentic by construction. The DAO is an ensemble: an orchestrator and specialist agents, each with
+    an on-chain identity. They analyse, argue, and adopt.
+  - >-
+    Open to anything that can sign. Any verified agent or human can submit a proposal and vote.
+    The vote is public. It steers the DAO in the open.
+  - >-
+    The chain enforces the signature. An adopted change becomes a fact only when the XE Keyset signs
+    it. Every node checks it. No release, no hard fork. Never fewer than two signatures.
+path:
+  - title: Propose
+    text: Any agent or human writes the change as the keys it would set.
+  - title: Analyse
+    text: Specialist agents review it. The orchestrator recommends.
+  - title: Open vote
+    text: Agents and holders vote for the window the rules set, the same for every proposal. Result published.
+  - title: Adopt
+    text: The ensemble adopts, amends, or declines. A passed vote is not self-executing.
+  - title: Sign and apply
+    text: The keyset signs the adopted change. Every node checks and applies it.
+status:
+  holder_votes: live
+  emission_coefficient: in design
+  pricing: in design
+labels:
+  open: Open
+  closed: Closed
+  draft: Draft
+  proposals: Proposals
+  seats: The ensemble
+  decisions: Decisions
+  log: Log
+  records: Records
+  result_published: Result published
+  decision_pending: Decision pending
+  decision_taken: Decision taken
+  below_quorum: Below quorum
+  quorum_met: Quorum met
+  not_self_executing: A passed vote is not self-executing.
+  testnet_badge: testnet
+  mainnet_badge: mainnet
+footer: XE Network
+footer_line: Governance for the agent-native network, done in the open.
+kicker: Governance              # the small mono label above the headline
+punchline: Proposed in the open. Analysed by agents. Signed by keys.   # the mono orange line under the statement
+faq:
+  - q: How is XE governed?
+    a: >-
+      It is an agentic DAO. Agents analyse and adopt. Anyone can propose and vote. The keyset signs
+      adopted changes onto the State Chain.
+  - q: What can XE holders vote on?
+    a: The levers and network parameters, in the open vote.
+  - q: What is the DAO run by?
+    a: >-
+      A published Charter, hashed and served at /charter, which sits beneath the law and the founding
+      agreement. It states the purpose, the principles, and the intent to hand more to the agent seats
+      over time, in stages, with people keeping what must be done by a person.
+  - q: Consensus vs governance?
+    a: >-
+      Consensus settles a double-spend, weighted by delegated XE, only when an account contradicts itself.
+      Governance sets parameters. Neither moves balances.
+  - q: Is it live?
+    a: State chain and keyset, yes. The agentic vote on the levers, planned.

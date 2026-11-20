@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Members{% endblock %}
+{% block content %}
+<h1>Members and officers</h1>
+<p class="sub">Every action here is a signed request from a seat holder's key. The key stays in the browser. The harness never signs a state-chain block, never moves treasury, never pauses.</p>
+
+{% include "_keybox.html" %}
+<p id="seatline" class="small mute">Load a key to see your seat.</p>
+
+<h2>Pause</h2>
+{% if paused %}
+<div class="card">
+  <p><b>Active</b> since {{ paused.started_at|ns }} by {{ paused.determined_by }} ({{ paused.ground }}), until {{ paused.expires_at|ns }}. Public post: {% if paused.posted_at %}published {{ paused.posted_at|ns }}{% else %}<b>due</b> within 4 hours of start; the draft below publishes automatically if untouched{% endif %}.</p>
+  <form class="block" id="postform"><label>Public post</label><textarea id="posttext">{{ paused.post_text }}</textarea><button type="submit">Sign and publish</button><div id="postmsg" class="msg" hidden></div></form>
+  <div class="row" style="margin-top:12px">
+    <button class="ghost" id="extend">Sign extension (+7 days, both members)</button>
+    <button class="ghost" id="lift">Sign lift (both members)</button>
+  </div>
+  <div id="pausemsg" class="msg" hidden></div>
+</div>
+{% else %}
+<form class="block card" id="pauseform">
+  <p class="small mute">One member. 72 hours. Written determination required. Grounds: {{ cfg.pause.grounds|join(", ") }}.</p>
+  <label>Ground</label><select id="ground">{% for g in cfg.pause.grounds %}<option>{{ g }}</option>{% endfor %}</select>
+  <label>Determination</label><textarea id="determination" placeholder="What you found, why it needs a pause, what you will do in the next 72 hours."></textarea>
+  <button type="submit">Sign and pause</button><div id="pausemsg" class="msg" hidden></div>
+</form>
+{% endif %}
+
+<h2>Resolutions</h2>
+<form class="block card" id="resform">
+  <label>Title</label><input type="text" id="rtitle" required>
+  <label>Matter</label><select id="rmatter"><optgroup label="ordinary (majority of members)">{% for m in ordinary %}<option>{{ m }}</option>{% endfor %}</optgroup><optgroup label="reserved (all members)">{% for m in reserved %}<option>{{ m }}</option>{% endfor %}</optgroup></select>
+  <label>Text</label><textarea id="rbody" required></textarea>
+  <label>State-chain ops <span class="k">(optional JSON list; opens a signing session when passed)</span></label><textarea id="rops" style="min-height:60px"></textarea>
+  <label>Related open-vote proposal hash <span class="k">(optional)</span></label><input type="text" id="rrel">
+  <button type="submit">Sign and propose</button><div id="resmsg" class="msg" hidden></div>
+</form>
+<table style="margin-top:12px"><tr><th>#</th><th>Title</th><th>Matter</th><th>Status</th><th>Signatures</th><th></th></tr>
+{% for r in resolutions %}{% set d = res_dict(r) %}<tr>
+  <td>R{{ r.number }}</td><td><details><summary>{{ r.title }}</summary><pre>{{ r.body }}</pre>{% if r.related_proposal %}<p class="small">Decides open vote <a href="/proposals/{{ r.related_proposal }}"><code>{{ r.related_proposal[:16] }}</code></a></p>{% endif %}{% if r.ops %}<pre>{{ r.ops|tojson(indent=1) }}</pre>{% endif %}</details></td>
+  <td>{{ r.matter }}{% if d.reserved %} <span class="pill">reserved</span>{% endif %}</td><td><span class="pill">{{ r.status }}</span></td>
+  <td class="small">{% for s in d.signatures %}{{ s.seat }}: {{ s.decision }}<br>{% endfor %}{% if d.set_aside %}<span class="mute">set aside: {{ d.set_aside|join(", ") }}</span><br>{% endif %}{{ d.rule }} ({{ d.needed }})</td>
+  <td class="right">{% if r.status == 'open' %}<button class="ghost small" data-sign="{{ r.id }}" data-bh="{{ d.body_hash }}" data-dec="for">for</button> <button class="ghost small" data-sign="{{ r.id }}" data-bh="{{ d.body_hash }}" data-dec="against">against</button>{% elif r.session_id %}<a href="#s-{{ r.session_id }}">session</a>{% endif %}</td>
+</tr>{% else %}<tr><td colspan="6" class="mute">None.</td></tr>{% endfor %}</table>
+<div id="rsmsg" class="msg" hidden></div>
+
+<h2>State-chain signing sessions</h2>
+<p class="small mute">Two steps. First approve the ops (durable). Then sign the block built at the live tip; if the tip moves before enough signatures land, the block is rebuilt and you sign again. {% if keyset.error %}The keyset could not be read from the node: {{ keyset.error }}{% else %}Keyset: {{ keyset.threshold }} of {{ keyset['keys']|length }}.{% endif %}</p>
+<div class="row"><button class="ghost" id="openreg">Open registry session (write dao.registry)</button><button class="ghost" id="openanchor">Open anchor session now</button></div>
+<div id="sessmsg" class="msg" hidden></div>
+{% for s in sessions %}{% set d = sess_dict(s) %}
+<div class="card" id="s-{{ s.id }}" style="margin-top:12px">
+  <div class="row"><b>{{ s.title }}</b> <span class="pill">{{ s.kind }}</span> <span class="pill">{{ s.status }}</span> <span class="mute small">{{ s.id }}</span></div>
+  <details><summary>ops · digest {{ s.ops_digest|short(16) }}</summary><pre>{{ s.ops|tojson(indent=1) }}</pre></details>
+  {# an open session's figures are the ones the gate counts, against the keyset now; `d` holds them (XE-3877) #}
+  <p class="small">Approvals {{ d.approvals|length }}{% if d.required_approvals is not none %}/{{ d.required_approvals }}{% else %} held, not counted: the keyset could not be read{% endif %}{% if d.approvals %}: {% for a in d.approvals %}{{ a.seat or a.public_key|short(10) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+  {% if d.set_aside %}· set aside, from keys no longer in the keyset: {% for k in d.set_aside %}{{ k|short(10) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+  {% if s.status == 'signing' %}· Block #{{ s.block.index }} on <code>{{ s.block.prev_hash|short(12) }}</code>, hash <code>{{ s.block_hash }}</code>, signatures {{ d.block_signatures|length }}{% if d.required_approvals is not none %}/{{ d.required_approvals }}{% endif %}, rebuilds {{ s.rebuilds }}{% endif %}
+  {% if s.status == 'submitted' %}· <b>Written</b> at state-chain #{{ s.submitted_index }} <code>{{ s.submitted_hash|short(16) }}</code>{% endif %}
+  {% if s.error %}· <span class="err">{{ s.error }}</span>{% endif %}
+  {% if s.not_before %}· not before {{ s.not_before|ns }}{% endif %}</p>
+  <div class="row">
+    {% if s.status == 'approving' %}<button class="ghost" data-approve="{{ s.id }}" data-digest="{{ s.ops_digest }}">Approve ops</button>{% endif %}
+    {% if s.status == 'signing' %}<button data-signblock="{{ s.id }}" data-hash="{{ s.block_hash }}">Sign block hash</button><button class="ghost" data-rebuild="{{ s.id }}">Rebuild at tip</button>{% endif %}
+    {% if s.status in ('approving','signing') %}<button class="ghost" data-cancel="{{ s.id }}">Cancel</button>{% endif %}
+  </div>
+</div>
+{% endfor %}
+
+<h2>Closed votes awaiting a decision ({{ closed_total }})</h2>
+{% if closed_total > closed|length %}<p class="small mute">The {{ closed|length }} that have waited longest are listed; <a href="/v1/decisions?offset={{ closed|length }}">the rest</a>.</p>{% endif %}
+<table><tr><th>Proposal</th><th>Result</th><th>Decision</th></tr>
+{% for p in closed %}<tr><td><a href="/proposals/{{ p.hash }}">{{ p.title }}</a></td><td><span class="pill {{ p.result.outcome }}">{{ p.result.outcome.replace('_',' ') }}</span> {{ p.result.participating_wallets }}/{{ p.result.quorum_wallets }}</td>
+<td><form class="row" data-decide="{{ p.hash }}"><select name="decision"><option>adopt</option><option>decline</option><option>defer</option><option>refer_to_resolution</option></select><input type="text" name="reasons" placeholder="reasons (public)" style="flex:1;min-width:200px" required><input type="text" name="resolution_id" placeholder="resolution id{% if p.ops %} (required to adopt: this proposal carries ops){% endif %}" style="min-width:200px"><button class="ghost">Sign</button></form>
+<div class="small mute">Recorded once. Adopt needs a passed vote{% if p.ops %} and an adopted resolution about this proposal{% endif %}.</div></td></tr>
+{% else %}<tr><td colspan="3" class="mute">None.</td></tr>{% endfor %}</table>
+<div id="decmsg" class="msg" hidden></div>
+
+<h2>Inbox</h2>
+<p class="mute" id="untriaged">Unread HTTP messages are shown here once your seat key is loaded, and to everyone once a member has read them.</p>
+<div id="inbox">
+{% for m in messages %}
+<div class="card" style="margin-bottom:10px">
+  <div class="k"><code>{{ m.from_account|short(16) }}</code> via {{ m.channel }} · {{ m.timestamp|ns }} · <span class="pill">{{ m.status }}</span>{% if not m.verified %} · <span class="pill">unverified</span>{% endif %}</div>
+  <pre style="margin:6px 0">{{ m.body }}</pre>
+  <form class="row" data-reply="{{ m.id }}"><input type="text" name="text" placeholder="reply (sent from the DAO account over chat; public)" style="flex:1;min-width:240px" required><button class="ghost">Sign and send</button>
+  <select name="status"><option value="">status…</option><option>read</option><option>closed</option><option>spam</option></select></form>
+</div>
+{% else %}<p class="mute" id="inbox-empty">Empty.</p>{% endfor %}
+</div>
+<div id="inmsg" class="msg" hidden></div>
+
+<h2>Public note</h2>
+<form class="block card" id="noteform"><label>Title</label><input type="text" id="ntitle"><label>Text</label><textarea id="ntext" required></textarea><button type="submit">Sign and publish to the log</button><div id="notemsg" class="msg" hidden></div></form>
+{% endblock %}
+{% block scripts %}
+<script>
+const MA = "xe-dao/member-action/v1", RES = "xe-dao/resolution/v1", OPS = "xe-dao/ops-approval/v1";
+window.onKeyLoaded = async (pub) => {
+  try { const r = await (await fetch("/v1/members/whoami/" + pub)).json(); $("#seatline").textContent = r.seat ? ("Seat: " + r.seat + " (" + r.name + ", " + r.kind + "). Rights: " + r.may.join(", ")) : "This key holds no seat."; if (r.seat) loadUntriaged(); }
+  catch (e) { $("#seatline").textContent = "This key holds no seat."; }
+};
+// Unread HTTP messages are held back from every public surface until a member has read them (XE-0195);
+// a seat holder fetches them with a signed request and they are rendered here with the same forms.
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const whenNs = (ns) => { const d = new Date(Number(BigInt(ns) / 1000000n)); return d.toISOString().slice(0, 16).replace("T", " ") + " UTC"; };
+async function loadUntriaged() {
+  if ($("#inbox [data-untriaged]")) return;
+  try {
+    const r = await XeSigner.post("/v1/members/inbox/untriaged", MA, { action: "list_untriaged" });
+    if (!r.messages.length) return;
+    const empty = $("#inbox-empty"); if (empty) empty.remove();
+    const html = r.messages.map(m => `<div class="card" data-untriaged style="margin-bottom:10px">
+  <div class="k"><code>${esc(m.from.slice(0, 16))}${m.from.length > 16 ? "…" : ""}</code> via ${esc(m.channel)} · ${whenNs(m.timestamp)} · <span class="pill">${esc(m.status)}</span>${m.verified ? "" : ' · <span class="pill">unverified</span>'} · <span class="pill">unread, not yet public</span></div>
+  <pre style="margin:6px 0">${esc(m.body)}</pre>
+  <form class="row" data-reply="${esc(m.id)}"><input type="text" name="text" placeholder="reply (sent from the DAO account over chat; public)" style="flex:1;min-width:240px" required><button class="ghost">Sign and send</button>
+  <select name="status"><option value="">status…</option><option>read</option><option>closed</option><option>spam</option></select></form>
+</div>`).join("");
+    $("#inbox").insertAdjacentHTML("afterbegin", html);
+    $("#untriaged").textContent = r.total + " unread HTTP message" + (r.total === 1 ? "" : "s") + ", visible to seat holders only until read.";
+  } catch (err) { say("#inmsg", err.message, false); }
+}
+const reload = () => setTimeout(() => location.reload(), 900);
+const on = (sel, ev, fn) => { const el = $(sel); if (el) el.addEventListener(ev, fn); };
+
+on("#pauseform", "submit", async e => { e.preventDefault(); try { await XeSigner.post("/v1/members/pause", MA, { action: "start_pause", ground: $("#ground").value, determination: $("#determination").value.trim() }); say("#pausemsg", "Paused.", true); reload(); } catch (err) { say("#pausemsg", err.message, false); } });
+{% if paused %}
+on("#postform", "submit", async e => { e.preventDefault(); try { await XeSigner.post("/v1/members/pause/{{ paused.id }}/post", MA, { action: "post_pause", pause_id: "{{ paused.id }}", text: $("#posttext").value.trim() }); say("#postmsg", "Published.", true); reload(); } catch (err) { say("#postmsg", err.message, false); } });
+on("#extend", "click", async () => { try { await XeSigner.post("/v1/members/pause/{{ paused.id }}/extend", MA, { action: "extend_pause", pause_id: "{{ paused.id }}" }); say("#pausemsg", "Signed.", true); reload(); } catch (err) { say("#pausemsg", err.message, false); } });
+on("#lift", "click", async () => { try { await XeSigner.post("/v1/members/pause/{{ paused.id }}/lift", MA, { action: "lift_pause", pause_id: "{{ paused.id }}" }); say("#pausemsg", "Signed.", true); reload(); } catch (err) { say("#pausemsg", err.message, false); } });
+{% endif %}
+
+on("#resform", "submit", async e => { e.preventDefault(); try { const p = { action: "propose_resolution", title: $("#rtitle").value.trim(), matter: $("#rmatter").value, body: $("#rbody").value.trim(), related_proposal: $("#rrel").value.trim() }; const o = $("#rops").value.trim(); if (o) p.ops = XeSigner.parseExact(o); await XeSigner.post("/v1/members/resolutions", MA, p); say("#resmsg", "Proposed.", true); reload(); } catch (err) { say("#resmsg", err.message, false); } });
+$$("button[data-sign]").forEach(b => b.addEventListener("click", async () => { try { await XeSigner.post("/v1/members/resolutions/" + b.dataset.sign + "/sign", RES, { resolution_id: b.dataset.sign, body_hash: b.dataset.bh, decision: b.dataset.dec }); say("#rsmsg", "Signed " + b.dataset.dec + ".", true); reload(); } catch (err) { say("#rsmsg", err.message, false); } }));
+
+on("#openreg", "click", async () => { try { await XeSigner.post("/v1/members/sessions/registry", MA, { action: "open_registry_session" }); reload(); } catch (err) { say("#sessmsg", err.message, false); } });
+on("#openanchor", "click", async () => { try { await XeSigner.post("/v1/members/sessions/anchor", MA, { action: "open_anchor_session" }); reload(); } catch (err) { say("#sessmsg", err.message, false); } });
+$$("button[data-approve]").forEach(b => b.addEventListener("click", async () => { try { await XeSigner.post("/v1/members/sessions/" + b.dataset.approve + "/approve", OPS, { session_id: b.dataset.approve, ops_digest: b.dataset.digest }); say("#sessmsg", "Approved.", true); reload(); } catch (err) { say("#sessmsg", err.message, false); } }));
+$$("button[data-signblock]").forEach(b => b.addEventListener("click", async () => { try {
+  // the on-chain signature is a raw ed25519 over the 32 block-hash bytes; the outer request proves the seat
+  const blockSig = await XeSigner.signBytes(XeSigner.hexToBytes(b.dataset.hash));
+  await XeSigner.post("/v1/members/sessions/" + b.dataset.signblock + "/sign", MA, { action: "sign_session", session_id: b.dataset.signblock, block_hash: b.dataset.hash, block_signature: blockSig });
+  say("#sessmsg", "Block signed.", true); reload(); } catch (err) { say("#sessmsg", err.message, false); } }));
+$$("button[data-rebuild]").forEach(b => b.addEventListener("click", async () => { try { await XeSigner.post("/v1/members/sessions/" + b.dataset.rebuild + "/rebuild", MA, { action: "rebuild_session", session_id: b.dataset.rebuild }); reload(); } catch (err) { say("#sessmsg", err.message, false); } }));
+$$("button[data-cancel]").forEach(b => b.addEventListener("click", async () => { const reason = prompt("Reason (public)"); if (!reason) return; try { await XeSigner.post("/v1/members/sessions/" + b.dataset.cancel + "/cancel", MA, { action: "cancel_session", session_id: b.dataset.cancel, reason }); reload(); } catch (err) { say("#sessmsg", err.message, false); } }));
+
+$$("form[data-decide]").forEach(f => f.addEventListener("submit", async e => { e.preventDefault(); try { const p = { action: "decide_proposal", proposal: f.dataset.decide, decision: f.decision.value, reasons: f.reasons.value.trim() }; if (f.resolution_id.value.trim()) p.resolution_id = f.resolution_id.value.trim(); await XeSigner.post("/v1/proposals/" + f.dataset.decide + "/decision", MA, p); say("#decmsg", "Recorded.", true); reload(); } catch (err) { say("#decmsg", err.message, false); } }));
+// delegated, so the forms rendered by loadUntriaged() work too
+on("#inbox", "submit", async e => { const f = e.target.closest("form[data-reply]"); if (!f) return; e.preventDefault(); try { await XeSigner.post("/v1/members/inbox/" + f.dataset.reply + "/reply", MA, { action: "reply_message", message_id: f.dataset.reply, text: f.text.value.trim() }); say("#inmsg", "Queued for sending.", true); reload(); } catch (err) { say("#inmsg", err.message, false); } });
+on("#inbox", "change", async e => { const f = e.target.closest("form[data-reply]"); if (!f || e.target.name !== "status" || !f.status.value) return; try { await XeSigner.post("/v1/members/inbox/" + f.dataset.reply + "/status", MA, { action: "set_message_status", message_id: f.dataset.reply, status: f.status.value }); reload(); } catch (err) { say("#inmsg", err.message, false); } });
+on("#noteform", "submit", async e => { e.preventDefault(); try { const r = await XeSigner.post("/v1/members/notes", MA, { action: "post_note", title: $("#ntitle").value.trim(), text: $("#ntext").value.trim() }); say("#notemsg", "Published as log #" + r.index, true); reload(); } catch (err) { say("#notemsg", err.message, false); } });
+</script>
+{% endblock %}

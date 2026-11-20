@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.labels.log }}{% endblock %}
+{% block content %}
+<h1>{{ copy.labels.log }}</h1>
+<p class="sub">Every action, hash-chained and signed. Head <code>{{ head.hash }}</code> at #{{ head.index }}. <a href="/v1/log/verify">Verify</a> · <a href="/v1/log?limit=1000">JSON</a> · <a href="/live">live</a>{% if kind or ref %} · filter: {{ kind or '' }} {{ ref or '' }} · <a href="/log">clear</a>{% endif %}</p>
+<table><tr><th>#</th><th>Kind</th><th>Actor</th><th>Ref</th><th>When</th><th>Hash</th></tr>
+{% for e in events %}<tr><td class="num"><a href="/log/{{ e.index }}">{{ e.index }}</a></td><td><a href="/log?kind={{ e.kind }}">{{ e.kind }}</a></td><td class="mute">{{ e.actor|short(24) }}</td><td class="small">{% if e.ref %}<a href="/log?ref={{ e.ref }}">{{ e.ref|short(28) }}</a>{% endif %}</td><td class="num mute">{{ e.ts|ns }}</td><td><code>{{ e.hash|short(12) }}</code></td></tr>
+{% else %}<tr><td colspan="6" class="mute">Empty.</td></tr>{% endfor %}</table>
+{% if events|length == 100 %}<p><a href="/log?offset={{ offset + 100 }}{% if kind %}&kind={{ kind }}{% endif %}{% if ref %}&ref={{ ref }}{% endif %}">older</a></p>{% endif %}
+{% endblock %}

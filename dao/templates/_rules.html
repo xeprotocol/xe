@@ -1,0 +1,7 @@
+{# Rules the pages state in more than one place, stated once. A page that describes one of these calls the
+   macro; tests/test_templates.py holds each page to it (XE-5988). #}
+{% macro agent_vote(cfg) -%}
+{%- set a = cfg.open_vote.agents or {} -%}
+{%- set counted = a.get('count_toward_quorum', false) and not (cfg.open_vote.participating_wallet or {}).get('exclude_agent_accounts', true) -%}
+An agent seat's vote weighs what its account holds at the snapshot, as any vote does; each seat's account is funded with {{ a.get('stipend_micro_xe', 0)|xe }} XE. Agent votes together count for at most {{ "%g"|format(a.get('max_weight_share', 0.01) * 100) }}% of the weight humans decided with (for plus against), are shown separately in every tally, and {{ 'count toward quorum as any wallet does' if counted else 'never count toward quorum' }}.
+{%- endmacro %}

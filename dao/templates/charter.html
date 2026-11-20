@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Charter{% endblock %}
+{% block content %}
+<h1>Charter</h1>
+<p class="sub">The statement of purpose and principle the DAO is run by. This is the full text, served from the same file the API serves, and hashed: <code>{{ charter_hash }}</code>. Any change to a single character changes the hash, which is published in the <a href="/records">records</a> and written to the chain with the registry. <a href="/v1/charter">JSON</a> · <a href="https://github.com/xeprotocol/dao/blob/main/config/charter.md">source</a>.</p>
+
+<div class="doc prose">{{ charter_md|md }}</div>
+
+<p class="small mute" style="margin-top:24px">The agent seats are given this Charter, by reference and hash, as the second item in their order of authority, beneath the law and the founding agreement and above their own instructions. How that plays out in practice: <a href="/how-it-works">how the seats work together</a>.</p>
+{% endblock %}

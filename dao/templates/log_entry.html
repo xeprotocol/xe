@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Log #{{ e.index }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/log">← {{ copy.labels.log }}</a></p>
+<h1>#{{ e.index }} · {{ e.kind }}</h1>
+<p class="sub">{{ e.actor }} · {{ e.ts|ns }}{% if e.ref %} · <a href="/log?ref={{ e.ref }}">{{ e.ref }}</a>{% endif %}</p>
+<table>
+  <tr><th>hash</th><td><code>{{ e.hash }}</code></td></tr>
+  <tr><th>prev_hash</th><td><code>{{ e.prev_hash }}</code>{% if e.index > 0 %} · <a href="/log/{{ e.index - 1 }}">previous</a>{% endif %}</td></tr>
+  <tr><th>v</th><td>{{ e.v }}</td></tr>
+  <tr><th>public</th><td>{{ "true" if e.public else "false" }}</td></tr>
+  <tr><th>ref</th><td><code>{{ e.ref|tojson }}</code></td></tr>
+  <tr><th>ts</th><td><code>{{ e.ts }}</code></td></tr>
+  <tr><th>signer</th><td><code>{{ e.signer or "—" }}</code></td></tr>
+  <tr><th>signature</th><td><code>{{ e.signature or "—" }}</code></td></tr>
+</table>
+<h2>Payload</h2>
+<pre>{{ e.payload|tojson(indent=1) }}</pre>
+{# The recipe is the one this entry was hashed under (dao/log.py event_hash): v2 added `public` and `ref` to
+   the hashed body and changed the domain. Printing the v1 line for every entry gave a reader a recipe that
+   reproduced no entry written since (XE-7744). Every input it names is on this page. #}
+<p class="small mute" id="recipe">{% if e.v >= 2 %}hash = sha256("xe-dao/event/v2\0" || canonical_json({index, ts, kind, actor, payload, prev_hash, public, ref})){% else %}hash = sha256("xe-dao/event/v1\0" || canonical_json({index, ts, kind, actor, payload, prev_hash})); <code>public</code> and <code>ref</code> are not in this entry's hash and are bound by the <code>log.v1_sealed</code> entry, which records a digest over them for every entry of this kind{% endif %}, with canonical_json = sorted keys, no whitespace, ASCII-escaped. <a href="/v1/log/{{ e.index }}">JSON</a></p>
+{% endblock %}

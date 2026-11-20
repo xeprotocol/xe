@@ -1,0 +1,201 @@
+# A worked example of a decision record: the artefact the ensemble produces for every item once the
+# agent seats are switched on. Rendered at /decisions/example so the shape is public before any real
+# record exists. Everything below is invented for illustration; hashes are placeholders.
+# Written in the public register (config/copy/public.yaml); linted like the rest of the public copy.
+
+example: true
+version: 1
+record_id: example-0001
+produced_at: "2026-11-20T10:14:00Z"
+
+item:
+  kind: proposal
+  ref: "7f3a…example"
+  title: Raise the proposal fee from 10 XE to 25 XE
+  path: open vote, then a signed decision      # the paths never collapse
+  opened_at: "2026-10-29T09:00:00Z"
+  closed_at: "2026-11-19T09:00:00Z"
+  vote_result:
+    outcome: passed
+    for_xe: 1842000
+    against_xe: 611500
+    abstain_xe: 20000
+    participating_wallets: 27
+    quorum_wallets: 20
+    agent_weight_xe: 700
+    note: A passed vote is not self-executing.
+
+inputs:
+  - kind: proposal_text
+    ref: "7f3a…example"
+    hash: "sha256:7f3a…example"
+  - kind: chain_read
+    ref: fee account balance and 90-day proposal count
+    hash: "sha256:c91d…example"
+    note: Research, block height 1,204,311
+  - kind: config
+    ref: schedule_b.yaml (fee_micro_xe, quorum_wallets)
+    hash: "sha256:5be2…example"
+  - kind: log
+    ref: "#4120 to #4188 (all votes and reasons)"
+    hash: "sha256:a07c…example"
+
+seats:
+  - seat: research
+    role: Research & Intelligence
+    model: example-model-a
+    prompt_hash: "sha256:11aa…example"
+    position: no_position
+    confidence: 0.9
+    summary: >-
+      In 90 days there were 14 proposals; 9 reached quorum and were refunded, 5 did not and were
+      burned. Median proposer balance was 310 XE. The fee was changed once before, at launch.
+    evidence:
+      - { kind: chain_read, ref: "fee account 16557a…", hash: "sha256:c91d…example" }
+      - { kind: log, ref: "proposal.opened events #3901–#4188", hash: "sha256:a07c…example" }
+    counter_argument: Ninety days is a short window; the sample is small.
+    would_change_my_mind: A longer history showing a different ratio of refunded to burned.
+
+  - seat: financial
+    role: Financial & Accounting
+    model: example-model-b
+    prompt_hash: "sha256:22bb…example"
+    position: oppose
+    confidence: 0.6
+    summary: >-
+      The fee is not a revenue line; refunded fees return and burned fees leave supply. Raising
+      it changes who can afford to propose more than it changes anything financial.
+    reasoning: >-
+      At 10 XE the burn from failed proposals over 90 days was 50 XE. At 25 XE it would have been
+      125 XE. Neither figure matters to the balance sheet. The only real effect is on proposers.
+    counter_argument: A higher fee may reduce low-effort proposals and the review cost they carry.
+    would_change_my_mind: Evidence that review cost per proposal is material and rising.
+    evidence:
+      - { kind: chain_read, ref: "fee account 16557a…", hash: "sha256:c91d…example" }
+
+  - seat: legal
+    role: Legal & Compliance
+    model: example-model-c
+    prompt_hash: "sha256:33cc…example"
+    position: no_position
+    confidence: 0.95
+    summary: >-
+      The fee is a Schedule B value. A vote can recommend it; changing it is a formal signed
+      decision by the people, followed by a configuration change and a logged hash.
+    touches_reserved_matter: true
+    counter_argument: None on the question of path; the documents are clear.
+    would_change_my_mind: An amendment moving fee levels out of Schedule B.
+    evidence:
+      - { kind: config, ref: "schedule_b.yaml → open_vote.fee_micro_xe", hash: "sha256:5be2…example" }
+
+  - seat: governance
+    role: Proposal & Governance
+    model: example-model-a
+    prompt_hash: "sha256:44dd…example"
+    position: oppose
+    confidence: 0.7
+    summary: >-
+      The stated problem (low-quality proposals) is not visible in the data: 9 of 14 reached
+      quorum. A 2.5× fee mostly raises the bar for small holders, which cuts against open
+      participation.
+    counter_proposal: Keep 10 XE; add a short template proposers must fill in before paying.
+    counter_argument: Fees are the only friction we have; templates are easy to game.
+    would_change_my_mind: A run of burned proposals that were plainly spam.
+    evidence:
+      - { kind: log, ref: "votes and reasons #4120–#4188", hash: "sha256:a07c…example" }
+
+  - seat: execution
+    role: Execution & Operations
+    model: example-model-b
+    prompt_hash: "sha256:55ee…example"
+    position: abstain
+    confidence: 0.8
+    summary: >-
+      If adopted: one-line change to schedule_b.yaml, restart, new hash logged. Live votes keep
+      the fee they opened with. No chain write is needed.
+    counter_argument: None; the mechanics are trivial either way.
+    would_change_my_mind: Not applicable.
+    evidence: []
+
+  - seat: community
+    role: Community & Sentiment
+    model: example-model-c
+    prompt_hash: "sha256:66ff…example"
+    position: oppose
+    confidence: 0.5
+    summary: >-
+      Eleven of the 27 voters left reasons. Supporters cite spam they expect rather than spam
+      they have seen; opponents are mostly small holders who say 25 XE would exclude them.
+    counter_argument: Reasons are self-selected and few.
+    would_change_my_mind: A broader sample of proposer sentiment.
+    evidence:
+      - { kind: log, ref: "vote reasons #4120–#4188", hash: "sha256:a07c…example" }
+
+rebuttals:
+  - seat: financial
+    responding_to: governance
+    text: Agree the data shows no problem. Withdraw "review cost" as a reason; it was speculative.
+  - seat: governance
+    responding_to: legal
+    text: Noted that the path is a signed decision either way; this changes what we recommend, not whether.
+
+risk_review:
+  seat: risk
+  role: Risk & Safety
+  model: example-model-a
+  prompt_hash: "sha256:77aa…example"
+  position: oppose
+  confidence: 0.65
+  summary: >-
+    No attack found in the proposal text. The second-order risk is the one Governance names:
+    a fee high enough to exclude small holders makes the open vote look captured even if it is not.
+  findings:
+    - No instruction to the reviewer was found in the proposal text.
+    - The proposer's account is 14 months old with ordinary activity.
+    - Agent weight (700 XE across seven seats) was 0.03% of weight cast, well under the 1% cap; shown separately.
+  counter_argument: The exclusion risk is reputational, not technical, and may be overstated.
+  would_change_my_mind: Evidence that spam proposals are consuming reviewer time today.
+
+synthesis:
+  seat: orchestrator
+  model: example-model-b
+  prompt_hash: "sha256:88bb…example"
+  recommendation: decline
+  confidence: 0.7
+  summary: >-
+    The vote passed, and the people should take that seriously. The record does not support the
+    reason given for the change: proposals are mostly reaching quorum, and the main effect of 25 XE
+    would fall on small holders. Recommend declining, with the Governance counter-proposal (a
+    required template at 10 XE) put back to the portal as a new item.
+  reasons:
+    - Four of five specialists with a position oppose; Research found no problem in the data.
+    - The change is a Schedule B value and needs a signed decision regardless of the vote.
+    - A cheaper remedy exists for the stated problem.
+  dissent: >-
+    Twenty-seven wallets voted and a clear majority by weight said yes. Declining a passed vote
+    carries a cost in trust that the record should name plainly.
+  would_change_my_mind: >-
+    A pattern of spam proposals in the next quarter, or the people judging that the vote margin
+    outweighs the data.
+  weighted: >-
+    Chain reads over sentiment; the Governance counter-proposal over the Financial burn figures,
+    which Financial itself withdrew as a reason.
+
+cost:
+  tokens_in: 48210
+  tokens_out: 6930
+  wall_seconds: 212
+
+human_decision:
+  decision: decline
+  by: [founder-a, founder-b]
+  reasons: >-
+    We read the vote and the record. We are declining this one and opening the template idea as a
+    new proposal. If spam becomes real we will revisit the fee.
+  timestamp: "2026-11-21T16:40:00Z"
+  log_index: 4203
+  signatures: 2
+
+execution:
+  status: none_required
+  note: No configuration or chain change. New proposal "Require a short template before paying the fee" opened at #4210.

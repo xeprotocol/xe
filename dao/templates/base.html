@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en" data-dao="{{ dao_account }}" data-network="{{ network_id }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<title>{% block title %}{{ copy.site_name }}{% endblock %} · {{ badge }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/static/site.css">
+<link rel="alternate" type="text/markdown" href="{{ request.url.path|md_path }}" title="This page as markdown">
+{# Not deferred: every page's own script runs as the body ends and calls $, on and XeSigner, which this file
+   defines. Deferred, it ran after them and no form on the site was wired (XE-8209). #}
+<script src="/static/signer.js"></script>
+</head>
+<body>
+{% macro mark() %}<svg viewBox="0 0 30.001 32" aria-hidden="true"><path d="M14.3896 10.3809C16.3506 12.3011 18.9859 13.3769 21.7305 13.377H30V18.623H21.7305C18.9859 18.6231 16.3506 19.6989 14.3896 21.6191L3.78809 32H0V28.29L8.72266 19.748C10.8236 17.6907 10.8236 14.3093 8.72266 12.252L0 3.70996V0H3.78809L14.3896 10.3809ZM30.001 31.9961H16.3398V30.2471C16.3401 28.3157 17.9064 26.75 19.8379 26.75H30.001V31.9961ZM30.001 0V5.24609H19.8379C17.9064 5.24609 16.34 3.68051 16.3398 1.74902V0H30.001Z"/></svg>{% endmacro %}
+<header>
+  <div class="wrap">
+    <nav>
+      <a class="brand" href="/" aria-label="{{ copy.site_name }}, home">{{ mark() }}<span class="word">DAO</span> <span class="badge {{ badge }}">{{ badge }}</span></a>
+      <a href="/proposals">{{ copy.labels.proposals }}</a>
+      <a href="/decisions">{{ copy.labels.decisions }}</a>
+      <a href="/seats">{{ copy.labels.seats }}</a>
+      <a href="/how-it-works">How it works</a>
+      <a href="/inbox">Inbox</a>
+      <a href="/log">{{ copy.labels.log }}</a>
+      <a href="/records">{{ copy.labels.records }}</a>
+      <a href="/proposals/new" class="cta">Propose</a>
+    </nav>
+  </div>
+</header>
+{% if paused %}
+<div class="banner"><div class="wrap">Paused since {{ paused.started_at|ns }}. {{ paused.post_text if paused.posted_at else "A note follows shortly." }} Reads and the log stay up.</div></div>
+{% endif %}
+<main><div class="wrap">
+{% block content %}{% endblock %}
+</div></main>
+<footer><div class="wrap">
+  <div class="brandline">{{ mark() }}<p>{{ copy.footer_line }}</p></div>
+  <div class="meta">
+    <span>© 2026 {{ copy.footer }}</span>
+    <span>·</span><span>{{ network_id }}</span>
+    <span>·</span><span>v{{ version }}</span>
+    <span>·</span><a href="/charter">charter</a>
+    <span>·</span><a href="/v1" >API</a>
+    <span>·</span><a href="{{ request.url.path|md_path }}">this page as markdown</a>
+    <span>·</span><a href="/llms.txt">llms.txt</a>
+    <span>·</span><a href="/v1/log/head">log head {{ head.hash|short if head else "" }}</a>
+    <span>·</span><a href="https://github.com/xeprotocol/dao">source</a>
+    <span>·</span><a href="https://xe.network">xe.network</a>
+  </div>
+</div></footer>
+{% block scripts %}{% endblock %}
+</body>
+</html>

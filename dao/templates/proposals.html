@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.labels.proposals }}{% endblock %}
+{% block content %}
+<h1>{{ copy.labels.proposals }}</h1>
+<p class="sub">
+  <a href="/proposals">all</a> ·
+  <a href="/proposals?status=open">{{ copy.labels.open|lower }} ({{ counts.get('open',0) }})</a> ·
+  <a href="/proposals?status=closed">{{ copy.labels.closed|lower }} ({{ counts.get('closed',0) }})</a> ·
+  <a href="/proposals?status=decided">{{ copy.labels.decision_taken|lower }} ({{ counts.get('decided',0) }})</a> ·
+  <a href="/proposals/new">propose</a>
+</p>
+<table>
+  <tr><th>Title</th><th>Status</th><th>Author</th><th>Opened</th><th>Closes</th><th>Result</th></tr>
+  {% for p in proposals %}
+  <tr>
+    <td><a href="/proposals/{{ p.hash }}">{{ p.title }}</a></td>
+    <td><span class="pill {{ p.status }}">{{ p.status }}</span></td>
+    <td><code>{{ p.author_account|short(12) }}</code></td>
+    <td class="num">{{ p.opened_at|ns }}</td><td class="num">{{ p.closes_at|ns }}</td>
+    <td>{% if p.result %}<span class="pill {{ p.result.outcome }}">{{ p.result.outcome.replace('_',' ') }}</span>{% endif %}</td>
+  </tr>
+  {% else %}<tr><td colspan="6" class="mute">None.</td></tr>{% endfor %}
+</table>
+{% if proposals|length == 50 %}<p><a href="/proposals?offset={{ offset + 50 }}{% if status %}&status={{ status }}{% endif %}">older</a></p>{% endif %}
+{% endblock %}
