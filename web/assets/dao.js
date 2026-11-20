@@ -210,7 +210,10 @@ async function onGenerateHash() {
       return;
     }
     if (op.action === 'set') {
-      try { JSON.parse(op.value); } catch {
+      try {
+        const parsed = JSON.parse(op.value);
+        op.value = JSON.stringify(parsed);
+      } catch {
         showError(`op ${i}: value must be valid JSON (e.g. "string", 123, {"x":1}, true, null)`);
         return;
       }
