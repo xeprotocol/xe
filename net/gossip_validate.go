@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -52,12 +53,51 @@ func RegisterTopicValidators(ps *pubsub.PubSub, cfg GossipConfig) error {
 	return nil
 }
 
+const maxMultisigSignatures = 256
+
 func isHex64(s string) bool {
 	if len(s) != 64 {
 		return false
 	}
 	_, err := hex.DecodeString(s)
 	return err == nil
+}
+
+func isHex128(s string) bool {
+	if len(s) != 128 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+func hasValidBlockSignatures(b *core.Block) bool {
+	if b == nil {
+		return false
+	}
+	hasSingle := b.Signature != ""
+	hasMulti := len(b.Signatures) > 0
+	if hasSingle == hasMulti {
+		return false
+	}
+	if hasSingle {
+		return isHex128(b.Signature)
+	}
+	if len(b.Signatures) > maxMultisigSignatures {
+		return false
+	}
+	seen := make(map[string]struct{}, len(b.Signatures))
+	for _, sig := range b.Signatures {
+		if !isHex64(sig.PublicKey) || !isHex128(sig.Sig) {
+			return false
+		}
+		pk := strings.ToLower(sig.PublicKey)
+		if _, dup := seen[pk]; dup {
+			return false
+		}
+		seen[pk] = struct{}{}
+	}
+	return true
 }
 
 func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
@@ -70,11 +110,7 @@ func blockValidator(cfg GossipConfig) pubsub.ValidatorEx {
 		if b == nil {
 			return pubsub.ValidationReject
 		}
-		if !isHex64(b.Hash) || !isHex64(b.Account) {
-			return pubsub.ValidationReject
-		}
-
-		if len(b.Signature) != 128 && len(b.Signatures) == 0 {
+		if !isHex64(b.Hash) || !isHex64(b.Account) || !hasValidBlockSignatures(b) {
 			return pubsub.ValidationReject
 		}
 
