@@ -56,12 +56,21 @@ func (n *Node) registerVMHandlers() {
 }
 
 func (n *Node) PeerForAccount(account string) peer.ID {
+	if n.peerForAccountHook != nil {
+		if pid := n.peerForAccountHook(account); pid != "" {
+			return pid
+		}
+	}
+	if n.Directory == nil {
+		return ""
+	}
 	reg, ok := n.Directory.Lookup(account)
 	if ok {
 		pid, err := peer.Decode(reg.NodePeer)
 		if err == nil {
 			return pid
 		}
+		return peer.ID(reg.NodePeer)
 	}
 	return ""
 }

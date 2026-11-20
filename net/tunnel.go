@@ -21,6 +21,8 @@ const TunnelProtocol = protocol.ID("/xe/tunnel/2.0.0")
 
 const tunnelHandshakeDeadline = 30 * time.Second
 
+const MaxTunnelsPerLease = 16
+
 type TunnelValidator interface {
 	ValidateTunnelLease(leaseHash string, peerID peer.ID) error
 	DialSSH(leaseHash string) (net.Conn, error)
@@ -35,10 +37,14 @@ func NewTunnelRegistry() *TunnelRegistry {
 	return &TunnelRegistry{tunnels: make(map[string][]io.Closer)}
 }
 
-func (r *TunnelRegistry) add(leaseHash string, c io.Closer) {
+func (r *TunnelRegistry) add(leaseHash string, c io.Closer) bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.tunnels[leaseHash]) >= MaxTunnelsPerLease {
+		return false
+	}
 	r.tunnels[leaseHash] = append(r.tunnels[leaseHash], c)
-	r.mu.Unlock()
+	return true
 }
 
 func (r *TunnelRegistry) remove(leaseHash string, c io.Closer) {
@@ -67,8 +73,15 @@ func (r *TunnelRegistry) CloseTunnelsForLease(leaseHash string) {
 }
 
 func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *TunnelRegistry) {
+	limiter := newPeerRateLimiter(5.0, 10, 50.0, 100, 1000)
+
 	h.SetStreamHandler(TunnelProtocol, func(s network.Stream) {
 		defer func() { _ = s.Close() }()
+
+		if !limiter.allow(s.Conn().RemotePeer()) {
+			writeTunnelError(s, "rate limit exceeded")
+			return
+		}
 
 		_ = s.SetDeadline(time.Now().Add(tunnelHandshakeDeadline))
 
@@ -86,6 +99,15 @@ func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *Tunnel
 			return
 		}
 
+		if registry != nil {
+			if !registry.add(leaseHash, s) {
+				log.Printf("tunnel: max concurrent tunnels reached for %s", leaseHash[:16])
+				writeTunnelError(s, "max concurrent tunnels reached for lease")
+				return
+			}
+			defer registry.remove(leaseHash, s)
+		}
+
 		backend, err := validator.DialSSH(leaseHash)
 		if err != nil {
 			log.Printf("tunnel: dial ssh for %s: %v", leaseHash[:16], err)
@@ -100,9 +122,6 @@ func SetupTunnelHandler(h host.Host, validator TunnelValidator, registry *Tunnel
 		}
 
 		_ = s.SetDeadline(time.Time{})
-
-		registry.add(leaseHash, s)
-		defer registry.remove(leaseHash, s)
 
 		var wg sync.WaitGroup
 		wg.Add(2)

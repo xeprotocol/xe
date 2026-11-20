@@ -85,7 +85,8 @@ type Node struct {
 	tunnelRegistry   *xenet.TunnelRegistry
 	acceptInFlight   map[string]struct{}
 	acceptInFlightMu sync.Mutex
-	acceptAttestHook func(leaseHash string) ([]core.TimekeeperAttestation, error)
+	acceptAttestHook   func(leaseHash string) ([]core.TimekeeperAttestation, error)
+	peerForAccountHook func(account string) peer.ID
 	acceptSched      acceptSchedule
 	archiveDue       archiveDue
 	standalone       atomic.Bool
@@ -2257,7 +2258,33 @@ func (n *Node) ValidateTunnelLease(leaseHash string, peerID peer.ID) error {
 	if lease.Provider != n.KeyPair.Address() {
 		return fmt.Errorf("not the provider for this lease")
 	}
+
+	if peerID == "" {
+		return fmt.Errorf("missing peer ID")
+	}
+
+	consumerPeer := n.PeerForAccount(lease.Consumer)
+	if consumerPeer == "" {
+		return fmt.Errorf("consumer peer not found in directory")
+	}
+	if peerID != consumerPeer {
+		return fmt.Errorf("unauthorized peer: caller %s does not match lease consumer %s", peerID.ShortString(), consumerPeer.ShortString())
+	}
 	return nil
+}
+
+// SetPeerForAccount sets a peer mapping for account (useful for testing or direct routing).
+func (n *Node) SetPeerForAccount(account string, pid peer.ID) {
+	prev := n.peerForAccountHook
+	n.peerForAccountHook = func(a string) peer.ID {
+		if a == account {
+			return pid
+		}
+		if prev != nil {
+			return prev(a)
+		}
+		return ""
+	}
 }
 
 func (n *Node) DialSSH(leaseHash string) (net.Conn, error) {
