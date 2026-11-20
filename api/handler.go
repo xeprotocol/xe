@@ -438,6 +438,36 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+var internalErrorPrefixes = []string{
+	"VerifyBlockHash: ",
+	"HashBlock: ",
+	"MarshalCanonical: ",
+	"MarshalBlock: ",
+	"VerifyBlock: ",
+	"verify: ",
+	"decode hash: ",
+}
+
+func cleanBlockError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	for {
+		trimmed := false
+		for _, prefix := range internalErrorPrefixes {
+			if strings.HasPrefix(msg, prefix) {
+				msg = strings.TrimPrefix(msg, prefix)
+				trimmed = true
+			}
+		}
+		if !trimmed {
+			break
+		}
+	}
+	return msg
+}
+
 func writeSubmitError(w http.ResponseWriter, err error) {
 	retryable := core.IsRetryableError(err)
 	status := http.StatusBadRequest
@@ -445,7 +475,7 @@ func writeSubmitError(w http.ResponseWriter, err error) {
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, map[string]any{
-		"error":     "block rejected: " + err.Error(),
+		"error":     "block rejected: " + cleanBlockError(err),
 		"retryable": retryable,
 	})
 }
@@ -1025,7 +1055,7 @@ func (h *Handler) handleSubmitStateChainBlock(w http.ResponseWriter, r *http.Req
 	}
 	if err := h.node.SubmitStateChainBlock(&b); err != nil {
 		logging.Warnf("statechain block rejected: %v", err)
-		writeError(w, http.StatusBadRequest, "block rejected: "+err.Error())
+		writeError(w, http.StatusBadRequest, "block rejected: "+cleanBlockError(err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, &b)
