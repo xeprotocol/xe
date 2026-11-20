@@ -79,7 +79,7 @@ func (vm *VoteManager) castVoteLocked(account, prev string, seed ...string) {
 	}
 
 	rep := vm.keyPair.PubKeyHex()
-	if vm.ledger.GetVoteWeight(vm.keyPair.Address()).Sign() <= 0 {
+	if !vm.repHasWeight(vm.keyPair.Address(), account, prev) {
 		return
 	}
 
@@ -503,7 +503,7 @@ func (vm *VoteManager) reaffirmFromState(account, prev string) {
 	if vm.keyPair == nil || vm.VoteEmitter == nil {
 		return
 	}
-	if vm.ledger.GetVoteWeight(vm.keyPair.Address()).Sign() <= 0 {
+	if !vm.repHasWeight(vm.keyPair.Address(), account, prev) {
 		return
 	}
 	key := account + "|" + prev
@@ -531,7 +531,7 @@ func (vm *VoteManager) VotesForPosition(account, prev string) []*Vote {
 	if vm.keyPair == nil {
 		return out
 	}
-	if vm.ledger.GetVoteWeight(vm.keyPair.Address()).Sign() <= 0 {
+	if !vm.repHasWeight(vm.keyPair.Address(), account, prev) {
 		return out
 	}
 	winner := vm.finalizedChildAt(account, prev)

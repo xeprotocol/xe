@@ -205,6 +205,21 @@ func (s validVoteStore) Sync() error {
 	return nil
 }
 
+func (vm *VoteManager) repHasWeight(repAccount, conflictAccount, conflictPrev string) bool {
+	if vm.ledger == nil {
+		return false
+	}
+	if vm.ledger.GetVoteWeight(repAccount).Sign() > 0 {
+		return true
+	}
+	if conflictAccount != "" {
+		if c := vm.ledger.GetConflict(conflictAccount, conflictPrev); c != nil && c.WeightSnapshot != nil {
+			return c.WeightSnapshot[repAccount] > 0
+		}
+	}
+	return false
+}
+
 func (vm *VoteManager) isConflictNotFound(v *Vote) bool {
 
 	pub, err := DecodePublicKey(v.RepPubKey)
@@ -219,7 +234,7 @@ func (vm *VoteManager) isConflictNotFound(v *Vote) bool {
 		return false
 	}
 
-	if vm.ledger.GetVoteWeight(v.RepAccount()).Sign() <= 0 {
+	if !vm.repHasWeight(v.RepAccount(), v.ConflictAccount, v.ConflictPrev) {
 		return false
 	}
 
@@ -263,6 +278,20 @@ func VerifyVoteSignature(v *Vote) bool {
 	return ed25519.Verify(pub, signingBytes, v.Signature)
 }
 
+func VoteSigningBytes(v *Vote) ([]byte, error) {
+	return voteSigningBytes(v)
+}
+
+func SignVote(v *Vote, kp *KeyPair) error {
+	v.RepPubKey = kp.PubKeyHex()
+	sb, err := voteSigningBytes(v)
+	if err != nil {
+		return err
+	}
+	v.Signature = ed25519.Sign(kp.Private, sb)
+	return nil
+}
+
 func (vm *VoteManager) ValidateVote(v *Vote) error {
 
 	pub, err := DecodePublicKey(v.RepPubKey)
@@ -279,8 +308,7 @@ func (vm *VoteManager) ValidateVote(v *Vote) error {
 		return fmt.Errorf("ValidateVote: signature verification failed")
 	}
 
-	weight := vm.ledger.GetVoteWeight(v.RepAccount())
-	if weight.Sign() <= 0 {
+	if !vm.repHasWeight(v.RepAccount(), v.ConflictAccount, v.ConflictPrev) {
 		return fmt.Errorf("ValidateVote: representative %s has zero vote weight", v.RepPubKey[:8])
 	}
 
