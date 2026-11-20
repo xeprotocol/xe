@@ -18,8 +18,10 @@ async function refreshNode() {
 async function load() {
   await refreshNode();
   const params = new URLSearchParams(location.search);
-  const addr = params.get('addr');
+  let addr = params.get('addr');
   if (addr) {
+    if (addr.startsWith('0x') || addr.startsWith('0X')) addr = addr.slice(2);
+    addr = addr.toLowerCase().trim();
     document.title = `${shortAddr(addr)} · xe`;
     setText('page-title', `account · ${shortAddr(addr)}`);
     setText('f-address', addr);

@@ -89,6 +89,10 @@ function buildHeader(section, walletEnabled) {
     <button type="submit">search</button>
   `;
   search.addEventListener('submit', onSearchSubmit);
+  const searchInput = search.querySelector('#search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', () => searchInput.setCustomValidity(''));
+  }
 
   const meta = document.createElement('div');
   meta.className = 'meta';
@@ -132,21 +136,36 @@ async function onSearchSubmit(ev) {
   const input = document.getElementById('search-input');
   if (!input) return;
   input.setCustomValidity('');
-  const val = input.value.trim().toLowerCase();
+  let val = input.value.trim().toLowerCase();
   if (!val) return;
+  if (val.startsWith('0x')) {
+    val = val.slice(2);
+  }
   if (!HEX64.test(val)) {
     searchNotFound(input, 'enter a 64-character account address or block hash');
     return;
   }
   input.disabled = true;
   let dest = null;
-  if (await apiOrNull(`/blocks/${val}`)) {
-    dest = `/blocks/?hash=${val}`;
-  } else {
-    const chain = await apiOrNull(`/accounts/${val}/chain`);
-    if (chain && chain.total > 0) dest = `/accounts/?addr=${val}`;
+  try {
+    if (await apiOrNull(`/blocks/${val}`)) {
+      dest = `/blocks/?hash=${val}`;
+    } else {
+      const [chain, bal, pending] = await Promise.all([
+        apiOrNull(`/accounts/${val}/chain`),
+        apiOrNull(`/accounts/${val}/balance`),
+        apiOrNull(`/pending/${val}`),
+      ]);
+      const hasChain = chain && (chain.total > 0 || (chain.blocks && chain.blocks.length > 0));
+      const hasBalance = bal && bal.balances && Object.values(bal.balances).some((v) => Number(v) > 0);
+      const hasPending = pending && pending.pending && pending.pending.length > 0;
+      if (hasChain || hasBalance || hasPending || (chain && chain.address === val)) {
+        dest = `/accounts/?addr=${val}`;
+      }
+    }
+  } finally {
+    input.disabled = false;
   }
-  input.disabled = false;
   if (dest) location.href = dest;
   else searchNotFound(input, 'no account or block found for that id');
 }

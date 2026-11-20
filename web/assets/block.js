@@ -35,8 +35,10 @@ async function refreshNode() {
 async function load() {
   await refreshNode();
   const params = new URLSearchParams(location.search);
-  const hash = params.get('hash');
+  let hash = params.get('hash');
   if (hash) {
+    if (hash.startsWith('0x') || hash.startsWith('0X')) hash = hash.slice(2);
+    hash = hash.toLowerCase().trim();
     await loadDetail(hash);
   } else {
     await loadList();
