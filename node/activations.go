@@ -2,6 +2,7 @@ package node
 
 import (
 	"log"
+	"math/bits"
 	"sort"
 	"strconv"
 	"sync"
@@ -177,23 +178,25 @@ func (n *Node) GetReadiness() *ReadinessInfo {
 	for rep, w := range del.Weights {
 		c, ok := byAccount[rep]
 		if !ok {
-			info.UnknownWeight += w
+			info.UnknownWeight = addSat(info.UnknownWeight, w)
 			continue
 		}
 		info.ResolvedReps++
-		versionWeights[c.Version] += w
+		versionWeights[c.Version] = addSat(versionWeights[c.Version], w)
+		seenFeat := make(map[string]struct{}, len(c.Features))
 		for _, f := range c.Features {
-			info.FeatureWeight[f] += w
+			if statechain.ValidateFeatureName(f) != nil {
+				continue
+			}
+			if _, dup := seenFeat[f]; dup {
+				continue
+			}
+			seenFeat[f] = struct{}{}
+			info.FeatureWeight[f] = addSat(info.FeatureWeight[f], w)
 		}
 	}
 	for f, w := range info.FeatureWeight {
-		if info.TotalWeight == 0 {
-
-			info.FeatureReadyMilli[f] = 0
-			continue
-		}
-
-		info.FeatureReadyMilli[f] = w * 1000 / info.TotalWeight
+		info.FeatureReadyMilli[f] = milliRatio(w, info.TotalWeight)
 	}
 	for v, w := range versionWeights {
 		info.VersionWeight = append(info.VersionWeight, VersionWeight{Version: v, Weight: w})
@@ -205,6 +208,18 @@ func (n *Node) GetReadiness() *ReadinessInfo {
 		return info.VersionWeight[i].Version < info.VersionWeight[j].Version
 	})
 	return info
+}
+
+func milliRatio(num, den uint64) uint64 {
+	if den == 0 || num == 0 {
+		return 0
+	}
+	if num >= den {
+		return 1000
+	}
+	hi, lo := bits.Mul64(num, 1000)
+	q, _ := bits.Div64(hi, lo, den)
+	return q
 }
 
 func (n *Node) peerCapabilitiesByID() map[string]xenet.PeerCapabilities {

@@ -1,6 +1,7 @@
 package net
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -34,7 +35,47 @@ func newPeerCapTable() *peerCapTable {
 	return &peerCapTable{caps: make(map[peer.ID]PeerCapabilities)}
 }
 
+func validateAdvertisedFeatures(features []string) string {
+	if len(features) > maxAdvertisedFeatures {
+		return fmt.Sprintf("too many advertised features (%d > max %d)", len(features), maxAdvertisedFeatures)
+	}
+	seen := make(map[string]struct{}, len(features))
+	for _, f := range features {
+		if err := statechain.ValidateFeatureName(f); err != nil {
+			return fmt.Sprintf("invalid advertised feature %q: %v", f, err)
+		}
+		if _, dup := seen[f]; dup {
+			return fmt.Sprintf("duplicate advertised feature %q", f)
+		}
+		seen[f] = struct{}{}
+	}
+	return ""
+}
+
+func sanitizePeerFeatures(features []string) []string {
+	if len(features) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(features))
+	out := make([]string, 0, len(features))
+	for _, f := range features {
+		if statechain.ValidateFeatureName(f) != nil {
+			continue
+		}
+		if _, dup := seen[f]; dup {
+			continue
+		}
+		seen[f] = struct{}{}
+		out = append(out, f)
+		if len(out) >= maxAdvertisedFeatures {
+			break
+		}
+	}
+	return out
+}
+
 func (t *peerCapTable) record(p peer.ID, c PeerCapabilities) {
+	c.Features = sanitizePeerFeatures(c.Features)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, seen := t.caps[p]; !seen {

@@ -69,6 +69,13 @@ func (a *Activations) ActiveAt(feature string, index uint64, ns int64) bool {
 	return rec.ActiveAt(index, ns)
 }
 
+func ValidateFeatureName(name string) error {
+	if !featureNameRegex.MatchString(name) {
+		return fmt.Errorf("activations: feature name %q invalid (must match %s)", name, featureNameRegex)
+	}
+	return nil
+}
+
 func validateActivations(value json.RawMessage) error {
 	a, err := ParseActivations(value)
 	if err != nil {
@@ -78,8 +85,8 @@ func validateActivations(value json.RawMessage) error {
 		return fmt.Errorf("activations: %d features exceeds maximum %d", len(a.Features), MaxActivationFeatures)
 	}
 	for name, rec := range a.Features {
-		if !featureNameRegex.MatchString(name) {
-			return fmt.Errorf("activations: feature name %q invalid (must match %s)", name, featureNameRegex)
+		if err := ValidateFeatureName(name); err != nil {
+			return err
 		}
 		if rec.AtIndex == 0 && rec.NotBeforeNS == 0 {
 			return fmt.Errorf("activations: feature %q must set at_index or not_before_ns (both zero would mean active immediately)", name)

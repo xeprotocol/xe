@@ -385,6 +385,10 @@ func checkPeer(msg netcheckMsg, ours netcheckMsg) (reason string, banDuration ti
 		}
 	}
 
+	if reason := validateAdvertisedFeatures(msg.Features); reason != "" {
+		return reason, versionBanDur
+	}
+
 	return "", 0
 }
 
