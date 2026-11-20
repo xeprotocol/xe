@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ legal.entity }} · Records{% endblock %}
+{% block content %}
+<h1>{{ legal.entity }}</h1>
+<p class="sub">{{ cfg.registry.jurisdiction }} · {{ cfg.registry.form }}. These pages use the Operating Agreement's terms. Machine-readable copies live under <a href="/v1/legal/identifier">/v1/legal</a>.</p>
+<p class="small">{{ legal.non_membership_statement }}</p>
+
+<h2>{{ legal.identifier_label }}</h2>
+<table>
+  <tr><th>Entity</th><td>{{ cfg.registry.entity }}</td></tr>
+  <tr><th>Formation date</th><td>{{ cfg.registry.formation_date or "pending filing" }}</td></tr>
+  <tr><th>Registered office</th><td>{{ cfg.registry.registered_office }}</td></tr>
+  <tr><th>Network</th><td>{{ network_id }} ({{ badge }})</td></tr>
+  <tr><th>Governance surface</th><td><code>{{ base_url }}/v1/legal/identifier</code></td></tr>
+  <tr><th>State-chain update authority</th><td><code>sys.dao_keyset</code> — <a href="{{ node_url }}/statechain/keyset">{{ node_url }}/statechain/keyset</a></td></tr>
+  <tr><th>{{ legal.registry_label }}</th><td><code>dao.registry</code> — <a href="{{ node_url }}/statechain/kv/dao.registry">{{ node_url }}/statechain/kv/dao.registry</a> · {% if registry_onchain.error is defined %}<b>could not be read from the node just now</b>{% elif registry_onchain.value is not none %}present{% else %}<b>not yet written</b>{% endif %}</td></tr>
+  <tr><th>Software</th><td>v{{ version }} · commit <code>{{ git_commit }}</code> · <a href="{{ cfg.registry.repository }}">{{ cfg.registry.repository }}</a> · {{ cfg.registry.licence }}</td></tr>
+  <tr><th>Charter</th><td>sha256 <code>{{ cfg.charter_hash }}</code> · <a href="/charter">text</a> · <a href="/v1/charter">JSON</a></td></tr>
+  <tr><th>Configuration hashes</th><td class="small">{% for k, v in cfg.hashes.items() %}{{ k }} <code>{{ v|short(16) }}</code><br>{% endfor %}</td></tr>
+</table>
+
+<h2>Keyset</h2>
+{% if keyset.error %}<p class="mute">Could not read the keyset from the node: {{ keyset.error }}</p>{% else %}
+<p class="small">Threshold {{ keyset.threshold }} of {{ keyset['keys']|length }}. The company holds no copy of these keys; the harness assembles blocks and counts signatures only.</p>
+<table>{% for k in keyset['keys'] %}<tr><td><code>{{ k }}</code></td><td>{% for s in cfg.human_seats if s.public_key == k|lower %}{{ s.name }} ({{ s.id }}){% endfor %}</td></tr>{% endfor %}</table>{% endif %}
+
+<h2>{{ legal.members_label }} and officers</h2>
+<table><tr><th>Seat</th><th>Name</th><th>Capacity</th><th>Public key</th><th>Rights</th></tr>
+{% for s in cfg.human_seats %}<tr><td>{{ s.id }}</td><td>{{ s.name }}</td><td>{{ "Member" if s.is_member else "Officer" }} · {{ s.role }}</td><td><code>{{ s.public_key or "pending key ceremony" }}</code></td><td class="small">{{ s.may|join(", ") }}</td></tr>{% endfor %}</table>
+
+<h2>{{ legal.reserved_matters_label }}</h2>
+<p class="small">{{ reserved|join(" · ") }}</p>
+<p class="small">Agents decide: {{ cfg.schedule_b.agents_decide|join("; ") }}.<br>Agents do not decide: {{ cfg.schedule_b.agents_do_not_decide|join("; ") }}.</p>
+
+<h2>{{ legal.resolution_label }}s</h2>
+<table><tr><th>#</th><th>Title</th><th>Matter</th><th>Status</th><th>Signatures</th><th>Date</th></tr>
+{% for r in resolutions %}{% set d = res_dict(r) %}<tr><td>R{{ r.number }}</td><td><a href="/v1/legal/resolutions/{{ r.id }}">{{ r.title }}</a></td><td>{{ r.matter }}{% if d.reserved %} <span class="pill">reserved</span>{% endif %}</td><td><span class="pill">{{ r.status }}</span></td><td class="small">{% for s in d.signatures %}{{ s.seat }}: {{ s.decision }}{% if not loop.last %}, {% endif %}{% endfor %}</td><td class="num small">{{ d.created_at[:10] if d.created_at }}</td></tr>
+{% else %}<tr><td colspan="6" class="mute">None recorded.</td></tr>{% endfor %}</table>
+
+<h2>{{ legal.pause_label }}</h2>
+<p class="small">{{ legal.pause_notice }}</p>
+{% if paused %}<p><b>Active</b> since {{ paused.started_at|ns }}, by {{ paused.determined_by }}, ground {{ paused.ground }}, until {{ paused.expires_at|ns }}.</p>{% endif %}
+<table><tr><th>Started</th><th>By</th><th>Ground</th><th>Ended</th><th>Status</th></tr>
+{% for r in pause_history %}<tr><td class="num">{{ r.started_at|ns }}</td><td>{{ r.determined_by }}</td><td>{{ r.ground }}</td><td class="num">{{ (r.lifted_at or r.expires_at)|ns }}</td><td>{{ r.status }}</td></tr>
+{% else %}<tr><td colspan="5" class="mute">Never paused.</td></tr>{% endfor %}</table>
+
+<h2>{{ legal.treasury_label }}</h2>
+<table><tr><th>Account</th><th>Address</th><th>Balances</th><th>Keyset</th></tr>
+{% for name, t in treasury.items() %}<tr><td>{{ name }}</td><td><code>{{ t.address or "not configured" }}</code></td><td class="small">{% if t.error %}<span class="mute">could not be read from the node: {{ t.error }}</span>{% endif %}{% for a, v in t.balances.items() %}{{ v|xe }} {{ a }}<br>{% endfor %}</td><td class="small">{% if t.keyset %}{{ t.keyset.threshold }} of {{ t.keyset['keys']|length }}{% elif t.keyset_error %}<span class="mute">could not be read from the node: {{ t.keyset_error }}</span>{% elif name == 'treasury' and t.address and not t.error %}<span class="mute">none: not a multisig account</span>{% endif %}</td></tr>{% endfor %}</table>
+<p class="small mute">The harness holds no treasury key. Movements are member actions, recorded here after the fact.</p>
+
+<h2>Anchors</h2>
+<table><tr><th>n</th><th>Log index</th><th>Head hash</th><th>State-chain block</th></tr>
+{% for a in anchors %}<tr><td>{{ a.n }}</td><td class="num">{{ a.event_index }}</td><td><code>{{ a.head_hash|short(16) }}</code></td><td>{% if a.statechain_index is not none %}#{{ a.statechain_index }} <code>{{ a.statechain_hash|short(12) }}</code>{% else %}<span class="mute">session {{ a.session_id }} pending</span>{% endif %}</td></tr>
+{% else %}<tr><td colspan="4" class="mute">None yet.</td></tr>{% endfor %}</table>
+
+<h2>{{ legal.registry_label }} (dao.registry)</h2>
+<details><summary>Intended value</summary><pre>{{ registry_intended|tojson(indent=1) }}</pre></details>
+<details><summary>On chain</summary><pre>{% if registry_onchain.error is defined %}could not be read from the node: {{ registry_onchain.error }}{% elif registry_onchain.value is not none %}{{ registry_onchain.value|tojson(indent=1) }}{% else %}not written{% endif %}</pre></details>
+
+<p class="small mute" style="margin-top:32px">Seat holders: <a href="/members">members console</a> (signed actions only).</p>
+{% endblock %}

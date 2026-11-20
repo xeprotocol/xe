@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="tag"><span>{{ copy.kicker }}</span></div>
+<div class="statement">
+  <div>
+    <h1>{{ copy.headline }}</h1>
+    <p>{{ copy.sub }}</p>
+    <p class="punch">{{ copy.punchline }}</p>
+  </div>
+</div>
+
+<div class="grid">
+  {% for line in copy.lines %}<div class="card"><p style="margin:0">{{ line }}</p></div>{% endfor %}
+</div>
+
+<h2>How a change moves</h2>
+<div class="grid">
+  {% for step in copy.path %}<div class="card"><h3>{{ loop.index }}. {{ step.title }}</h3><p class="small" style="margin:0">{{ step.text }}</p></div>{% endfor %}
+</div>
+
+<h2>{{ copy.labels.open }} {{ copy.labels.proposals|lower }} <span class="pill">{{ counts.get('open', 0) }}</span></h2>
+{% if proposals %}
+<table>
+  <tr><th>Title</th><th>Author</th><th>Closes</th><th></th></tr>
+  {% for p in proposals %}
+  <tr><td><a href="/proposals/{{ p.hash }}">{{ p.title }}</a></td><td><code>{{ p.author_account|short(12) }}</code></td><td class="num">{{ p.closes_at|ns }}</td><td class="right"><a href="/proposals/{{ p.hash }}">vote</a></td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="mute">Nothing open right now. <a href="/proposals/new">Propose something.</a></p>{% endif %}
+<p><a href="/proposals/new">Propose</a> · fee {{ rules.fee_micro_xe|xe }} XE, refunded if {{ rules.quorum_wallets }} wallets take part · window {{ rules.window_days }} days · {{ copy.labels.not_self_executing }}</p>
+
+<h2>Talk to the DAO</h2>
+<p>Send an XE chat message to <code>{{ dao_account or "account not yet published" }}</code> or use the <a href="/inbox">inbox</a>. Every message a member has read, and every reply, is in the public log.</p>
+
+<h2>Latest in the {{ copy.labels.log|lower }}</h2>
+<table>
+  {% for e in events %}<tr><td class="num"><a href="/log/{{ e.index }}">#{{ e.index }}</a></td><td>{{ e.kind }}</td><td class="mute">{{ e.actor }}</td><td class="num mute">{{ e.ts|ns }}</td></tr>{% endfor %}
+</table>
+<p><a href="/log">Full log</a> · <a href="/v1/log/verify">verify the chain</a> · <a href="/live">live</a></p>
+
+<h2>Questions</h2>
+{% for f in copy.faq %}<details><summary>{{ f.q }}</summary><p>{{ f.a }}</p></details>{% endfor %}
+{% endblock %}

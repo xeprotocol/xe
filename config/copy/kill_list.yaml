@@ -1,0 +1,29 @@
+# Phrases that must never appear in the public register (config/copy/public.yaml or templates
+# rendered from it). From the governance copy notes. Matching is case-insensitive.
+phrases:
+  - "holders decide. the chain enforces it"
+  - "who holds xe runs xe"
+  - "those settings belong to the people who hold xe"
+  - "what holders decide becomes a fact"
+  - "weighted by delegated xusd"
+  - "xe l1 ltd"
+  - "40–50% today"
+  - "40-50% today"
+  - "token holders run"
+  - "token holders own"
+  - "token holders are the dao"
+  # Primacy claims. The one permitted "first" is the headline, "the first L1 governed by an agentic DAO",
+  # checked 12 Oct 2026 against NOVAI, Waifu Layer, Agent Council DAO, ContinuumDAO, ai16z, Botto.
+  - "world's first"
+  - "first agentic dao"
+  - "first ai dao"
+words:
+  # Whole words that do not belong in the public register. "advisory" may appear only in the legal register.
+  - company
+  - llc
+  - members
+  - directors
+  - counsel
+  - filing
+  - "natural person"
+  - advisory

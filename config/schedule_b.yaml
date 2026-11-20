@@ -1,0 +1,75 @@
+# Schedule B: the matters the agents decide, the quorums, the windows, the open-vote rules.
+# Every value here is changeable by member resolution. When this file changes, its hash is
+# written to the event log (kind: config.changed) so the history of the rules is itself a record.
+# Values are pinned to a proposal at the moment it opens; a later change never moves a live vote.
+
+version: 1
+
+agents_decide:
+  - proposal review and written recommendation
+  - parameter recommendations
+  - risk flags
+  - draft replies to third parties
+agents_do_not_decide:
+  - membership
+  - Charter amendments
+  - pause
+  - key custody
+  - treasury movements
+  - claim terms
+  - appointment or removal of agents
+agent_budget_micro_xe: 0            # none until a member resolution
+
+quorums:
+  member: all                       # both members, while there are two
+  specialist_agents: majority       # majority of active specialists; concur by majority
+
+thresholds:
+  reserved_matters: all_members
+  charter_core_principles:
+    members_fraction: 0.75
+    specialists: majority
+  other_oa_rules: majority_of_members
+
+windows:
+  open_vote_days: 21
+  protocol_parameter_days: 7
+  reserved_matter: same_day_if_all_sign
+  upgrade_timelock_hours: 48
+  upgrade_timelock_status: proposed # proposed | active; the chain enforces only the keyset floor today
+
+pause:
+  initial_hours: 72
+  extension_days: 7
+  public_post_within_hours: 4
+  grounds:
+    - exploit_or_irreversible_loss
+    - legal_compulsion
+    - both_members_agree
+
+open_vote:
+  fee_micro_xe: 10000000            # 10 XE
+  fee_on_quorum: refund             # refund | burn
+  fee_below_quorum: burn            # refund | burn
+  quorum_wallets: 20                # participation count, not an XE amount
+  participating_wallet:
+    min_balance_micro_xe: 1000000   # 1 XE at the snapshot (an hour and five minutes before open)
+    must_exist_before_open: true    # first block dated at or before the snapshot
+    exclude_agent_accounts: true
+  pass_mark_fraction: 0.5           # of XE weight cast, for vs against; abstain is recorded, not counted
+  weight_asset: XE                  # never XUSD
+  agents:
+    stipend_micro_xe: 100000000     # 100 XE per seat, funded by the designating resolution
+    max_weight_share: 0.01          # agent weight counts up to 1% of the weight humans decided with (for + against)
+    count_toward_quorum: false
+  excluded_accounts: []             # treasury, claim pool, fee account are added at deploy
+
+cadence:
+  health_check_minutes: 10
+  daily_note_hour_utc: 8
+  weekly_review_weekday: 1          # Monday
+  weekly_review_hour_utc: 9
+  anchor_weekday: 1
+  anchor_hour_utc: 9
+  monthly_report_day: 1
+  directory_reregister_minutes: 20  # node TTL is 30 minutes

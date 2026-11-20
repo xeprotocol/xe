@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.labels.log }} · live{% endblock %}
+{% block content %}
+<h1>{{ copy.labels.log }} · live</h1>
+<p class="sub">New entries appear here as they are written. <span id="status" class="mute">connecting…</span> · <a href="/log">full log</a> · <a href="/v1/events">raw stream</a> (<code>text/event-stream</code>, for <code>EventSource</code> and <code>curl -N</code>)</p>
+<table id="live"><tr><th>#</th><th>Kind</th><th>Actor</th><th>Ref</th><th>When</th><th>Hash</th></tr>
+{% for e in events %}<tr><td class="num"><a href="/log/{{ e.index }}">{{ e.index }}</a></td><td><a href="/log?kind={{ e.kind }}">{{ e.kind }}</a></td><td class="mute">{{ e.actor|short(24) }}</td><td class="small">{% if e.ref %}<a href="/log?ref={{ e.ref }}">{{ e.ref|short(28) }}</a>{% endif %}</td><td class="num mute">{{ e.ts|ns }}</td><td><code>{{ e.hash|short(12) }}</code></td></tr>
+{% else %}<tr id="empty"><td colspan="6" class="mute">Nothing yet.</td></tr>{% endfor %}</table>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var table = document.getElementById('live'), status = document.getElementById('status');
+  var short = function (s, n) { s = s || ''; return s.length > n ? s.slice(0, n) + '…' : s; };
+  var when = function (ns) { var d = new Date(Number(BigInt(ns) / 1000000n)); return d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC'; };
+  var cell = function (html, cls) { var td = document.createElement('td'); if (cls) td.className = cls; td.innerHTML = html; return td; };
+  var esc = function (s) { return String(s).replace(/[&<>"']/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); };
+  // The stream is opened from the newest entry the page was rendered with, not from the head as it is when
+  // the stream connects: an entry written between the two was in neither and never appeared (XE-9465).
+  // What the two halves both hold is shown once. On a reconnect the browser's Last-Event-ID takes over.
+  // With no public entry to show yet, that point is the head the page was rendered at.
+  var newest = {{ events[0].index if events else head_index|default(-1) }};
+  var src = new EventSource('/v1/events' + (newest >= 0 ? '?after=' + newest : ''));
+  var beat = function (text) { status.textContent = text + ' · ' + new Date().toISOString().slice(11, 19) + ' UTC'; };
+  src.onopen = function () { beat('connected'); };
+  src.onerror = function () { beat('reconnecting'); };
+  src.addEventListener('ping', function () { beat('connected, no new entries'); });
+  src.addEventListener('entry', function (ev) {
+    var e; try { e = JSON.parse(ev.data); } catch (err) { return; }
+    if (e.index === undefined || e.index <= newest) return;
+    newest = e.index;
+    var empty = document.getElementById('empty'); if (empty) empty.remove();
+    var tr = document.createElement('tr');
+    tr.appendChild(cell('<a href="/log/' + e.index + '">' + e.index + '</a>', 'num'));
+    tr.appendChild(cell('<a href="/log?kind=' + encodeURIComponent(e.kind) + '">' + esc(e.kind) + '</a>'));
+    tr.appendChild(cell(esc(short(e.actor, 24)), 'mute'));
+    tr.appendChild(cell(e.ref ? '<a href="/log?ref=' + encodeURIComponent(e.ref) + '">' + esc(short(e.ref, 28)) + '</a>' : '', 'small'));
+    tr.appendChild(cell(when(e.ts), 'num mute'));
+    tr.appendChild(cell('<code>' + esc(short(e.hash, 12)) + '</code>'));
+    table.insertBefore(tr, table.rows[1] || null);
+    beat('connected, last entry #' + e.index);
+  });
+})();
+</script>
+{% endblock %}

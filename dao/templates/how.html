@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% import "_rules.html" as rules %}
+{% block title %}How the seats work together{% endblock %}
+{% block content %}
+<h1>How the seats work together</h1>
+<p class="sub">Nine agent seats, each with public instructions, analyse every item in a fixed order and hand one written recommendation to the people who sign. This page describes that order, how the seats talk to each other, and where it stops. Status today: <b>{{ 'direct' if mode == 'members-direct' else mode }}</b>; the seats are designed and their instructions are published, and nothing is calling a model yet.</p>
+
+<svg viewBox="0 0 1000 340" width="100%" role="img" aria-label="Flow: item arrives, Research establishes facts, specialists analyse in parallel, one rebuttal round, Risk adversarial pass, orchestrator synthesis, people decide and sign, execution prepares unsigned artefacts" style="max-width:1000px;font:13px -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;fill:currentColor">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5 0 10z" fill="currentColor"/></marker></defs>
+  <g stroke="currentColor" stroke-width="1.2" fill="none">
+    <rect x="10" y="40" width="120" height="50"/>
+    <rect x="160" y="40" width="130" height="50"/>
+    <rect x="320" y="10" width="200" height="110" stroke-dasharray="4 3"/>
+    <rect x="550" y="40" width="120" height="50"/>
+    <rect x="700" y="40" width="120" height="50"/>
+    <rect x="850" y="40" width="140" height="50"/>
+    <rect x="850" y="200" width="140" height="60" stroke-width="2" stroke="#ff6900"/>
+    <rect x="550" y="205" width="140" height="50"/>
+    <rect x="320" y="205" width="140" height="50"/>
+    <path d="M130 65H158" marker-end="url(#a)"/>
+    <path d="M290 65H318" marker-end="url(#a)"/>
+    <path d="M520 65H548" marker-end="url(#a)"/>
+    <path d="M670 65H698" marker-end="url(#a)"/>
+    <path d="M820 65H848" marker-end="url(#a)"/>
+    <path d="M920 90V198" marker-end="url(#a)"/>
+    <path d="M850 230H692" marker-end="url(#a)"/>
+    <path d="M550 230H462" marker-end="url(#a)"/>
+  </g>
+  <text x="70" y="60" text-anchor="middle">Item arrives</text><text x="70" y="78" text-anchor="middle" opacity=".6">proposal · message · review</text>
+  <text x="225" y="60" text-anchor="middle">Research</text><text x="225" y="78" text-anchor="middle" opacity=".6">facts, with hashes</text>
+  <text x="420" y="30" text-anchor="middle">Specialists, in parallel</text>
+  <text x="420" y="52" text-anchor="middle" opacity=".6">Financial · Legal · Governance</text>
+  <text x="420" y="68" text-anchor="middle" opacity=".6">Execution · Community</text>
+  <text x="420" y="98" text-anchor="middle">then one rebuttal round</text>
+  <text x="610" y="60" text-anchor="middle">Risk</text><text x="610" y="78" text-anchor="middle" opacity=".6">adversarial pass, last</text>
+  <text x="760" y="60" text-anchor="middle">Orchestrator</text><text x="760" y="78" text-anchor="middle" opacity=".6">one recommendation</text>
+  <text x="920" y="60" text-anchor="middle">Decision record</text><text x="920" y="78" text-anchor="middle" opacity=".6">published, hashed</text>
+  <text x="920" y="225" text-anchor="middle" font-weight="700">People decide</text><text x="920" y="245" text-anchor="middle" opacity=".6">and sign, or decline</text>
+  <text x="620" y="225" text-anchor="middle">Execution</text><text x="620" y="243" text-anchor="middle" opacity=".6">unsigned artefact</text>
+  <text x="390" y="225" text-anchor="middle">Signed by people</text><text x="390" y="243" text-anchor="middle" opacity=".6">keyset block · transfer · note</text>
+  <text x="500" y="320" text-anchor="middle" opacity=".6">Solid boxes: a seat writes a record. Dashed box: several seats at once. Bold box: the only step that changes anything.</text>
+</svg>
+
+<h2>The order</h2>
+<ol class="prose">
+  <li><b>An item arrives.</b> A proposal on the portal, a message to the inbox, a scheduled review, or something a person asks the ensemble to look at. It gets a hash and an entry in the <a href="/log">log</a> before any seat sees it.</li>
+  <li><b>Research goes first.</b> It reads the chain, the web and the DAO's own history and returns facts with evidence: block hashes, state-chain indexes, URLs with retrieval hashes. Every other seat reasons from this record. If Research is unsure it says so rather than guessing.</li>
+  <li><b>The specialists analyse in parallel.</b> Financial, Legal, Governance, Execution and (optionally) Community each answer their own kind of question without seeing one another's drafts, so the first positions are independent.</li>
+  <li><b>One round of rebuttal.</b> Each specialist reads the others' records and may revise, object, or hold. The round is structured: a rebuttal names the record it answers and the evidence it relies on. There is no free conversation and no second round; a disagreement that survives is recorded as dissent, not argued down.</li>
+  <li><b>Risk goes last.</b> It reads everything with the assumption that the item is a trick and the other seats have missed something, and it says what it found. Finding nothing is a recorded result too. If it recommends a halt, that goes to the people with priority.</li>
+  <li><b>The orchestrator synthesises.</b> It writes the single recommendation people read first: position, confidence, the reasons, the strongest case against, and what would change the answer. When specialists disagree it says which evidence it weighted and why. It breaks deadlocks only between seats, never with people.</li>
+  <li><b>A decision record is published.</b> Every seat's record, the rebuttals, Risk's review, the synthesis, the model and instructions hash behind each one, and the cost. <a href="/decisions/example">What one looks like.</a></li>
+  <li><b>People decide.</b> The signers read the record and adopt, decline, defer, or refer it for a formal decision, with reasons, under their own signature. Nothing before this step changes anything.</li>
+  <li><b>Execution prepares; people sign.</b> If adopted, Execution produces the exact unsigned artefact (a state-chain block, a transfer, a note) and the keyset or the signers sign it themselves. The result links back to the record.</li>
+</ol>
+
+<h2>How the seats talk to each other</h2>
+<div class="prose">
+<p>The seats do not chat. They exchange records with a fixed shape: <code>position</code>, <code>confidence</code>, <code>summary</code>, <code>reasoning</code>, <code>counter_argument</code>, <code>would_change_my_mind</code>, <code>evidence</code>, <code>risks</code>, and flags for whether the item touches something only people decide. A seat reads another seat's record as data, the same way it reads a proposal. This is deliberate: a conversation can be steered, a record can be checked.</p>
+<p>Disagreements about a <b>fact</b> are settled by a chain read or a source, never by which seat said it; the orchestrator does not outrank Research on what a balance is. Disagreements about a <b>judgement</b> are not settled at all; they are recorded side by side and the people read both.</p>
+<p>Every record carries the model that produced it and the hash of the instructions it was given, so any sentence can be traced to a seat, a model and a version of the rules. The instructions for every seat are on its page under <a href="/seats">{{ copy.labels.seats|lower }}</a>.</p>
+<p>Anything a stranger wrote, whether a proposal, a message or a web page, is wrapped and marked as untrusted before any seat reads it. An instruction found inside is reported as a finding, not followed.</p>
+</div>
+
+<h2>Where it stops</h2>
+<div class="prose">
+<p>No seat holds a key. No seat can sign a block, move value, change who holds the keys, or pause anything. A seat that is asked to still does the analysis, marks the record as touching a reserved decision, and routes it to the people. An open vote on the portal, whatever its margin, is a result the people take into account; it is not a decision. The one step in the diagram that changes the world is the one with people in it.</p>
+<p>The seats also take part in open votes. {{ rules.agent_vote(cfg) }} Their reasons are published with their votes.</p>
+</div>
+
+<h2>What is live now</h2>
+<div class="prose">
+<p>The portal, the log, the inbox, the records and the signing tools run today with people in every seat that acts. The agent seats exist as published instructions with hashes; none has a model, a key or an account yet, and none is producing records. Switching a seat on is a signed decision by the people, recorded in the log, and its page will say so with the model pinned and the date.</p>
+</div>
+{% endblock %}

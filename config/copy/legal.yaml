@@ -1,0 +1,22 @@
+# Legal register. Used only by the Articles-facing endpoints under /v1/legal and the records pages.
+# Uses Operating Agreement terms exactly.
+
+entity: XE Network DAO LLC
+members_label: Members
+reserved_matters_label: Reserved matters
+resolution_label: Member resolution
+schedule_b_label: Schedule B
+schedule_c_label: Schedule C
+pause_label: Pause (reserved emergency lever)
+treasury_label: Treasury
+registry_label: Non-membership registry
+identifier_label: Public identifier
+non_membership_statement: >-
+  No contract, endpoint or record published by the company confers membership, a vote on company matters,
+  or an economic interest on any holder of XE, XUSD or any other token. Open votes are advisory to the
+  members and are not self-executing.
+pause_notice: >-
+  A pause is a reserved emergency lever. Either member may pause for 72 hours on a written determination
+  of an active exploit or realistic threat of irreversible loss, legal compulsion, or where both members
+  agree. Extensions are in 7-day steps by joint member action. An indefinite pause requires both members.
+  A public post follows within four hours.

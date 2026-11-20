@@ -1,0 +1,21 @@
+# dao.registry: the minimal non-membership registry written to the XE State Chain.
+# Written by a keyset-signed block within 21 days of filing. This is the on-chain artefact the
+# Articles may point at. It confers no membership and no vote; it says so on its face.
+# Keys are kept short because the value is hashed byte-for-byte into the block.
+
+entity: XE Network DAO LLC
+jurisdiction: Wyoming, USA
+form: decentralized autonomous organization, limited liability company
+formation_date: ""                 # set after filing, ISO date
+registered_office: 30 N Gould St, Ste R, Sheridan, WY 82801, USA
+email: hello@xe.network
+statement: >-
+  This registry identifies the governance surface of XE Network DAO LLC. It confers no membership,
+  no vote and no economic interest on any holder of XE, XUSD or any other token. Reserved matters are
+  decided by the members. Open votes are not self-executing.
+update_authority: sys.dao_keyset
+surfaces:
+  mainnet: https://dao.xe.network/v1/legal/identifier
+  testnet: https://dao.test.network/v1/legal/identifier
+repository: https://github.com/xeprotocol/dao
+licence: GPL-3.0-or-later

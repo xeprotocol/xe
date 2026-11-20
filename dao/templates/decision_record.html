@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Decision record · {{ r.item.title }}{% endblock %}
+{% macro pos(p, c) %}<span class="pill {{ 'passed' if p == 'support' else 'failed' if p == 'oppose' else '' }}">{{ (p or 'no position').replace('_', ' ') }}</span>{% if c is not none %} <span class="mute small">confidence {{ '%.2f'|format(c) }}</span>{% endif %}{% endmacro %}
+{% macro seatcard(s) %}
+<div class="card">
+  <h3><a href="/seats/{{ s.seat }}">{{ s.role or s.seat }}</a> {{ pos(s.position, s.confidence) }}</h3>
+  <p class="k">model <code>{{ s.model }}</code> · instructions <code>{{ s.prompt_hash|short(18) }}</code></p>
+  <p>{{ s.summary }}</p>
+  {% if s.reasoning %}<p class="small">{{ s.reasoning }}</p>{% endif %}
+  {% if s.counter_proposal %}<p class="small"><b>Counter-proposal.</b> {{ s.counter_proposal }}</p>{% endif %}
+  {% if s.findings %}<ul class="small">{% for f in s.findings %}<li>{{ f }}</li>{% endfor %}</ul>{% endif %}
+  <p class="small"><b>Strongest case against.</b> {{ s.counter_argument }}</p>
+  <p class="small"><b>Would change its mind.</b> {{ s.would_change_my_mind }}</p>
+  {% if s.touches_reserved_matter %}<p class="small"><span class="pill">touches a decision only people make</span></p>{% endif %}
+  {% if s.evidence %}<details><summary class="small">Evidence ({{ s.evidence|length }})</summary><table class="small">{% for e in s.evidence %}<tr><td>{{ e.kind }}</td><td>{{ e.ref }}</td><td><code>{{ e.hash|short(22) }}</code></td></tr>{% endfor %}</table></details>{% endif %}
+</div>
+{% endmacro %}
+{% block content %}
+{% if r.example %}<div class="notice">This is a <b>worked example</b>. No agent seat is switched on yet; this page shows the shape every real record will have. Names, numbers and hashes are invented.</div>{% endif %}
+<p class="small"><a href="/decisions">{{ copy.labels.decisions }}</a> / record {{ r.record_id }}</p>
+<h1>{{ r.item.title }}</h1>
+<p class="sub">Decision record · {{ r.item.kind }} <code>{{ r.item.ref }}</code> · produced {{ r.produced_at }} · path: {{ r.item.path }}</p>
+
+<div class="grid">
+  <div class="card"><h3>What the ensemble recommends</h3>
+    <p><b style="font-size:18px">{{ r.synthesis.recommendation }}</b> <span class="mute small">confidence {{ '%.2f'|format(r.synthesis.confidence) }}</span></p>
+    <p class="small">{{ r.synthesis.summary }}</p></div>
+  <div class="card"><h3>What the people decided</h3>
+    {% if r.human_decision %}<p><b style="font-size:18px">{{ r.human_decision.decision }}</b> <span class="mute small">{{ r.human_decision.signatures }} signatures · log #{{ r.human_decision.log_index }}</span></p>
+    <p class="small">{{ r.human_decision.reasons }}</p>{% else %}<p class="mute">{{ copy.labels.decision_pending }}.</p>{% endif %}</div>
+  {% if r.item.vote_result %}<div class="card"><h3>Open vote</h3>
+    <p><span class="pill {{ r.item.vote_result.outcome }}">{{ r.item.vote_result.outcome.replace('_',' ') }}</span> · {{ r.item.vote_result.participating_wallets }}/{{ r.item.vote_result.quorum_wallets }} wallets</p>
+    <p class="small">for {{ r.item.vote_result.for_xe }} XE · against {{ r.item.vote_result.against_xe }} XE · abstain {{ r.item.vote_result.abstain_xe }} XE · agent seats {{ r.item.vote_result.agent_weight_xe }} XE, shown separately</p>
+    <p class="small mute">{{ r.item.vote_result.note }}</p></div>{% endif %}
+</div>
+
+<h2>1. Inputs</h2>
+<p class="small mute">Everything the seats were given, by hash. A record can be re-derived from these.</p>
+<table><tr><th>Kind</th><th>Reference</th><th>Hash</th><th></th></tr>
+{% for i in r.inputs %}<tr><td>{{ i.kind }}</td><td>{{ i.ref }}</td><td><code>{{ i.hash|short(24) }}</code></td><td class="small mute">{{ i.note or '' }}</td></tr>{% endfor %}</table>
+
+<h2>2. The seats, independently</h2>
+<p class="small mute">Research first; the specialists in parallel, without seeing each other. Each record carries its model and the hash of its instructions.</p>
+<div class="grid">{% for s in r.seats %}{{ seatcard(s) }}{% endfor %}</div>
+
+<h2>3. Rebuttal round</h2>
+{% if r.rebuttals %}<table><tr><th>Seat</th><th>Answering</th><th>Rebuttal</th></tr>
+{% for b in r.rebuttals %}<tr><td><a href="/seats/{{ b.seat }}">{{ b.seat }}</a></td><td>{{ b.responding_to }}</td><td>{{ b.text }}</td></tr>{% endfor %}</table>
+{% else %}<p class="mute">No seat revised or objected.</p>{% endif %}
+
+<h2>4. Risk, last</h2>
+<div class="grid">{{ seatcard(r.risk_review) }}</div>
+
+<h2>5. Synthesis</h2>
+<div class="card">
+  <h3><a href="/seats/{{ r.synthesis.seat }}">Orchestrator</a> · recommends <b>{{ r.synthesis.recommendation }}</b> <span class="mute small">confidence {{ '%.2f'|format(r.synthesis.confidence) }}</span></h3>
+  <p class="k">model <code>{{ r.synthesis.model }}</code> · instructions <code>{{ r.synthesis.prompt_hash|short(18) }}</code></p>
+  <p>{{ r.synthesis.summary }}</p>
+  <p class="small"><b>Reasons.</b></p><ul class="small">{% for x in r.synthesis.reasons %}<li>{{ x }}</li>{% endfor %}</ul>
+  <p class="small"><b>Dissent, stated fairly.</b> {{ r.synthesis.dissent }}</p>
+  <p class="small"><b>What it weighted.</b> {{ r.synthesis.weighted }}</p>
+  <p class="small"><b>Would change the recommendation.</b> {{ r.synthesis.would_change_my_mind }}</p>
+</div>
+<p class="small mute">Cost: {{ r.cost.tokens_in }} tokens in, {{ r.cost.tokens_out }} out, {{ r.cost.wall_seconds }} s.</p>
+
+<h2>6. The decision, by people</h2>
+{% if r.human_decision %}
+<div class="card">
+  <p><b style="font-size:18px">{{ r.human_decision.decision }}</b> · by {% for b in r.human_decision.by %}<a href="/seats/{{ b }}">{{ b }}</a>{% if not loop.last %}, {% endif %}{% endfor %} · {{ r.human_decision.timestamp }}</p>
+  <p>{{ r.human_decision.reasons }}</p>
+  <p class="small mute">{{ r.human_decision.signatures }} signed requests, recorded at log #{{ r.human_decision.log_index }}. This is the only step on this page that changes anything.</p>
+</div>
+{% else %}<p class="mute">{{ copy.labels.decision_pending }}.</p>{% endif %}
+
+<h2>7. What was done</h2>
+<p>{{ r.execution.status.replace('_', ' ') }}. <span class="small mute">{{ r.execution.note }}</span></p>
+{% if r.execution.session_id %}<p class="small">Signing session <code>{{ r.execution.session_id }}</code>{% if r.execution.statechain_index is not none %} · state-chain block #{{ r.execution.statechain_index }} <code>{{ r.execution.statechain_hash|short(16) }}</code>{% endif %}</p>{% endif %}
+
+<p class="small mute" style="margin-top:32px">How a record is produced: <a href="/how-it-works">how the seats work together</a>. Every seat's instructions: <a href="/seats">{{ copy.labels.seats|lower }}</a>.</p>
+{% endblock %}

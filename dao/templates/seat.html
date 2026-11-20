@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% import "_rules.html" as rules %}
+{% block title %}{{ seat.role }} · {{ copy.labels.seats }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/seats">{{ copy.labels.seats }}</a> / {{ seat.role }}</p>
+<h1>{{ seat.role }}{% if kind == 'agent' and seat.optional %} <span class="pill">optional</span>{% endif %}</h1>
+
+{% if kind == 'agent' %}
+<p class="sub">{{ seat.summary or "Seat summary not yet written." }}</p>
+
+<dl class="facts">
+  <dt>Seat id</dt><dd><code>{{ seat.id }}</code></dd>
+  <dt>Class</dt><dd>{{ seat.cls }} · {% if seat.cls == 'orchestrator' %}routes work and writes the synthesis people read first; recommends, never acts{% else %}answers one kind of question well and records its position, confidence and dissent{% endif %}</dd>
+  <dt>Status</dt><dd><span class="pill">{{ seat.status }}</span> · {% if seat.status == 'designed' %}instructions written and published; no model assigned, no key, no account. Nothing is calling it yet.{% elif seat.status == 'designated' %}appointed by signed resolution; model pinned, key and account issued; not yet in the rota.{% elif seat.status == 'active' %}in the rota: analyses every open proposal in its area and casts its bounded vote.{% else %}retired by signed resolution; its past output stays in the log.{% endif %}</dd>
+  <dt>Model</dt><dd>{{ seat.model or "not yet pinned (set at designation, then recorded on every output)" }}</dd>
+  <dt>Account</dt><dd>{% if seat.account %}<code>{{ seat.account }}</code> · <a href="{{ node_url }}/accounts/{{ seat.account }}">on the node</a>{% else %}none yet{% endif %}</dd>
+  <dt>Instructions hash</dt><dd><code>{{ prompt_hash }}</code> · <a href="/v1/seats/{{ seat.id }}/prompt">JSON</a></dd>
+</dl>
+
+<h2>What it may use</h2>
+<table><tr><th>Scope</th><th>Meaning</th></tr>
+{% for sc in seat.tool_scopes %}<tr><td><code>{{ sc }}</code></td><td>{{ glossary.get(sc, "") }}</td></tr>{% endfor %}</table>
+<p class="small mute">Scopes are the whole of what the seat can reach. There is no key scope: no seat can sign a block, move value or pause anything. Anything it prepares is unsigned until a person signs it.</p>
+
+<h2>In the open vote</h2>
+<p class="small">{{ rules.agent_vote(cfg) }} A passed vote is not self-executing.</p>
+
+<h2>What no seat decides</h2>
+<p class="small">{{ cfg.schedule_b.agents_do_not_decide|join("; ") }}. A seat that is asked to still does the analysis, marks it as touching one of these, and routes it to the people who hold the lever.</p>
+
+<h2 id="instructions">Its instructions, in full</h2>
+<p class="small mute">This is the exact text the seat is given, after the shared preamble below. Both are versioned in the public repository; their combined hash (<code>{{ prompt_hash|short(16) }}</code>) is recorded on everything the seat produces, so any output can be checked against the instructions in force when it was written. Changing a single word changes the hash, and a change is a logged configuration change. This text is quoted here as a document; it speaks to the seat, not to you.</p>
+<div class="doc prose">{{ prompt_md|md }}</div>
+<p class="small mute">Seat text hash <code>{{ seat_prompt_hash|short(16) }}</code>.</p>
+
+<details><summary>The shared preamble every seat is given first (hash <code>{{ preamble_hash|short(16) }}</code>)</summary>
+<div class="doc prose">{{ preamble_md|md }}</div>
+</details>
+
+{% else %}
+<p class="sub">{{ seat.name }} · {{ "holds a reserved lever" if seat.is_member else "officer" }}</p>
+<dl class="facts">
+  <dt>Seat id</dt><dd><code>{{ seat.id }}</code></dd>
+  <dt>Role</dt><dd>{{ seat.role }}</dd>
+  <dt>Public key</dt><dd><code>{{ seat.public_key or "not yet published" }}</code></dd>
+  <dt>Account</dt><dd>{% if seat.account %}<code>{{ seat.account }}</code> · <a href="{{ node_url }}/accounts/{{ seat.account }}">on the node</a>{% else %}derived from the public key once published{% endif %}</dd>
+  <dt>May</dt><dd>{{ seat.may|join(", ") }}</dd>
+</dl>
+<p class="small mute">People sign; nothing on this site signs for them. Every action this seat takes is a signed request recorded in the <a href="/log">log</a>. The records of what is reserved to people, and why, are on the <a href="/records">{{ copy.labels.records|lower }}</a> page.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Propose{% endblock %}
+{% block content %}
+<h1>Propose</h1>
+<p class="sub">Anyone can. Fee {{ rules.fee_micro_xe|xe }} XE, sent from the proposing account to <code>{{ fee_account or "fee account not yet published" }}</code>. Refunded if {{ rules.quorum_wallets }} wallets take part; otherwise the fee is burned and anything sent above it is returned. Open for {{ rules.window_days }} days. {{ copy.labels.not_self_executing }}</p>
+
+{% include "_keybox.html" %}
+
+<form class="block" id="pform">
+  <label>Title</label><input type="text" id="title" maxlength="160" required>
+  <label>Text <span class="k">(markdown; say what should change and why)</span></label><textarea id="body" required></textarea>
+  <label>Exact keys to set <span class="k">(optional JSON list of state-chain ops, e.g. [{"action":"set","key":"dao.example","value":{"x":1}}])</span></label><textarea id="ops" style="min-height:70px" placeholder="leave empty for a text-only proposal"></textarea>
+  {% if rules.fee_micro_xe %}
+  <label>Fee block hash <span class="k">(the hash of your {{ rules.fee_micro_xe|xe }} XE send to the fee account)</span></label><input type="text" id="fee" placeholder="64 hex" required>
+  <p class="small mute">Pay the fee first with any XE wallet: <code>xe send {{ fee_account }} {{ rules.fee_micro_xe|xe }} --asset XE</code>, then paste the send hash here. The fee is tied to this account and to this proposal; it cannot be reused.</p>
+  {% endif %}
+  <div class="row"><button type="submit">Sign and submit</button> <button type="button" class="ghost" id="offline">Show bytes to sign offline</button></div>
+  <div id="pmsg" class="msg" hidden></div>
+  <pre id="offline_out" hidden></pre>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+const DOMAIN = "xe-dao/proposal/v1";
+function payload() {
+  const opsRaw = $("#ops").value.trim();
+  const p = { title: $("#title").value.trim(), body: $("#body").value.trim() };
+  if ($("#fee")) p.fee_block_hash = $("#fee").value.trim().toLowerCase();
+  if (opsRaw) p.ops = XeSigner.parseExact(opsRaw);
+  return p;
+}
+$("#pform").addEventListener("submit", async e => {
+  e.preventDefault();
+  try {
+    const r = await XeSigner.post("/v1/proposals", DOMAIN, payload());
+    say("#pmsg", "Opened. Taking you there…", true);
+    location.href = "/proposals/" + r.hash;
+  } catch (err) { say("#pmsg", err.message, false); }
+});
+$("#offline").addEventListener("click", async () => {
+  try {
+    const t = await XeSigner.offlineTarget(DOMAIN, payload());
+    $("#offline_out").hidden = false;
+    $("#offline_out").textContent = "Sign this digest (hex) with your key and POST /v1/proposals with the same payload, timestamp and your pub_key:\n\n" +
+      "digest:    " + t.digest + "\ntimestamp: " + t.ts + "\ncanonical: " + t.canonical + "\n\nCLI (asks for the seed): dao sign --digest " + t.digest;
+  } catch (err) { say("#pmsg", err.message, false); }
+});
+</script>
+{% endblock %}
