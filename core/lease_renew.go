@@ -34,6 +34,11 @@ func (l *Ledger) validateAndAddLeaseRenew(b *Block, skipSkew bool) error {
 		return fmt.Errorf("lease_renew: only the consumer can renew a lease")
 	}
 
+	maxPredTs := l.leaseCausalPredecessorTimestamp(lease, b.Source)
+	if maxPredTs > 0 && b.Timestamp < maxPredTs {
+		return fmt.Errorf("lease_renew timestamp %d is before predecessor timestamp %d", b.Timestamp, maxPredTs)
+	}
+
 	if b.Duration < LeaseMinDuration {
 		return fmt.Errorf("lease_renew duration must be >= %d seconds, got %d", LeaseMinDuration, b.Duration)
 	}

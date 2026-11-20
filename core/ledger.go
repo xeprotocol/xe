@@ -1157,6 +1157,9 @@ func (l *Ledger) validateAndAddReceive(b *Block) error {
 	}
 
 	if src := l.GetBlockOrStaged(b.Source); src != nil {
+		if b.Timestamp < src.Timestamp {
+			return fmt.Errorf("receive timestamp %d is before source send timestamp %d", b.Timestamp, src.Timestamp)
+		}
 		if l.GetConflict(src.Account, src.Previous) != nil {
 			return fmt.Errorf("source send %s is contested by an unresolved conflict — receive deferred pending resolution", shortHash(b.Source))
 		}
@@ -1754,6 +1757,9 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 		return fmt.Errorf("GetBlock: %w", err)
 	}
 	if leaseBlock == nil {
+		leaseBlock = l.GetBlockOrStaged(b.Source)
+	}
+	if leaseBlock == nil {
 		return fmt.Errorf("source lease block not found: %s", shortHash(b.Source))
 	}
 	if leaseBlock.Type != BlockLease {
@@ -1761,6 +1767,9 @@ func (l *Ledger) validateAndAddLeaseAccept(b *Block, skipSkew bool) error {
 	}
 	if leaseBlock.Destination != b.Account {
 		return fmt.Errorf("lease_accept: provider account mismatch")
+	}
+	if b.Timestamp < leaseBlock.Timestamp {
+		return fmt.Errorf("lease_accept timestamp %d is before source lease timestamp %d", b.Timestamp, leaseBlock.Timestamp)
 	}
 
 	if existing, ok, err := l.getLeaseOverlay(b.Source); ok {
@@ -1936,6 +1945,9 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 		return fmt.Errorf("GetBlock: %w", err)
 	}
 	if leaseBlock == nil {
+		leaseBlock = l.GetBlockOrStaged(b.Source)
+	}
+	if leaseBlock == nil {
 		return fmt.Errorf("source lease block not found: %s", shortHash(b.Source))
 	}
 	if leaseBlock.Type != BlockLease {
@@ -1943,6 +1955,9 @@ func (l *Ledger) validateAndAddLeaseCancel(b *Block) error {
 	}
 	if leaseBlock.Account != b.Account {
 		return fmt.Errorf("lease_cancel: only the consumer can cancel a lease")
+	}
+	if b.Timestamp < leaseBlock.Timestamp {
+		return fmt.Errorf("lease_cancel timestamp %d is before source lease timestamp %d", b.Timestamp, leaseBlock.Timestamp)
 	}
 
 	if existing, ok, err := l.getLeaseOverlay(b.Source); ok {
@@ -2051,6 +2066,11 @@ func (l *Ledger) validateAndAddLeaseForceSettle(b *Block, skipSkew bool) error {
 			return fmt.Errorf("lease not yet accepted for force-settle (state %s): retry after accept", lease.State)
 		}
 		return fmt.Errorf("cannot force-settle lease in %s state", lease.State)
+	}
+
+	maxPredTs := l.leaseCausalPredecessorTimestamp(lease, b.Source)
+	if maxPredTs > 0 && b.Timestamp < maxPredTs {
+		return fmt.Errorf("lease_force_settle timestamp %d is before predecessor timestamp %d", b.Timestamp, maxPredTs)
 	}
 
 	tkEras := l.timekeeperEras()
@@ -2279,6 +2299,11 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 			return fmt.Errorf("lease not yet accepted for settle (state %s): retry after accept", lease.State)
 		}
 		return fmt.Errorf("lease_settle: lease not settleable in %s state", lease.State)
+	}
+
+	maxPredTs := l.leaseCausalPredecessorTimestamp(lease, b.Source)
+	if maxPredTs > 0 && b.Timestamp < maxPredTs {
+		return fmt.Errorf("lease_settle timestamp %d is before predecessor timestamp %d", b.Timestamp, maxPredTs)
 	}
 
 	tkEras := l.timekeeperEras()
@@ -2733,6 +2758,37 @@ func (l *Ledger) GetBlockOrStaged(hash string) *Block {
 	return b
 }
 
+func (l *Ledger) leaseCausalPredecessorTimestamp(lease *Lease, leaseHash string) int64 {
+	if lease == nil && leaseHash != "" {
+		lease, _, _ = l.getLeaseOverlay(leaseHash)
+	}
+	if lease != nil && leaseHash == "" {
+		leaseHash = lease.LeaseHash
+	}
+	var maxTs int64
+	if lease != nil {
+		if lease.StartTime > maxTs {
+			maxTs = lease.StartTime
+		}
+		for _, r := range lease.Renewals {
+			if r.StartTime > maxTs {
+				maxTs = r.StartTime
+			}
+			if r.RenewHash != "" {
+				if rb := l.GetBlockOrStaged(r.RenewHash); rb != nil && rb.Timestamp > maxTs {
+					maxTs = rb.Timestamp
+				}
+			}
+		}
+	}
+	if leaseHash != "" {
+		if lb := l.GetBlockOrStaged(leaseHash); lb != nil && lb.Timestamp > maxTs {
+			maxTs = lb.Timestamp
+		}
+	}
+	return maxTs
+}
+
 func (l *Ledger) GetConflict(account, previousHash string) *Conflict {
 	cs, ok := l.store.(ConflictStore)
 	if !ok {
@@ -3017,6 +3073,11 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 		if b.Source == "" {
 			return fmt.Errorf("staged receive: must reference a source send")
 		}
+		if src := l.GetBlockOrStaged(b.Source); src != nil {
+			if b.Timestamp < src.Timestamp {
+				return fmt.Errorf("staged receive: timestamp %d is before source send timestamp %d", b.Timestamp, src.Timestamp)
+			}
+		}
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged receive: GetPendingSend: %w", err)
@@ -3049,6 +3110,14 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
 		}
 	case BlockLeaseAccept:
+		if b.Source == "" {
+			return fmt.Errorf("staged lease_accept: must reference a source lease block")
+		}
+		if lb := l.GetBlockOrStaged(b.Source); lb != nil {
+			if b.Timestamp < lb.Timestamp {
+				return fmt.Errorf("staged lease_accept: timestamp %d is before source lease timestamp %d", b.Timestamp, lb.Timestamp)
+			}
+		}
 		if b.Amount > parentBalance {
 			return fmt.Errorf("staged lease_accept: insufficient balance: have %d, need %d", parentBalance, b.Amount)
 		}
@@ -3056,7 +3125,12 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_accept: balance mismatch: expected %d, got %d", parentBalance-b.Amount, b.Balance)
 		}
 	case BlockLeaseSettle:
-
+		if b.Source == "" {
+			return fmt.Errorf("staged lease_settle: must reference a source lease hash")
+		}
+		if maxPredTs := l.leaseCausalPredecessorTimestamp(nil, b.Source); maxPredTs > 0 && b.Timestamp < maxPredTs {
+			return fmt.Errorf("staged lease_settle: timestamp %d is before predecessor timestamp %d", b.Timestamp, maxPredTs)
+		}
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged lease_settle: GetPendingSend: %w", err)
@@ -3072,6 +3146,14 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_settle: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
 	case BlockLeaseCancel:
+		if b.Source == "" {
+			return fmt.Errorf("staged lease_cancel: must reference a source lease block")
+		}
+		if lb := l.GetBlockOrStaged(b.Source); lb != nil {
+			if b.Timestamp < lb.Timestamp {
+				return fmt.Errorf("staged lease_cancel: timestamp %d is before source lease timestamp %d", b.Timestamp, lb.Timestamp)
+			}
+		}
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged lease_cancel: GetPendingSend: %w", err)
@@ -3084,6 +3166,12 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_cancel: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
 	case BlockLeaseForceSettle:
+		if b.Source == "" {
+			return fmt.Errorf("staged lease_force_settle: must reference a source lease block")
+		}
+		if maxPredTs := l.leaseCausalPredecessorTimestamp(nil, b.Source); maxPredTs > 0 && b.Timestamp < maxPredTs {
+			return fmt.Errorf("staged lease_force_settle: timestamp %d is before predecessor timestamp %d", b.Timestamp, maxPredTs)
+		}
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged lease_force_settle: GetPendingSend: %w", err)
@@ -3096,7 +3184,12 @@ func (l *Ledger) ValidateStagedBlock(b *Block, parentBalance uint64) error {
 			return fmt.Errorf("staged lease_force_settle: balance mismatch: expected %d, got %d", expectedBal, b.Balance)
 		}
 	case BlockLeaseRenew:
-
+		if b.Source == "" {
+			return fmt.Errorf("staged lease_renew: must reference a source lease hash")
+		}
+		if maxPredTs := l.leaseCausalPredecessorTimestamp(nil, b.Source); maxPredTs > 0 && b.Timestamp < maxPredTs {
+			return fmt.Errorf("staged lease_renew: timestamp %d is before predecessor timestamp %d", b.Timestamp, maxPredTs)
+		}
 		pending, err := l.store.GetPendingSend(b.Source)
 		if err != nil {
 			return fmt.Errorf("staged lease_renew: GetPendingSend: %w", err)
