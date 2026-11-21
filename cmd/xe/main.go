@@ -1619,7 +1619,39 @@ func convertKeyToOpenSSH(seedHex, outPath string) error {
 	if err := os.MkdirAll(filepath.Dir(outPath), 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(outPath, []byte(pem), 0600)
+	return writeFileNoFollow(outPath, []byte(pem), 0600)
+}
+
+// writeFileNoFollow writes data to path without ever following a symlink at
+// the destination. A dangling (or live) symlink planted at path must not cause
+// the payload to land in an attacker-chosen file, so the link is removed with
+// Lstat first, the file is then created with O_CREATE|O_EXCL (failing if
+// anything raced in), and the result is re-checked with Lstat to prove it is a
+// regular file owned by us. This is the CWE-59 guard for first-write key paths.
+func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			// Refuse to write through a planted link; do not silently replace it
+			// either, since that hides tampering from the user.
+			return fmt.Errorf("refusing to write %s: path is a symlink", path)
+		}
+		return fmt.Errorf("refusing to overwrite existing file %s", path)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to use %s: not a regular file after write", path)
+	}
+	return nil
 }
 
 func deriveED25519PubkeyViaOpenSSL(seed []byte) (ed25519.PublicKey, error) {
