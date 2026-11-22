@@ -62,7 +62,7 @@
       },
       "targets": [
         {
-          "expr": "xe_delegated_weight_micro_xe",
+          "expr": "xe_delegated_weight_micro_xe{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -109,7 +109,7 @@
       },
       "targets": [
         {
-          "expr": "xe_quorum_margin_ratio",
+          "expr": "xe_quorum_margin_ratio{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -139,7 +139,7 @@
       },
       "targets": [
         {
-          "expr": "xe_finality_stall_seconds",
+          "expr": "xe_finality_stall_seconds{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -169,7 +169,7 @@
       },
       "targets": [
         {
-          "expr": "xe_ready",
+          "expr": "xe_ready{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -224,7 +224,7 @@
       },
       "targets": [
         {
-          "expr": "xe_ready_check == 0",
+          "expr": "xe_ready_check{node=~\"$node\"} == 0",
           "legendFormat": "{{node}} / {{check}}",
           "refId": "A"
         }
@@ -257,7 +257,7 @@
       },
       "targets": [
         {
-          "expr": "xe_ready_check_evaluated == 0",
+          "expr": "xe_ready_check_evaluated{node=~\"$node\"} == 0",
           "legendFormat": "{{node}} / {{check}}",
           "refId": "A"
         }
@@ -299,12 +299,12 @@
       },
       "targets": [
         {
-          "expr": "xe_representatives_total",
+          "expr": "xe_representatives_total{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         },
         {
-          "expr": "xe_active_representatives_total",
+          "expr": "xe_active_representatives_total{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "B"
         }
@@ -334,12 +334,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.5, sum by (le, node) (rate(xe_finality_latency_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.5, sum by (le, node) (rate(xe_finality_latency_seconds_bucket{node=~\"$node\"}[5m])))",
           "legendFormat": "{{node}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le, node) (rate(xe_finality_latency_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, node) (rate(xe_finality_latency_seconds_bucket{node=~\"$node\"}[5m])))",
           "legendFormat": "{{node}}",
           "refId": "B"
         }
@@ -369,12 +369,12 @@
       },
       "targets": [
         {
-          "expr": "xe_unfinalized_positions",
+          "expr": "xe_unfinalized_positions{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         },
         {
-          "expr": "xe_conflicts_open",
+          "expr": "xe_conflicts_open{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "B"
         }
@@ -404,7 +404,7 @@
       },
       "targets": [
         {
-          "expr": "rate(xe_finalizations_total[5m])",
+          "expr": "rate(xe_finalizations_total{node=~\"$node\"}[5m])",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -434,7 +434,7 @@
       },
       "targets": [
         {
-          "expr": "xe_delegation_underflows",
+          "expr": "xe_delegation_underflows{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -464,7 +464,7 @@
       },
       "targets": [
         {
-          "expr": "xe_delegated_weight_ratio",
+          "expr": "xe_delegated_weight_ratio{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -506,7 +506,7 @@
       },
       "targets": [
         {
-          "expr": "count(count by (xe_frontier_fingerprint) (xe_frontier_fingerprint))",
+          "expr": "count(count_values(\"fp\", xe_frontier_fingerprint{node=~\"$node\"}))",
           "legendFormat": "distinct",
           "refId": "A"
         }
@@ -536,12 +536,12 @@
       },
       "targets": [
         {
-          "expr": "xe_quarantined_blocks",
+          "expr": "xe_quarantined_blocks{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         },
         {
-          "expr": "rate(xe_blocks_quarantined_total[15m])",
+          "expr": "rate(xe_blocks_quarantined_total{node=~\"$node\"}[15m])",
           "legendFormat": "{{node}}",
           "refId": "B"
         }
@@ -571,12 +571,12 @@
       },
       "targets": [
         {
-          "expr": "count(count by (version) (xe_build_info))",
+          "expr": "count(count by (version) (xe_build_info{node=~\"$node\"}))",
           "legendFormat": "{{node}}",
           "refId": "A"
         },
         {
-          "expr": "count(count by (network_id) (xe_build_info))",
+          "expr": "count(count by (network_id) (xe_build_info{node=~\"$node\"}))",
           "legendFormat": "{{node}}",
           "refId": "B"
         }
@@ -618,7 +618,7 @@
       },
       "targets": [
         {
-          "expr": "xe_peer_count",
+          "expr": "xe_peer_count{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -648,7 +648,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (node) (rate(xe_blocks_added_total[5m]))",
+          "expr": "sum by (node) (rate(xe_blocks_added_total{node=~\"$node\"}[5m]))",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -678,7 +678,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (node, result) (rate(xe_votes_ingested_total[5m]))",
+          "expr": "sum by (node, result) (rate(xe_votes_ingested_total{node=~\"$node\"}[5m]))",
           "legendFormat": "{{node}} {{result}}",
           "refId": "A"
         }
@@ -708,7 +708,7 @@
       },
       "targets": [
         {
-          "expr": "rate(xe_dropped_blocks_total[5m])",
+          "expr": "rate(xe_dropped_blocks_total{node=~\"$node\"}[5m])",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -738,7 +738,7 @@
       },
       "targets": [
         {
-          "expr": "xe_supply_micro_units",
+          "expr": "xe_supply_micro_units{node=~\"$node\"}",
           "legendFormat": "{{node}} {{asset}}",
           "refId": "A"
         }
@@ -768,7 +768,7 @@
       },
       "targets": [
         {
-          "expr": "xe_store_size_bytes",
+          "expr": "xe_store_size_bytes{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -798,7 +798,7 @@
       },
       "targets": [
         {
-          "expr": "xe_sample_age_seconds",
+          "expr": "xe_sample_age_seconds{node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -828,7 +828,7 @@
       },
       "targets": [
         {
-          "expr": "go_goroutines{job=\"xe-node\"}",
+          "expr": "go_goroutines{job=\"xe-node\",node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -858,7 +858,7 @@
       },
       "targets": [
         {
-          "expr": "process_resident_memory_bytes{job=\"xe-node\"}",
+          "expr": "process_resident_memory_bytes{job=\"xe-node\",node=~\"$node\"}",
           "legendFormat": "{{node}}",
           "refId": "A"
         }
@@ -888,7 +888,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (node, result) (rate(xe_sync_rounds_total[5m]))",
+          "expr": "sum by (node, result) (rate(xe_sync_rounds_total{node=~\"$node\"}[5m]))",
           "legendFormat": "{{node}} {{result}}",
           "refId": "A"
         }
