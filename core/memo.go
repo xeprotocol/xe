@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -17,13 +18,15 @@ func ValidateMemo(memo string) error {
 	if !utf8.ValidString(memo) {
 		return fmt.Errorf("memo is not valid UTF-8")
 	}
-	for i := 0; i < len(memo); i++ {
-		c := memo[i]
-		if c == '\t' || c == '\n' {
+	for offset, r := range memo {
+		if r == '\t' || r == '\n' {
 			continue
 		}
-		if c < 0x20 || c == 0x7F {
-			return fmt.Errorf("memo contains disallowed control byte 0x%02x at offset %d", c, i)
+		if unicode.IsControl(r) {
+			return fmt.Errorf("memo contains disallowed control character %U at offset %d", r, offset)
+		}
+		if unicode.Is(unicode.Cf, r) {
+			return fmt.Errorf("memo contains disallowed format character %U at offset %d", r, offset)
 		}
 	}
 	return nil
