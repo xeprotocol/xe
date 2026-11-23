@@ -646,7 +646,7 @@ curl "https://ldn.core.test.network/pending?limit=2"
 ```
 
 ### GET /pending/{address}
-Pending sends destined for one account. Path: `address`. (Entries here are raw `PendingSend` with no `Timestamp` field.)
+Pending sends destined for one account. Path: `address`. Query: `?offset=N&limit=M` (default limit 100, max 1000). (Entries here are raw `PendingSend` with no `Timestamp` field.)
 ```json
 {
   "address": "334457d5...e80f",
