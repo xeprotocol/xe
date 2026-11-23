@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/xeprotocol/xe/chat"
@@ -19,8 +20,9 @@ import (
 )
 
 type mockNodeBackend struct {
-	pendingMap map[string][]*core.PendingSend
-	blocksMap  map[string]*core.Block
+	pendingMap    map[string][]*core.PendingSend
+	blocksMap     map[string]*core.Block
+	getBlockCalls atomic.Int64
 }
 
 func (m *mockNodeBackend) GetBalance(account string) uint64                       { return 0 }
@@ -33,8 +35,11 @@ func (m *mockNodeBackend) GetReputation(account string) *core.ReputationAggregat
 func (m *mockNodeBackend) GetAllReputations() map[string]*core.ReputationAggregate {
 	return nil
 }
-func (m *mockNodeBackend) GetChainRange(account string, from, to int) ([]*core.Block, int) { return nil, 0 }
+func (m *mockNodeBackend) GetChainRange(account string, from, to int) ([]*core.Block, int) {
+	return nil, 0
+}
 func (m *mockNodeBackend) GetBlock(hash string) *core.Block {
+	m.getBlockCalls.Add(1)
 	if m.blocksMap != nil {
 		return m.blocksMap[hash]
 	}
@@ -46,34 +51,38 @@ func (m *mockNodeBackend) GetPending(account string) []*core.PendingSend {
 	}
 	return nil
 }
-func (m *mockNodeBackend) GetPendingPage(ctx context.Context, offset, limit int) ([]*core.PendingSend, error) { return nil, nil }
-func (m *mockNodeBackend) GetFrontiers() map[string]string                    { return nil }
-func (m *mockNodeBackend) GetFrontiersPage(offset, limit int) []node.FrontierInfo { return nil }
+func (m *mockNodeBackend) GetPendingPage(ctx context.Context, offset, limit int) ([]*core.PendingSend, error) {
+	return nil, nil
+}
+func (m *mockNodeBackend) GetFrontiers() map[string]string                         { return nil }
+func (m *mockNodeBackend) GetFrontiersPage(offset, limit int) []node.FrontierInfo  { return nil }
 func (m *mockNodeBackend) GetAccountsPage(offset, limit int) []node.AccountSummary { return nil }
-func (m *mockNodeBackend) GetSupply() *core.SupplyReport                      { return nil }
-func (m *mockNodeBackend) GetRecentBlocks(ctx context.Context, limit int) ([]*core.Block, error) { return nil, nil }
-func (m *mockNodeBackend) SubmitBlock(b *core.Block) error                    { return nil }
-func (m *mockNodeBackend) GetConflicts(account string) []*core.Conflict       { return nil }
-func (m *mockNodeBackend) GetAllConflicts() []*core.Conflict                  { return nil }
-func (m *mockNodeBackend) GetDelegation() *node.DelegationInfo                { return nil }
-func (m *mockNodeBackend) GetNodeInfo() *node.NodeInfo                        { return &node.NodeInfo{} }
-func (m *mockNodeBackend) GetActivations() *node.ActivationsInfo              { return nil }
-func (m *mockNodeBackend) GetReadiness() *node.ReadinessInfo                  { return nil }
-func (m *mockNodeBackend) GetLeases() []*core.Lease                           { return nil }
+func (m *mockNodeBackend) GetSupply() *core.SupplyReport                           { return nil }
+func (m *mockNodeBackend) GetRecentBlocks(ctx context.Context, limit int) ([]*core.Block, error) {
+	return nil, nil
+}
+func (m *mockNodeBackend) SubmitBlock(b *core.Block) error                      { return nil }
+func (m *mockNodeBackend) GetConflicts(account string) []*core.Conflict         { return nil }
+func (m *mockNodeBackend) GetAllConflicts() []*core.Conflict                    { return nil }
+func (m *mockNodeBackend) GetDelegation() *node.DelegationInfo                  { return nil }
+func (m *mockNodeBackend) GetNodeInfo() *node.NodeInfo                          { return &node.NodeInfo{} }
+func (m *mockNodeBackend) GetActivations() *node.ActivationsInfo                { return nil }
+func (m *mockNodeBackend) GetReadiness() *node.ReadinessInfo                    { return nil }
+func (m *mockNodeBackend) GetLeases() []*core.Lease                             { return nil }
 func (m *mockNodeBackend) GetLeasesByState(state core.LeaseState) []*core.Lease { return nil }
-func (m *mockNodeBackend) GetLease(leaseHash string) *core.Lease              { return nil }
-func (m *mockNodeBackend) GetStateChainTip() *statechain.Block                { return nil }
-func (m *mockNodeBackend) GetStateChainBlock(index uint64) *statechain.Block  { return nil }
+func (m *mockNodeBackend) GetLease(leaseHash string) *core.Lease                { return nil }
+func (m *mockNodeBackend) GetStateChainTip() *statechain.Block                  { return nil }
+func (m *mockNodeBackend) GetStateChainBlock(index uint64) *statechain.Block    { return nil }
 func (m *mockNodeBackend) GetStateChainBlocks(start, limit uint64) []*statechain.Block {
 	return nil
 }
-func (m *mockNodeBackend) GetStateChainBlockCount() uint64                      { return 0 }
-func (m *mockNodeBackend) GetStateKV(key string) (json.RawMessage, bool)        { return nil, false }
+func (m *mockNodeBackend) GetStateChainBlockCount() uint64               { return 0 }
+func (m *mockNodeBackend) GetStateKV(key string) (json.RawMessage, bool) { return nil, false }
 func (m *mockNodeBackend) GetStateKVByPrefix(prefix string) map[string]json.RawMessage {
 	return nil
 }
 func (m *mockNodeBackend) GetAllStateKV() map[string]json.RawMessage { return nil }
-func (m *mockNodeBackend) GetDAOKeyset() *statechain.DAOKeyset        { return nil }
+func (m *mockNodeBackend) GetDAOKeyset() *statechain.DAOKeyset       { return nil }
 func (m *mockNodeBackend) SubmitStateChainBlock(b *statechain.Block) error {
 	return nil
 }
@@ -84,18 +93,18 @@ func (m *mockNodeBackend) SendChatMessage(ctx context.Context, to, message strin
 func (m *mockNodeBackend) GetChatMessages(account string, since int64) []*chat.Envelope {
 	return nil
 }
-func (m *mockNodeBackend) GetChatAccounts() []string                      { return nil }
-func (m *mockNodeBackend) GetChatContacts(account string) []string        { return nil }
-func (m *mockNodeBackend) SubscribeChat() (chan *chat.Envelope, func())   { return nil, func() {} }
+func (m *mockNodeBackend) GetChatAccounts() []string                    { return nil }
+func (m *mockNodeBackend) GetChatContacts(account string) []string      { return nil }
+func (m *mockNodeBackend) SubscribeChat() (chan *chat.Envelope, func()) { return nil, func() {} }
 func (m *mockNodeBackend) RequestAttestation(source, identifier string) (*core.TimekeeperAttestation, error) {
 	return nil, nil
 }
-func (m *mockNodeBackend) RegisterAccount(reg *directory.Registration) error   { return nil }
-func (m *mockNodeBackend) ListDirectory() []*directory.Registration            { return nil }
+func (m *mockNodeBackend) RegisterAccount(reg *directory.Registration) error { return nil }
+func (m *mockNodeBackend) ListDirectory() []*directory.Registration          { return nil }
 func (m *mockNodeBackend) LookupDirectory(account string) *directory.Registration {
 	return nil
 }
-func (m *mockNodeBackend) GetVMs() []*vm.Info             { return nil }
+func (m *mockNodeBackend) GetVMs() []*vm.Info              { return nil }
 func (m *mockNodeBackend) GetVM(leaseHash string) *vm.Info { return nil }
 func (m *mockNodeBackend) RequestAndCreateLease(ctx context.Context, vcpus, memoryMB, diskGB, duration uint64, accessPubKey string) (string, error) {
 	return "", nil
@@ -103,8 +112,8 @@ func (m *mockNodeBackend) RequestAndCreateLease(ctx context.Context, vcpus, memo
 func (m *mockNodeBackend) RenewLease(leaseHash string, additionalSecs uint64) (*core.Block, error) {
 	return nil, nil
 }
-func (m *mockNodeBackend) GetProviders() []*node.ProviderInfo                  { return nil }
-func (m *mockNodeBackend) GetPerformanceCertificate() *perf.Certificate        { return nil }
+func (m *mockNodeBackend) GetProviders() []*node.ProviderInfo           { return nil }
+func (m *mockNodeBackend) GetPerformanceCertificate() *perf.Certificate { return nil }
 func (m *mockNodeBackend) GetCertificateByProvider(provider string) *perf.Certificate {
 	return nil
 }
@@ -259,5 +268,34 @@ func TestHandleGetPendingPagination(t *testing.T) {
 	}
 	if len(resp.Pending) != 0 {
 		t.Fatalf("expected 0 pending entries, got %d", len(resp.Pending))
+	}
+}
+
+func TestHandleGetPendingDefaultAndMaxLimits(t *testing.T) {
+	const addr = "xe_flood"
+	p := make([]*core.PendingSend, 1200)
+	b := make(map[string]*core.Block, 1200)
+	for i := 0; i < 1200; i++ {
+		h := fmt.Sprintf("h_%04d", i)
+		p[i] = &core.PendingSend{SendHash: h, Destination: addr, Amount: 1, Asset: "XE"}
+		b[h] = &core.Block{Hash: h, Timestamp: int64(i)}
+	}
+	m := &mockNodeBackend{pendingMap: map[string][]*core.PendingSend{addr: p}, blocksMap: b}
+	h := (&Handler{node: m}).Mux()
+	for _, tc := range []struct {
+		q string
+		w int
+	}{{"", 100}, {"?limit=5000", 1000}, {"?limit=5&offset=1190", 5}, {"?offset=5000", 0}} {
+		m.getBlockCalls.Store(0)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "/pending/"+addr+tc.q, nil))
+		if rec.Code != 200 {
+			t.Fatalf("status %d", rec.Code)
+		}
+		var r struct{ Pending []pendingEntry }
+		_ = json.Unmarshal(rec.Body.Bytes(), &r)
+		if len(r.Pending) != tc.w || int(m.getBlockCalls.Load()) != tc.w {
+			t.Fatalf("q=%s got len=%d calls=%d want=%d", tc.q, len(r.Pending), m.getBlockCalls.Load(), tc.w)
+		}
 	}
 }
