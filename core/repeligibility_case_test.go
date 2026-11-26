@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"strings"
@@ -191,5 +193,94 @@ func TestNewLedgerGenesisUppercaseRepresentative(t *testing.T) {
 	}
 	if w := l.GetVoteWeight(upperRep); w.Sign() <= 0 {
 		t.Fatalf("expected positive vote weight when queried with uppercase %s, got %s", upperRep, w)
+	}
+}
+
+func TestNewLedgerGenesisUppercasePubKeyPreservesHash(t *testing.T) {
+	kp, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	repKP, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair rep: %v", err)
+	}
+	upperPub := strings.ToUpper(kp.PubKeyHex())
+	upperRep := strings.ToUpper(repKP.Address())
+	lowerRep := strings.ToLower(upperRep)
+
+	b := Block{
+		Type:           BlockGenesis,
+		Account:        kp.Address(),
+		Previous:       "0",
+		Balance:        GenesisSupply,
+		Asset:          "XE",
+		Representative: upperRep,
+		PubKey:         upperPub,
+		Timestamp:      0,
+	}
+
+	savedID := GetNetworkID()
+	SetNetworkID("")
+	h, err := HashBlock(&b)
+	if err != nil {
+		SetNetworkID(savedID)
+		t.Fatalf("HashBlock: %v", err)
+	}
+	b.Hash = h
+	hashBytes, err := DecodeHash(h)
+	if err != nil {
+		SetNetworkID(savedID)
+		t.Fatalf("DecodeHash: %v", err)
+	}
+	b.Signature = hex.EncodeToString(ed25519.Sign(kp.Private, hashBytes))
+	SetNetworkID(savedID)
+
+	customJSON, err := json.Marshal(b)
+	if err != nil {
+		t.Fatalf("marshal custom genesis: %v", err)
+	}
+	if err := SetGenesisJSON(customJSON); err != nil {
+		t.Fatalf("SetGenesisJSON failed: %v", err)
+	}
+	defer ClearGenesisOverride()
+
+	store := &mockGenesisStore{}
+	l := NewLedger(store, LedgerConfig{})
+
+	chain := store.chains[b.Account]
+	if chain == nil || len(chain.Blocks) == 0 {
+		t.Fatalf("expected persisted genesis block in store")
+	}
+	stored := chain.Blocks[0]
+	if stored.PubKey != upperPub {
+		t.Fatalf("expected persisted genesis PubKey %q to preserve case, got %q", upperPub, stored.PubKey)
+	}
+
+	SetNetworkID("")
+	errVerify := VerifyBlock(stored)
+	recomputedHash, errHash := HashBlock(stored)
+	SetNetworkID(savedID)
+	if errHash != nil {
+		t.Fatalf("HashBlock(stored): %v", errHash)
+	}
+	if recomputedHash != stored.Hash {
+		t.Fatalf("persisted genesis hash mismatch after normalization: got %s, want %s", recomputedHash, stored.Hash)
+	}
+	if errVerify != nil {
+		t.Fatalf("VerifyBlock(stored) failed: %v", errVerify)
+	}
+
+	l.SetRepresentativeConfigFn(func() *RepresentativeConfig {
+		return &RepresentativeConfig{
+			Mode:      RepModeAllowlist,
+			Addresses: []string{upperRep},
+		}
+	})
+	if l.RepEligibilityFailedOpen() {
+		t.Fatalf("expected RepEligibilityFailedOpen() to be false")
+	}
+	if w := l.GetVoteWeight(lowerRep); w.Sign() <= 0 {
+		t.Fatalf("expected positive vote weight for %s, got %s", lowerRep, w)
 	}
 }

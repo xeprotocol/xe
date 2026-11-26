@@ -350,7 +350,9 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 		if err != nil {
 			panic(fmt.Sprintf("ledger: load genesis: %v", err))
 		}
-		normalizeBlockHex(genesis)
+		// Normalize only Representative (decoded case-insensitively via hex.DecodeString);
+		// leave PubKey/Account/Hash verbatim so MarshalBlockAux preserves the genesis block hash.
+		genesis.Representative = strings.ToLower(genesis.Representative)
 		commit, prevBal, err := l.prepareBlockWrite(genesis)
 		if err != nil {
 			panic(fmt.Sprintf("ledger: prepare genesis: %v", err))
@@ -1554,7 +1556,7 @@ func (l *Ledger) changesRepresentative(b *Block) (bool, error) {
 			return false, fmt.Errorf("previous block not found (representative lookup): %s", shortHash(hash))
 		}
 		if pb.Representative != "" {
-			return pb.Representative != b.Representative, nil
+			return !strings.EqualFold(pb.Representative, b.Representative), nil
 		}
 		hash = pb.Previous
 	}
@@ -2381,8 +2383,6 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 }
 
 func (l *Ledger) prepareBlockWrite(b *Block) (*BlockCommit, uint64, error) {
-	normalizeBlockHex(b)
-
 	chain, err := l.getAccountChainOverlay(b.Account)
 	if err != nil {
 		return nil, 0, fmt.Errorf("GetAccountChain: %w", err)
@@ -2409,13 +2409,13 @@ func (l *Ledger) commitBlockWrite(c *BlockCommit, prevBalance uint64) error {
 	oldRep, fromOverlay := l.overlayDelegationRep(c.Account)
 	if !fromOverlay {
 		l.delegationMu.RLock()
-		oldRep = l.delegation[c.Account]
+		oldRep = l.delegation[strings.ToLower(c.Account)]
 		l.delegationMu.RUnlock()
 	}
 
-	effectiveRep := c.Block.Representative
+	effectiveRep := strings.ToLower(c.Block.Representative)
 	if effectiveRep == "" {
-		effectiveRep = oldRep
+		effectiveRep = strings.ToLower(oldRep)
 	}
 	if effectiveRep == "" {
 		c.DeleteDelegation = true
