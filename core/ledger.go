@@ -350,6 +350,9 @@ func NewLedger(s Store, cfg LedgerConfig) *Ledger {
 		if err != nil {
 			panic(fmt.Sprintf("ledger: load genesis: %v", err))
 		}
+		// Normalize only Representative (decoded case-insensitively via hex.DecodeString);
+		// leave PubKey/Account/Hash verbatim so MarshalBlockAux preserves the genesis block hash.
+		genesis.Representative = strings.ToLower(genesis.Representative)
 		commit, prevBal, err := l.prepareBlockWrite(genesis)
 		if err != nil {
 			panic(fmt.Sprintf("ledger: prepare genesis: %v", err))
@@ -1553,7 +1556,7 @@ func (l *Ledger) changesRepresentative(b *Block) (bool, error) {
 			return false, fmt.Errorf("previous block not found (representative lookup): %s", shortHash(hash))
 		}
 		if pb.Representative != "" {
-			return pb.Representative != b.Representative, nil
+			return !strings.EqualFold(pb.Representative, b.Representative), nil
 		}
 		hash = pb.Previous
 	}
@@ -2380,7 +2383,6 @@ func (l *Ledger) validateAndAddLeaseSettle(b *Block, skipSkew bool) error {
 }
 
 func (l *Ledger) prepareBlockWrite(b *Block) (*BlockCommit, uint64, error) {
-
 	chain, err := l.getAccountChainOverlay(b.Account)
 	if err != nil {
 		return nil, 0, fmt.Errorf("GetAccountChain: %w", err)
@@ -2407,13 +2409,13 @@ func (l *Ledger) commitBlockWrite(c *BlockCommit, prevBalance uint64) error {
 	oldRep, fromOverlay := l.overlayDelegationRep(c.Account)
 	if !fromOverlay {
 		l.delegationMu.RLock()
-		oldRep = l.delegation[c.Account]
+		oldRep = l.delegation[strings.ToLower(c.Account)]
 		l.delegationMu.RUnlock()
 	}
 
-	effectiveRep := c.Block.Representative
+	effectiveRep := strings.ToLower(c.Block.Representative)
 	if effectiveRep == "" {
-		effectiveRep = oldRep
+		effectiveRep = strings.ToLower(oldRep)
 	}
 	if effectiveRep == "" {
 		c.DeleteDelegation = true
@@ -2840,6 +2842,8 @@ func (l *Ledger) rebuildDelegation() error {
 		if representative == "" {
 			return nil
 		}
+		account = strings.ToLower(account)
+		representative = strings.ToLower(representative)
 		l.delegation[account] = representative
 
 		chain, err := l.store.GetAccountChain(account)
@@ -2874,7 +2878,8 @@ func (l *Ledger) rebuildDelegation() error {
 }
 
 func (l *Ledger) updateDelegation(account string, prevBalance uint64, newBlock *Block) error {
-	newRep := newBlock.Representative
+	account = strings.ToLower(account)
+	newRep := strings.ToLower(newBlock.Representative)
 
 	l.assetBalMu.RLock()
 	var newXEBal uint64
@@ -2896,7 +2901,7 @@ func (l *Ledger) updateDelegation(account string, prevBalance uint64, newBlock *
 	l.delegationMu.Lock()
 	defer l.delegationMu.Unlock()
 
-	oldRep := l.delegation[account]
+	oldRep := strings.ToLower(l.delegation[account])
 
 	effectiveRep := newRep
 	if effectiveRep == "" {
@@ -2905,7 +2910,16 @@ func (l *Ledger) updateDelegation(account string, prevBalance uint64, newBlock *
 
 	if oldRep != "" {
 		if l.weights[oldRep] == nil {
-			l.weights[oldRep] = new(big.Int)
+			for k, w := range l.weights {
+				if strings.EqualFold(k, oldRep) {
+					l.weights[oldRep] = w
+					delete(l.weights, k)
+					break
+				}
+			}
+			if l.weights[oldRep] == nil {
+				l.weights[oldRep] = new(big.Int)
+			}
 		}
 		prev := new(big.Int).SetUint64(prevXEBal)
 		l.weights[oldRep].Sub(l.weights[oldRep], prev)
@@ -2926,7 +2940,16 @@ func (l *Ledger) updateDelegation(account string, prevBalance uint64, newBlock *
 
 	if effectiveRep != "" {
 		if l.weights[effectiveRep] == nil {
-			l.weights[effectiveRep] = new(big.Int)
+			for k, w := range l.weights {
+				if strings.EqualFold(k, effectiveRep) {
+					l.weights[effectiveRep] = w
+					delete(l.weights, k)
+					break
+				}
+			}
+			if l.weights[effectiveRep] == nil {
+				l.weights[effectiveRep] = new(big.Int)
+			}
 		}
 		l.weights[effectiveRep].Add(l.weights[effectiveRep], new(big.Int).SetUint64(newXEBal))
 	}
@@ -2941,10 +2964,11 @@ func (l *Ledger) snapshotWeights() map[string]uint64 {
 	snap := make(map[string]uint64, len(l.weights))
 	for rep, w := range l.weights {
 		if w != nil && w.Sign() > 0 && repEligibleLocked(set, rep) {
+			repKey := strings.ToLower(rep)
 			if w.IsUint64() {
-				snap[rep] = w.Uint64()
+				snap[repKey] = w.Uint64()
 			} else {
-				snap[rep] = math.MaxUint64
+				snap[repKey] = math.MaxUint64
 			}
 		}
 	}
@@ -2954,7 +2978,10 @@ func (l *Ledger) snapshotWeights() map[string]uint64 {
 func (l *Ledger) GetRepresentative(account string) string {
 	l.delegationMu.RLock()
 	defer l.delegationMu.RUnlock()
-	return l.delegation[account]
+	if rep, ok := l.delegation[account]; ok {
+		return rep
+	}
+	return l.delegation[strings.ToLower(account)]
 }
 
 func (l *Ledger) GetVoteWeight(representative string) *big.Int {
@@ -2963,7 +2990,7 @@ func (l *Ledger) GetVoteWeight(representative string) *big.Int {
 	if !repEligibleLocked(l.eligibleAllowlistLocked(), representative) {
 		return new(big.Int)
 	}
-	w := l.weights[representative]
+	w := l.weightForRepLocked(representative)
 	if w == nil {
 		return new(big.Int)
 	}

@@ -3,6 +3,7 @@ package core
 import (
 	"log"
 	"math/big"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -27,7 +28,7 @@ func (c *RepresentativeConfig) allowlist() map[string]bool {
 	set := make(map[string]bool, len(c.Addresses))
 	for _, a := range c.Addresses {
 		if a != "" {
-			set[a] = true
+			set[strings.ToLower(a)] = true
 		}
 	}
 	if len(set) == 0 {
@@ -69,6 +70,25 @@ func (l *Ledger) configuredAllowlist() map[string]bool {
 	return l.repElig.set
 }
 
+func (l *Ledger) weightForRepLocked(rep string) *big.Int {
+	if rep == "" {
+		return nil
+	}
+	if w := l.weights[rep]; w != nil {
+		return w
+	}
+	lower := strings.ToLower(rep)
+	if w := l.weights[lower]; w != nil {
+		return w
+	}
+	for k, w := range l.weights {
+		if strings.EqualFold(k, rep) {
+			return w
+		}
+	}
+	return nil
+}
+
 func (l *Ledger) eligibleAllowlistLocked() map[string]bool {
 	set := l.configuredAllowlist()
 	if set == nil {
@@ -77,7 +97,7 @@ func (l *Ledger) eligibleAllowlistLocked() map[string]bool {
 	}
 
 	for rep := range set {
-		if w := l.weights[rep]; w != nil && w.Sign() > 0 {
+		if w := l.weightForRepLocked(rep); w != nil && w.Sign() > 0 {
 			l.noteFailedOpen(false)
 			return set
 		}
@@ -106,14 +126,14 @@ func (l *Ledger) noteFailedOpen(v bool) {
 }
 
 func repEligibleLocked(set map[string]bool, rep string) bool {
-	return set == nil || set[rep]
+	return set == nil || set[strings.ToLower(rep)]
 }
 
 func (l *Ledger) sumEligibleLocked(set map[string]bool) *big.Int {
 	total := new(big.Int)
 	if set != nil {
 		for rep := range set {
-			if w := l.weights[rep]; w != nil && w.Sign() > 0 {
+			if w := l.weightForRepLocked(rep); w != nil && w.Sign() > 0 {
 				total.Add(total, w)
 			}
 		}
@@ -135,10 +155,11 @@ func (l *Ledger) GetAllVoteWeights() map[string]uint64 {
 		if w == nil || w.Sign() <= 0 {
 			continue
 		}
+		repKey := strings.ToLower(rep)
 		if w.IsUint64() {
-			out[rep] = w.Uint64()
+			out[repKey] = w.Uint64()
 		} else {
-			out[rep] = ^uint64(0)
+			out[repKey] = ^uint64(0)
 		}
 	}
 	return out
@@ -159,7 +180,7 @@ func (l *Ledger) GetIneligibleWeight() *big.Int {
 	}
 	total := new(big.Int)
 	for rep, w := range l.weights {
-		if w == nil || w.Sign() <= 0 || set[rep] {
+		if w == nil || w.Sign() <= 0 || repEligibleLocked(set, rep) {
 			continue
 		}
 		total.Add(total, w)

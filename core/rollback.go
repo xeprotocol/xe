@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
 )
 
 type cascadeStep struct {
@@ -351,7 +352,8 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 		}
 
 		l.delegationMu.Lock()
-		curRep := l.delegation[account]
+		account = strings.ToLower(account)
+		curRep := strings.ToLower(l.delegation[account])
 		if curRep != "" && l.weights[curRep] != nil {
 			l.weights[curRep].Sub(l.weights[curRep], new(big.Int).SetUint64(xeBefore))
 			if l.weights[curRep].Sign() < 0 {
@@ -359,6 +361,7 @@ func (l *Ledger) buildBlockUndo(account string, b *Block, chain *AccountChain) (
 			}
 		}
 		if prevRep != "" {
+			prevRep = strings.ToLower(prevRep)
 			if l.weights[prevRep] == nil {
 				l.weights[prevRep] = new(big.Int)
 			}
